@@ -43,6 +43,8 @@ services:
       DEFAULT_NETWORK_DNS: 1.1.1.1,8.8.8.8
       DEFAULT_NETWORK_BRIDGE: vmbr0
       DEFAULT_NETWORK_VLAN: "0"
+      TERRAFORM_WORKDIR: /tmp/infra/terraform/runs
+      ANSIBLE_WORKDIR: /tmp/infra/ansible/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
     ports:
