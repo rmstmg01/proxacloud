@@ -18,8 +18,16 @@ import type {
 export const getClusters = () =>
   client.get<ClusterSummary[]>('/clusters').then((r) => r.data);
 
+export const checkClusterName = (name: string) =>
+  client
+    .get<{ name: string; exists: boolean }>(`/clusters/check-name?name=${encodeURIComponent(name)}`)
+    .then((r) => r.data);
+
 export const getCluster = (id: number) =>
   client.get<ClusterSummary>(`/clusters/${id}`).then((r) => r.data);
+
+export const deleteCluster = (id: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}`).then((r) => r.data);
 
 export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);

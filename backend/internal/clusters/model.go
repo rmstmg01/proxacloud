@@ -36,6 +36,9 @@ type Service struct {
 	autoBootstrap   bool
 }
 
+var ErrClusterExists = errors.New("cluster already exists")
+var ErrClusterNotFound = errors.New("cluster not found")
+
 type ProvisionRequest struct {
 	Name              string `json:"name"`
 	TopologyType      string `json:"topology_type"`
@@ -490,6 +493,18 @@ func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
 		out = append(out, rec)
 	}
 	return out, nil
+}
+
+func (s *Service) DeleteCluster(clusterID int64) error {
+	res, err := s.db.Exec(`DELETE FROM clusters WHERE id = $1`, clusterID)
+	if err != nil {
+		return fmt.Errorf("delete cluster: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrClusterNotFound
+	}
+	return nil
 }
 
 func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error) {
@@ -1043,6 +1058,9 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 		plan.WorkerCount,
 	).Scan(&clusterID)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			return 0, ErrClusterExists
+		}
 		return 0, fmt.Errorf("insert cluster: %w", err)
 	}
 
@@ -1102,7 +1120,7 @@ func (s *Service) getClusterBase(clusterID int64) (string, string, error) {
 	).Scan(&name, &kubernetesVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", "", errors.New("cluster not found")
+			return "", "", ErrClusterNotFound
 		}
 		return "", "", fmt.Errorf("query cluster: %w", err)
 	}
@@ -1154,11 +1172,29 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ClusterSummary{}, errors.New("cluster not found")
+			return ClusterSummary{}, ErrClusterNotFound
 		}
 		return ClusterSummary{}, fmt.Errorf("get cluster summary: %w", err)
 	}
 	return c, nil
+}
+
+func (s *Service) ClusterNameExists(name string) (bool, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false, errors.New("name is required")
+	}
+
+	var exists bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM clusters WHERE LOWER(name) = LOWER($1))`,
+		trimmed,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check cluster name: %w", err)
+	}
+
+	return exists, nil
 }
 
 func (s *Service) listDistinctProxmoxNodes(clusterID int64) ([]string, error) {

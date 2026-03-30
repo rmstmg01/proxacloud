@@ -2,6 +2,7 @@ package clusters
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -25,6 +26,10 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.service.Provision(req)
 	if err != nil {
+		if errors.Is(err, ErrClusterExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -63,6 +68,20 @@ func (h *Handler) ListClusters(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) CheckName(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	exists, err := h.service.ClusterNameExists(name)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":   name,
+		"exists": exists,
+	})
+}
+
 func (h *Handler) GetCluster(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -91,6 +110,25 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	if err := h.service.DeleteCluster(clusterID); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"id": clusterID, "deleted": true})
 }
 
 func (h *Handler) Scale(w http.ResponseWriter, r *http.Request) {

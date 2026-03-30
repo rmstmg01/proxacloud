@@ -53,6 +53,26 @@ func (h *Handler) ListCredentials(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.ListCredentials())
 }
 
+func (h *Handler) DeleteCredential(w http.ResponseWriter, r *http.Request) {
+	credentialID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credential id"})
+		return
+	}
+
+	if err := h.service.DeleteCredential(credentialID); err != nil {
+		switch {
+		case errors.Is(err, ErrCredentialNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"id": credentialID, "deleted": true})
+}
+
 func (h *Handler) DiscoverNodes(w http.ResponseWriter, r *http.Request) {
 	credentialID, err := parseIDParam(r, "id")
 	if err != nil {

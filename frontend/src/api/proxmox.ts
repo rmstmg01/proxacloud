@@ -14,6 +14,9 @@ export const createCredential = (body: {
   password?: string;
 }) => client.post<ProxmoxCredential>('/proxmox/credentials', body).then((r) => r.data);
 
+export const deleteCredential = (credentialId: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/proxmox/credentials/${credentialId}`).then((r) => r.data);
+
 export const discoverNodes = (credentialId: number) =>
   client
     .post<ProxmoxNode[]>(`/proxmox/credentials/${credentialId}/discover-nodes`)

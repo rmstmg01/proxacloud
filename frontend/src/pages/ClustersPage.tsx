@@ -1,17 +1,25 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Plus, ChevronRight } from 'lucide-react';
-import { getClusters } from '../api/clusters';
+import { deleteCluster, getClusters } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
 import { PageSpinner } from '../components/ui/Spinner';
 import { ErrorMessage } from '../components/ui/Alert';
+import { Button } from '../components/ui/Button';
 
 export function ClustersPage() {
+  const queryClient = useQueryClient();
   const { data: clusters, isLoading, error } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
+  });
+  const deleteMutation = useMutation({
+    mutationFn: deleteCluster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clusters'] });
+    },
   });
 
   return (
@@ -31,6 +39,7 @@ export function ClustersPage() {
       />
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
+      {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       {clusters && (
         <Card>
           {clusters.length === 0 ? (
@@ -73,12 +82,26 @@ export function ClustersPage() {
                         {new Date(c.created_at).toLocaleDateString()}
                       </td>
                       <td className="px-6 py-4">
-                        <Link
-                          to={`/clusters/${c.id}`}
-                          className="inline-flex items-center text-indigo-600 hover:text-indigo-700"
-                        >
-                          Details <ChevronRight className="h-4 w-4" />
-                        </Link>
+                        <div className="flex items-center justify-end gap-2">
+                          <Link
+                            to={`/clusters/${c.id}`}
+                            className="inline-flex items-center text-indigo-600 hover:text-indigo-700"
+                          >
+                            Details <ChevronRight className="h-4 w-4" />
+                          </Link>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Delete cluster \"${c.name}\"? This removes cluster metadata, nodes, and run history.`)) {
+                                deleteMutation.mutate(c.id);
+                              }
+                            }}
+                            loading={deleteMutation.isPending && deleteMutation.variables === c.id}
+                          >
+                            Delete
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}

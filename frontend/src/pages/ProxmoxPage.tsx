@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
-import { getCredentials, createCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
+import { getCredentials, createCredential, deleteCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent } from '../components/ui/Card';
@@ -89,6 +89,14 @@ export function ProxmoxPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
   });
 
+  const deleteCredMut = useMutation({
+    mutationFn: deleteCredential,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxmox-credentials'] });
+      qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+    },
+  });
+
   const toggleMut = useMutation({
     mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => toggleNode(id, enabled),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
@@ -145,14 +153,28 @@ export function ProxmoxPage() {
                             )}
                           </td>
                           <td className="px-6 py-3">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => discoverMut.mutate(c.id)}
-                              loading={discoverMut.isPending && discoverMut.variables === c.id}
-                            >
-                              <RefreshCw className="h-3.5 w-3.5" /> Discover Nodes
-                            </Button>
+                            <div className="flex items-center gap-2 justify-end">
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => discoverMut.mutate(c.id)}
+                                loading={discoverMut.isPending && discoverMut.variables === c.id}
+                              >
+                                <RefreshCw className="h-3.5 w-3.5" /> Discover Nodes
+                              </Button>
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => {
+                                  if (window.confirm(`Delete credential \"${c.name}\"? This also removes its discovered nodes.`)) {
+                                    deleteCredMut.mutate(c.id);
+                                  }
+                                }}
+                                loading={deleteCredMut.isPending && deleteCredMut.variables === c.id}
+                              >
+                                Delete
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -168,6 +190,7 @@ export function ProxmoxPage() {
             </Alert>
           )}
           {discoverMut.error && <ErrorMessage error={discoverMut.error} />}
+          {deleteCredMut.error && <ErrorMessage error={deleteCredMut.error} />}
         </section>
       )}
 

@@ -86,6 +86,18 @@ func (s *Service) CreateCredential(in Credential) (Credential, error) {
 	return out, nil
 }
 
+func (s *Service) DeleteCredential(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM proxmox_credentials WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete proxmox credential: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrCredentialNotFound
+	}
+	return nil
+}
+
 func (s *Service) ListCredentials() []Credential {
 	rows, err := s.db.Query(
 		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at

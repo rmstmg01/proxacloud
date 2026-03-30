@@ -1,8 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
-import { provisionCluster } from '../api/clusters';
+import { checkClusterName, provisionCluster } from '../api/clusters';
 import { getNetworks } from '../api/networks';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -13,6 +13,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
+  const [debouncedName, setDebouncedName] = useState('');
 
   const [form, setForm] = useState({
     name: '',
@@ -34,11 +35,28 @@ export function ProvisionClusterPage() {
 
   const mutation = useMutation({ mutationFn: provisionCluster });
 
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedName(form.name.trim());
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [form.name]);
+
+  const nameCheckQuery = useQuery({
+    queryKey: ['cluster-name-check', debouncedName],
+    queryFn: () => checkClusterName(debouncedName),
+    enabled: debouncedName.length > 0,
+    retry: 0,
+  });
+
+  const isNameTaken = nameCheckQuery.data?.exists ?? false;
+
   const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (isNameTaken) return;
     const result = await mutation.mutateAsync({
       ...form,
       network_profile_id: Number(form.network_profile_id),
@@ -70,6 +88,12 @@ export function ProvisionClusterPage() {
               label="Cluster name"
               value={form.name}
               onChange={(e) => setField('name', e.target.value)}
+              error={isNameTaken ? 'Cluster name already exists' : undefined}
+              helperText={
+                debouncedName.length > 0 && !isNameTaken && !nameCheckQuery.isFetching
+                  ? 'Cluster name is available'
+                  : undefined
+              }
               required
               placeholder="homelab-prod"
             />
@@ -228,9 +252,15 @@ export function ProvisionClusterPage() {
           </Alert>
         )}
         {mutation.error && <ErrorMessage error={mutation.error} />}
+        {nameCheckQuery.error && <ErrorMessage error={nameCheckQuery.error} />}
 
         <div className="flex gap-3">
-          <Button type="submit" loading={mutation.isPending} size="lg">
+          <Button
+            type="submit"
+            loading={mutation.isPending}
+            disabled={isNameTaken || nameCheckQuery.isFetching}
+            size="lg"
+          >
             Provision Cluster
           </Button>
           <Button type="button" variant="secondary" size="lg" onClick={() => navigate('/clusters')}>
