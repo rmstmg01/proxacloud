@@ -2,6 +2,7 @@ import client from './client';
 import type {
   ClusterSummary,
   ProvisionRunRecord,
+    ClusterNodeRecord,
   ProvisionResponse,
   BootstrapResponse,
   ScaleResponse,
@@ -31,6 +32,9 @@ export const deleteCluster = (id: number) =>
 
 export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);
+export const getClusterNodes = (id: number) =>
+  client.get<ClusterNodeRecord[]>(`/clusters/${id}/nodes`).then((r) => r.data);
+
 
 export const provisionCluster = (body: {
   name: string;
@@ -39,6 +43,7 @@ export const provisionCluster = (body: {
   worker_count: number;
   network_profile_id: number;
   proxmox_credential_id: number;
+  node_ip_pool_start: string;
   kubernetes_version: string;
   ubuntu_image: string;
   ssh_public_key: string;

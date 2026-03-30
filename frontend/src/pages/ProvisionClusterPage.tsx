@@ -24,6 +24,7 @@ export function ProvisionClusterPage() {
     worker_count: 3,
     network_profile_id: 0,
     proxmox_credential_id: 0,
+    node_ip_pool_start: '',
     kubernetes_version: 'v1.31.4',
     ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
     ssh_public_key: '',
@@ -155,6 +156,14 @@ export function ProvisionClusterPage() {
               value={form.kubernetes_version}
               onChange={(e) => setField('kubernetes_version', e.target.value)}
               placeholder="v1.31.4"
+              required
+            />
+            <Input
+              label="Node IP pool start"
+              value={form.node_ip_pool_start}
+              onChange={(e) => setField('node_ip_pool_start', e.target.value)}
+              placeholder="192.168.8.100"
+              helperText="First IP to assign; each VM gets the next free address"
               required
             />
           </CardContent>

@@ -1,6 +1,7 @@
 package clusters
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,7 +65,11 @@ type ProvisionRequest struct {
 	WorkerRAMMB         int    `json:"worker_ram_mb"`
 	WorkerDisk          int    `json:"worker_disk_gb"`
 	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
-	Apply               bool   `json:"apply"`
+	// NodeIPPoolStart is the first IP in the sequential pool to assign to VMs.
+	// For example "192.168.8.100" assigns .100, .101, .102 … to each VM.
+	// The subnet mask is derived from the selected network profile CIDR.
+	NodeIPPoolStart string `json:"node_ip_pool_start"`
+	Apply           bool   `json:"apply"`
 }
 
 type ProvisionResponse struct {
@@ -96,12 +102,12 @@ type BootstrapResponse struct {
 }
 
 type ClusterNodeRecord struct {
-	ID              int64
-	Role            string
-	RoleIndex       int
-	VMName          string
-	IPAddress       string
-	ProxmoxNodeName string
+	ID              int64  `json:"id"`
+	Role            string `json:"role"`
+	RoleIndex       int    `json:"role_index"`
+	VMName          string `json:"vm_name"`
+	IPAddress       string `json:"ip_address"`
+	ProxmoxNodeName string `json:"proxmox_node_name"`
 }
 
 type ClusterSummary struct {
@@ -285,9 +291,23 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 
+	// Build the IP iterator if a pool start was given.
+	ipIter, iterErr := newIPIterator(req.NodeIPPoolStart)
+	if iterErr != nil {
+		return ProvisionResponse{}, iterErr
+	}
+
 	vms := make([]terraform.VMNode, 0, len(plan.Placements))
 	for _, placement := range plan.Placements {
 		vmName := buildVMName(req.Name, placement.Role, placement.Index)
+		assignedIP := ""
+		if ipIter != nil {
+			ip, err := ipIter.nextAvailable()
+			if err != nil {
+				return ProvisionResponse{}, fmt.Errorf("ip pool exhausted for %s: %w", vmName, err)
+			}
+			assignedIP = ip
+		}
 		vms = append(vms, terraform.VMNode{
 			VMName:          vmName,
 			Role:            placement.Role,
@@ -296,6 +316,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			CPU:             pickCPU(req, placement.Role),
 			MemoryMB:        pickMemory(req, placement.Role),
 			DiskGB:          pickDisk(req, placement.Role),
+			IPAddress:       assignedIP,
 		})
 
 		if err := s.insertClusterNode(clusterID, placement, vmName); err != nil {
@@ -490,6 +511,13 @@ func (s *Service) ListClusters() ([]ClusterSummary, error) {
 
 func (s *Service) GetCluster(clusterID int64) (ClusterSummary, error) {
 	return s.getClusterSummary(clusterID)
+}
+
+func (s *Service) ListClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	return s.getClusterNodes(clusterID)
 }
 
 func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
@@ -1059,8 +1087,91 @@ func validateProvisionRequest(req ProvisionRequest) error {
 	if req.ProxmoxCredentialID <= 0 {
 		return errors.New("proxmox_credential_id is required")
 	}
+	if strings.TrimSpace(req.NodeIPPoolStart) == "" {
+		return errors.New("node_ip_pool_start is required (e.g. 192.168.8.100)")
+	}
+	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)) == nil {
+		return errors.New("node_ip_pool_start is not a valid IP address")
+	}
 
 	return nil
+}
+
+// ipIterator hands out sequential IPs starting from a base address,
+// skipping any that are already responding on the network.
+type ipIterator struct {
+	current net.IP
+}
+
+func newIPIterator(start string) (*ipIterator, error) {
+	start = strings.TrimSpace(start)
+	if start == "" {
+		return nil, nil
+	}
+	ip := net.ParseIP(start).To4()
+	if ip == nil {
+		return nil, fmt.Errorf("invalid node_ip_pool_start %q", start)
+	}
+	clone := make(net.IP, 4)
+	copy(clone, ip)
+	return &ipIterator{current: clone}, nil
+}
+
+// nextAvailable advances until it finds an IP that does not respond to ping,
+// then returns that IP. It tries up to 64 addresses before giving up.
+func (it *ipIterator) nextAvailable() (string, error) {
+	const maxSkip = 64
+	for i := 0; i < maxSkip; i++ {
+		ip := it.advance()
+		if !isIPInUse(ip) {
+			return ip, nil
+		}
+	}
+	return "", errors.New("no free IP found in the next 64 addresses of the pool")
+}
+
+// advance returns the current IP and increments to the next one.
+func (it *ipIterator) advance() string {
+	addr := make(net.IP, 4)
+	copy(addr, it.current)
+	result := addr.String()
+	for i := 3; i >= 0; i-- {
+		it.current[i]++
+		if it.current[i] != 0 {
+			break
+		}
+	}
+	return result
+}
+
+// isIPInUse probes the given IP address with a single ICMP ping (1 s timeout).
+// Returns true if the host is alive (IP already taken).
+func isIPInUse(ip string) bool {
+	// Try ICMP ping first — works on Linux hosts/containers with NET_RAW or
+	// when run as root (as is typical in Docker containers).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "1", ip)
+	if err := cmd.Run(); err == nil {
+		return true // got a reply — IP is in use
+	}
+
+	// Fallback: try a short TCP dial to port 22 (SSH).
+	// "connection refused" means the host is up; timeout means it is down.
+	conn, err := net.DialTimeout("tcp", ip+":22", 500*time.Millisecond)
+	if err == nil {
+		conn.Close()
+		return true
+	}
+	// If the error is not a timeout, the host likely sent a TCP RST → it is up.
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return false
+	}
+	// "connection refused" or similar → host is up
+	if strings.Contains(err.Error(), "refused") {
+		return true
+	}
+	return false
 }
 
 func validateBootstrapRequest(req BootstrapRequest) error {

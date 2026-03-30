@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
@@ -15,7 +15,8 @@ import {
   createEtcdSnapshot,
   getEtcdSnapshots,
   restoreEtcdSnapshot,
-} from '../api/clusters';
+    getClusterNodes,
+  } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -35,6 +36,33 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
 ];
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split('.').map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
+  return (((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]) >>> 0;
+}
+
+function intToIPv4(value: number): string {
+  return [
+    (value >>> 24) & 255,
+    (value >>> 16) & 255,
+    (value >>> 8) & 255,
+    value & 255,
+  ].join('.');
+}
+
+function suggestVip(ips: string[]): string {
+  const nums = ips.map(ipv4ToInt).filter((n): n is number => n !== null);
+  if (nums.length === 0) return '';
+  let candidate = Math.max(...nums) + 1;
+  while (candidate < 0xffffffff) {
+    const lastOctet = candidate & 255;
+    if (lastOctet !== 0 && lastOctet !== 255) return intToIPv4(candidate);
+    candidate += 1;
+  }
+  return '';
+}
 
 // ─── Sub-tabs ────────────────────────────────────────────────────────────────
 
@@ -122,6 +150,28 @@ function BootstrapTab({ id }: { id: number }) {
   });
   const mutation = useMutation({ mutationFn: (body: Parameters<typeof bootstrapCluster>[1]) => bootstrapCluster(id, body) });
 
+  const nodesQuery = useQuery({
+    queryKey: ['cluster-nodes', id],
+    queryFn: () => getClusterNodes(id),
+  });
+
+  useEffect(() => {
+    if (!nodesQuery.data || nodesQuery.data.length === 0) return;
+    const lines = nodesQuery.data
+      .filter((n) => n.ip_address)
+      .map((n) => `${n.vm_name} ${n.ip_address}`);
+    if (lines.length === 0) return;
+    const vipSuggestion = suggestVip(nodesQuery.data.map((n) => n.ip_address).filter(Boolean));
+    setForm((f) => {
+      if (f.node_ips_raw && f.control_plane_vip) return f; // don't overwrite user edits
+      return {
+        ...f,
+        node_ips_raw: f.node_ips_raw || lines.join('\n'),
+        control_plane_vip: f.control_plane_vip || vipSuggestion,
+      };
+    });
+  }, [nodesQuery.data]);
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const node_ips: Record<string, string> = {};
@@ -138,6 +188,14 @@ function BootstrapTab({ id }: { id: number }) {
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
           <Input label="SSH user" value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} required />
+            {nodesQuery.isLoading && (
+              <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>
+            )}
+            {nodesQuery.data && nodesQuery.data.some((n) => n.ip_address) && form.node_ips_raw && (
+              <Alert variant="info" title="IPs pre-filled from provisioning">
+                Node names and IPs were detected from the last provisioning run. Review and correct if needed before bootstrapping.
+              </Alert>
+            )}
           <Input label="SSH private key path" value={form.ssh_private_key_path} onChange={(e) => setForm({ ...form, ssh_private_key_path: e.target.value })} placeholder="/home/user/.ssh/id_ed25519" required />
           <Input label="Control plane VIP" value={form.control_plane_vip} onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })} placeholder="192.168.8.20" required />
           <Input label="Pod CIDR" value={form.pod_cidr} onChange={(e) => setForm({ ...form, pod_cidr: e.target.value })} required />

@@ -90,6 +90,15 @@ export interface ClusterSummary {
   updated_at: string;
 }
 
+export interface ClusterNodeRecord {
+  id: number;
+  role: string;
+  role_index: number;
+  vm_name: string;
+  ip_address: string;
+  proxmox_node_name: string;
+}
+
 export interface ProvisionRunRecord {
   id: number;
   action: string;
