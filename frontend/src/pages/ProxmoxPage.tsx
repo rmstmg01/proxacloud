@@ -1,0 +1,250 @@
+import { useState, type FormEvent } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
+import { getCredentials, createCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
+import { useAuth } from '../context/AuthContext';
+import { Layout, PageHeader } from '../components/Layout';
+import { Card, CardContent } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
+import { Input, Select } from '../components/ui/Input';
+import { Badge, StatusBadge } from '../components/ui/Badge';
+import { Modal } from '../components/ui/Modal';
+import { Alert, ErrorMessage } from '../components/ui/Alert';
+import { PageSpinner } from '../components/ui/Spinner';
+
+type AuthMethod = 'token' | 'password';
+
+function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('token');
+  const [form, setForm] = useState({
+    name: '',
+    endpoint: 'https://pve.local:8006',
+    insecure_tls: false,
+    api_token_id: '',
+    api_token_secret: '',
+    username: '',
+    password: '',
+  });
+  const mutation = useMutation({ mutationFn: createCredential, onSuccess });
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const payload =
+      authMethod === 'token'
+        ? { name: form.name, endpoint: form.endpoint, insecure_tls: form.insecure_tls, api_token_id: form.api_token_id, api_token_secret: form.api_token_secret }
+        : { name: form.name, endpoint: form.endpoint, insecure_tls: form.insecure_tls, username: form.username, password: form.password };
+    mutation.mutate(payload);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <Input label="Name" value={form.name} onChange={(e) => set('name', e.target.value)} required placeholder="pve-cluster" />
+      <Input label="Endpoint" value={form.endpoint} onChange={(e) => set('endpoint', e.target.value)} required placeholder="https://pve.local:8006" />
+      <Select label="Auth method" value={authMethod} onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}>
+        <option value="token">API Token (recommended)</option>
+        <option value="password">Username / Password</option>
+      </Select>
+      {authMethod === 'token' ? (
+        <>
+          <Input label="Token ID" value={form.api_token_id} onChange={(e) => set('api_token_id', e.target.value)} placeholder="root@pam!mytoken" required />
+          <Input label="Token secret" type="password" value={form.api_token_secret} onChange={(e) => set('api_token_secret', e.target.value)} required />
+        </>
+      ) : (
+        <>
+          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="root@pam" required />
+          <Input label="Password" type="password" value={form.password} onChange={(e) => set('password', e.target.value)} required />
+        </>
+      )}
+      <label className="flex items-center gap-3">
+        <input type="checkbox" checked={form.insecure_tls} onChange={(e) => set('insecure_tls', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+        <span className="text-sm text-slate-700">Skip TLS verification</span>
+      </label>
+      {mutation.error && <ErrorMessage error={mutation.error} />}
+      <Button type="submit" loading={mutation.isPending}>Add Credential</Button>
+    </form>
+  );
+}
+
+export function ProxmoxPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'super_admin';
+  const qc = useQueryClient();
+  const [addCredOpen, setAddCredOpen] = useState(false);
+
+  const { data: credentials, isLoading: loadingCreds } = useQuery({
+    queryKey: ['proxmox-credentials'],
+    queryFn: getCredentials,
+    enabled: isAdmin,
+  });
+
+  const { data: nodes, isLoading: loadingNodes } = useQuery({
+    queryKey: ['proxmox-nodes'],
+    queryFn: getNodes,
+  });
+
+  const discoverMut = useMutation({
+    mutationFn: discoverNodes,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
+  });
+
+  const toggleMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => toggleNode(id, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
+  });
+
+  return (
+    <Layout>
+      <PageHeader title="Proxmox" description="Manage Proxmox credentials and node inventory" />
+
+      {/* Credentials (super_admin only) */}
+      {isAdmin && (
+        <section className="mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-slate-800">Credentials</h2>
+            <Button onClick={() => setAddCredOpen(true)} size="sm">
+              <Plus className="h-4 w-4" /> Add Credential
+            </Button>
+          </div>
+          {loadingCreds ? (
+            <PageSpinner />
+          ) : (
+            <Card>
+              {!credentials || credentials.length === 0 ? (
+                <CardContent><p className="text-sm text-slate-400">No credentials added yet.</p></CardContent>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50">
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Endpoint</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Auth</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">TLS</th>
+                        <th className="px-6 py-3" />
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {credentials.map((c) => (
+                        <tr key={c.id} className="hover:bg-slate-50">
+                          <td className="px-6 py-3 font-medium text-slate-900">{c.name}</td>
+                          <td className="px-6 py-3 text-slate-600 font-mono text-xs">{c.endpoint}</td>
+                          <td className="px-6 py-3">
+                            {c.api_token_id ? (
+                              <Badge variant="info">API Token</Badge>
+                            ) : (
+                              <Badge variant="default">Password</Badge>
+                            )}
+                          </td>
+                          <td className="px-6 py-3">
+                            {c.insecure_tls ? (
+                              <Badge variant="warning">insecure</Badge>
+                            ) : (
+                              <Badge variant="success">verified</Badge>
+                            )}
+                          </td>
+                          <td className="px-6 py-3">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => discoverMut.mutate(c.id)}
+                              loading={discoverMut.isPending && discoverMut.variables === c.id}
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" /> Discover Nodes
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          )}
+          {discoverMut.data && (
+            <Alert variant="success" className="mt-3">
+              Discovered {discoverMut.data.length} node(s).
+            </Alert>
+          )}
+          {discoverMut.error && <ErrorMessage error={discoverMut.error} />}
+        </section>
+      )}
+
+      {/* Nodes */}
+      <section>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-slate-800">Nodes</h2>
+          <Button variant="secondary" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] })}>
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+        </div>
+        {loadingNodes ? (
+          <PageSpinner />
+        ) : (
+          <Card>
+            {!nodes || nodes.length === 0 ? (
+              <CardContent>
+                <p className="text-sm text-slate-400">
+                  No nodes discovered yet.
+                  {isAdmin ? ' Add credentials and click "Discover Nodes".' : ' Ask an admin to discover nodes.'}
+                </p>
+              </CardContent>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50">
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Node</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Credential</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">CPU</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Memory</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Enabled</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {nodes.map((n) => {
+                      const memGb = (n.memory_total_bytes / 1073741824).toFixed(1);
+                      const usedGb = (n.memory_used_bytes / 1073741824).toFixed(1);
+                      return (
+                        <tr key={n.id} className="hover:bg-slate-50">
+                          <td className="px-6 py-3 font-medium text-slate-900">{n.node_name}</td>
+                          <td className="px-6 py-3 text-slate-500">{n.credential_name ?? `#${n.credential_id}`}</td>
+                          <td className="px-6 py-3"><StatusBadge status={n.status} /></td>
+                          <td className="px-6 py-3 text-slate-600">{n.cpu_count} cores</td>
+                          <td className="px-6 py-3 text-slate-600">{usedGb} / {memGb} GB</td>
+                          <td className="px-6 py-3">
+                            {isAdmin ? (
+                              <button
+                                onClick={() => toggleMut.mutate({ id: n.id, enabled: !n.enabled })}
+                                disabled={toggleMut.isPending}
+                                className="text-slate-500 hover:text-indigo-600 transition-colors disabled:opacity-50"
+                              >
+                                {n.enabled ? (
+                                  <ToggleRight className="h-6 w-6 text-emerald-500" />
+                                ) : (
+                                  <ToggleLeft className="h-6 w-6 text-slate-400" />
+                                )}
+                              </button>
+                            ) : (
+                              <Badge variant={n.enabled ? 'success' : 'default'}>{n.enabled ? 'yes' : 'no'}</Badge>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        )}
+      </section>
+
+      <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Proxmox Credential">
+        <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); }} />
+      </Modal>
+    </Layout>
+  );
+}

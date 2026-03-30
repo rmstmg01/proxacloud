@@ -1,0 +1,458 @@
+import { useState, type FormEvent } from 'react';
+import { useParams, Link } from 'react-router-dom';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
+import {
+  getCluster,
+  getClusterRuns,
+  bootstrapCluster,
+  scaleCluster,
+  upgradeCluster,
+  replaceNode,
+  rotateKubeconfig,
+  deployObservability,
+  getObservability,
+  createEtcdSnapshot,
+  getEtcdSnapshots,
+  restoreEtcdSnapshot,
+} from '../api/clusters';
+import { Layout, PageHeader } from '../components/Layout';
+import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
+import { StatusBadge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Input, Textarea, Select } from '../components/ui/Input';
+import { Alert, ErrorMessage } from '../components/ui/Alert';
+import { PageSpinner } from '../components/ui/Spinner';
+import { Modal } from '../components/ui/Modal';
+
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'observability' | 'etcd';
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'runs', label: 'Run History' },
+  { key: 'bootstrap', label: 'Bootstrap' },
+  { key: 'day2', label: 'Day-2 Ops' },
+  { key: 'observability', label: 'Observability' },
+  { key: 'etcd', label: 'etcd Backup' },
+];
+
+// ─── Sub-tabs ────────────────────────────────────────────────────────────────
+
+function OverviewTab({ id }: { id: number }) {
+  const { data: cluster } = useQuery({ queryKey: ['cluster', id], queryFn: () => getCluster(id) });
+  if (!cluster) return <PageSpinner />;
+  const fields: [string, string][] = [
+    ['Name', cluster.name],
+    ['Status', cluster.status],
+    ['Topology', cluster.topology_type],
+    ['Kubernetes Version', cluster.kubernetes_version],
+    ['Control Planes', String(cluster.control_plane_count)],
+    ['Workers', String(cluster.worker_count)],
+    ['Network Profile ID', String(cluster.network_profile_id)],
+    ['Created', new Date(cluster.created_at).toLocaleString()],
+    ['Updated', new Date(cluster.updated_at).toLocaleString()],
+  ];
+  return (
+    <Card>
+      <CardHeader><CardTitle>Cluster Details</CardTitle></CardHeader>
+      <div className="divide-y divide-slate-100">
+        {fields.map(([label, value]) => (
+          <div key={label} className="px-6 py-3 flex items-center">
+            <span className="w-48 text-sm text-slate-500 font-medium flex-shrink-0">{label}</span>
+            {label === 'Status' ? (
+              <StatusBadge status={value} />
+            ) : (
+              <span className="text-sm text-slate-900">{value}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function RunsTab({ id }: { id: number }) {
+  const { data: runs, isLoading } = useQuery({ queryKey: ['cluster-runs', id], queryFn: () => getClusterRuns(id) });
+  if (isLoading) return <PageSpinner />;
+  return (
+    <Card>
+      <CardHeader><CardTitle>Provision Runs</CardTitle></CardHeader>
+      {!runs || runs.length === 0 ? (
+        <CardContent><p className="text-sm text-slate-400">No runs yet.</p></CardContent>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <th className="text-left px-6 py-3 font-medium text-slate-600">Action</th>
+                <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                <th className="text-left px-6 py-3 font-medium text-slate-600">Started</th>
+                <th className="text-left px-6 py-3 font-medium text-slate-600">Finished</th>
+                <th className="text-left px-6 py-3 font-medium text-slate-600">Work Dir</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {runs.map((r) => (
+                <tr key={r.id}>
+                  <td className="px-6 py-3 font-medium text-slate-900">{r.action}</td>
+                  <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
+                  <td className="px-6 py-3 text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
+                  <td className="px-6 py-3 text-slate-500">{r.finished_at ? new Date(r.finished_at).toLocaleString() : '—'}</td>
+                  <td className="px-6 py-3 text-slate-500 font-mono text-xs truncate max-w-xs">{r.work_dir}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function BootstrapTab({ id }: { id: number }) {
+  const [form, setForm] = useState({
+    ssh_user: 'ubuntu',
+    ssh_private_key_path: '',
+    control_plane_vip: '',
+    pod_cidr: '10.244.0.0/16',
+    service_cidr: '10.96.0.0/12',
+    cni: 'calico',
+    node_ips_raw: '',
+    apply: false,
+  });
+  const mutation = useMutation({ mutationFn: (body: Parameters<typeof bootstrapCluster>[1]) => bootstrapCluster(id, body) });
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const node_ips: Record<string, string> = {};
+    for (const line of form.node_ips_raw.split('\n')) {
+      const [name, ip] = line.trim().split(/\s+/);
+      if (name && ip) node_ips[name] = ip;
+    }
+    await mutation.mutateAsync({ ...form, node_ips, apply: form.apply });
+  };
+
+  return (
+    <Card>
+      <CardHeader><CardTitle>Bootstrap Kubernetes</CardTitle></CardHeader>
+      <CardContent>
+        <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
+          <Input label="SSH user" value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} required />
+          <Input label="SSH private key path" value={form.ssh_private_key_path} onChange={(e) => setForm({ ...form, ssh_private_key_path: e.target.value })} placeholder="/home/user/.ssh/id_ed25519" required />
+          <Input label="Control plane VIP" value={form.control_plane_vip} onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })} placeholder="192.168.8.20" required />
+          <Input label="Pod CIDR" value={form.pod_cidr} onChange={(e) => setForm({ ...form, pod_cidr: e.target.value })} required />
+          <Input label="Service CIDR" value={form.service_cidr} onChange={(e) => setForm({ ...form, service_cidr: e.target.value })} required />
+          <Select label="CNI" value={form.cni} onChange={(e) => setForm({ ...form, cni: e.target.value })}>
+            <option value="calico">Calico</option>
+            <option value="flannel">Flannel</option>
+            <option value="cilium">Cilium</option>
+          </Select>
+          <Textarea
+            label="Node IPs (one per line: vm-name ip)"
+            value={form.node_ips_raw}
+            onChange={(e) => setForm({ ...form, node_ips_raw: e.target.value })}
+            rows={4}
+            placeholder={'homelab-prod-cp-1 192.168.8.31\nhomelab-prod-wk-1 192.168.8.41'}
+            helperText="Format: vm-name IP, one per line"
+          />
+          <label className="flex items-center gap-3">
+            <input type="checkbox" checked={form.apply} onChange={(e) => setForm({ ...form, apply: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+            <span className="text-sm text-slate-700">Run ansible-playbook immediately</span>
+          </label>
+          {mutation.data && (
+            <Alert variant="success" title="Bootstrap triggered">
+              Status: {mutation.data.status}
+              {mutation.data.warnings?.length > 0 && (
+                <ul className="mt-1 list-disc list-inside">{mutation.data.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              )}
+            </Alert>
+          )}
+          {mutation.error && <ErrorMessage error={mutation.error} />}
+          <Button type="submit" loading={mutation.isPending}>Bootstrap</Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Day2Tab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const scaleMut = useMutation({ mutationFn: (n: number) => scaleCluster(id, n), onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster', id] }) });
+  const upgradeMut = useMutation({ mutationFn: (v: string) => upgradeCluster(id, v), onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster', id] }) });
+  const replaceMut = useMutation({ mutationFn: (b: { failed_vm_name: string; new_proxmox_node_name: string; new_ip_address: string }) => replaceNode(id, b) });
+  const rotateMut = useMutation({ mutationFn: (h: number) => rotateKubeconfig(id, h) });
+
+  const [scaleTarget, setScaleTarget] = useState(3);
+  const [upgradeVer, setUpgradeVer] = useState('v1.32.2');
+  const [replaceForm, setReplaceForm] = useState({ failed_vm_name: '', new_proxmox_node_name: '', new_ip_address: '' });
+  const [rotateTtl, setRotateTtl] = useState(24);
+
+  return (
+    <div className="space-y-6">
+      {/* Scale */}
+      <Card>
+        <CardHeader><CardTitle>Scale Workers</CardTitle></CardHeader>
+        <CardContent className="flex items-end gap-3">
+          <Input label="Target worker count" type="number" min={1} value={scaleTarget} onChange={(e) => setScaleTarget(Number(e.target.value))} className="w-40" />
+          <Button onClick={() => scaleMut.mutate(scaleTarget)} loading={scaleMut.isPending}>Scale</Button>
+          {scaleMut.data && <Alert variant="success" className="flex-1">Workers: {scaleMut.data.previous_worker_count} → {scaleMut.data.new_worker_count}</Alert>}
+          {scaleMut.error && <ErrorMessage error={scaleMut.error} />}
+        </CardContent>
+      </Card>
+
+      {/* Upgrade */}
+      <Card>
+        <CardHeader><CardTitle>Upgrade Kubernetes</CardTitle></CardHeader>
+        <CardContent className="flex items-end gap-3">
+          <Input label="Target version" value={upgradeVer} onChange={(e) => setUpgradeVer(e.target.value)} placeholder="v1.32.2" className="w-48" />
+          <Button onClick={() => upgradeMut.mutate(upgradeVer)} loading={upgradeMut.isPending}>Upgrade</Button>
+          {upgradeMut.data && <Alert variant="success" className="flex-1">{upgradeMut.data.previous_version} → {upgradeMut.data.target_version}: {upgradeMut.data.status}</Alert>}
+          {upgradeMut.error && <ErrorMessage error={upgradeMut.error} />}
+        </CardContent>
+      </Card>
+
+      {/* Replace node */}
+      <Card>
+        <CardHeader><CardTitle>Replace Unhealthy Node</CardTitle></CardHeader>
+        <CardContent className="space-y-3 max-w-lg">
+          <Input label="Failed VM name" value={replaceForm.failed_vm_name} onChange={(e) => setReplaceForm({ ...replaceForm, failed_vm_name: e.target.value })} placeholder="homelab-prod-wk-3" />
+          <Input label="New Proxmox node" value={replaceForm.new_proxmox_node_name} onChange={(e) => setReplaceForm({ ...replaceForm, new_proxmox_node_name: e.target.value })} placeholder="pve-node-2" />
+          <Input label="New IP address" value={replaceForm.new_ip_address} onChange={(e) => setReplaceForm({ ...replaceForm, new_ip_address: e.target.value })} placeholder="192.168.8.53" />
+          <Button onClick={() => replaceMut.mutate(replaceForm)} loading={replaceMut.isPending}>Replace Node</Button>
+          {replaceMut.data && <Alert variant="success">{replaceMut.data.old_vm_name} → {replaceMut.data.new_vm_name}: {replaceMut.data.status}</Alert>}
+          {replaceMut.error && <ErrorMessage error={replaceMut.error} />}
+        </CardContent>
+      </Card>
+
+      {/* Rotate kubeconfig */}
+      <Card>
+        <CardHeader><CardTitle>Rotate Kubeconfig Token</CardTitle></CardHeader>
+        <CardContent className="space-y-3 max-w-lg">
+          <Input label="TTL (hours)" type="number" min={1} value={rotateTtl} onChange={(e) => setRotateTtl(Number(e.target.value))} className="w-32" />
+          <Button onClick={() => rotateMut.mutate(rotateTtl)} loading={rotateMut.isPending}>Rotate</Button>
+          {rotateMut.data && (
+            <Alert variant="success" title="Token rotated">
+              <p>Expires: {new Date(rotateMut.data.expires_at).toLocaleString()}</p>
+              <pre className="mt-2 text-xs bg-emerald-100 p-2 rounded break-all whitespace-pre-wrap">{rotateMut.data.token}</pre>
+            </Alert>
+          )}
+          {rotateMut.error && <ErrorMessage error={rotateMut.error} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ObservabilityTab({ id }: { id: number }) {
+  const deployMut = useMutation({ mutationFn: (b: Parameters<typeof deployObservability>[1]) => deployObservability(id, b) });
+  const { data: status, refetch } = useQuery({ queryKey: ['observability', id], queryFn: () => getObservability(id), retry: false });
+
+  const [form, setForm] = useState({
+    grafana_admin_user: 'admin',
+    grafana_admin_password: '',
+    retention_days: 15,
+    storage_class: 'longhorn',
+    apply: false,
+  });
+
+  const handleDeploy = async (e: FormEvent) => {
+    e.preventDefault();
+    await deployMut.mutateAsync(form);
+    refetch();
+  };
+
+  return (
+    <div className="space-y-6">
+      {status && (
+        <Card>
+          <CardHeader><CardTitle>Current Status</CardTitle></CardHeader>
+          <div className="divide-y divide-slate-100">
+            {[
+              ['Status', <StatusBadge key="s" status={status.status} />],
+              ['Dashboard URL', status.dashboard_url ? <a key="u" href={status.dashboard_url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline text-sm">{status.dashboard_url}</a> : '—'],
+              ['Grafana User', status.grafana_admin_user],
+              ['Retention', `${status.retention_days} days`],
+              ['Storage Class', status.storage_class],
+              ['Updated', new Date(status.updated_at).toLocaleString()],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="flex items-center px-6 py-3">
+                <span className="w-40 text-sm text-slate-500 font-medium flex-shrink-0">{label}</span>
+                <span className="text-sm text-slate-900">{value}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader><CardTitle>Deploy Observability Stack</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleDeploy} className="space-y-4 max-w-xl">
+            <Input label="Grafana admin user" value={form.grafana_admin_user} onChange={(e) => setForm({ ...form, grafana_admin_user: e.target.value })} required />
+            <Input label="Grafana admin password" type="password" value={form.grafana_admin_password} onChange={(e) => setForm({ ...form, grafana_admin_password: e.target.value })} required />
+            <Input label="Retention days" type="number" min={1} value={form.retention_days} onChange={(e) => setForm({ ...form, retention_days: Number(e.target.value) })} />
+            <Input label="Storage class" value={form.storage_class} onChange={(e) => setForm({ ...form, storage_class: e.target.value })} placeholder="longhorn" />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.apply} onChange={(e) => setForm({ ...form, apply: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Apply manifests immediately</span>
+            </label>
+            {deployMut.data && <Alert variant="success">Status: {deployMut.data.status}</Alert>}
+            {deployMut.error && <ErrorMessage error={deployMut.error} />}
+            <Button type="submit" loading={deployMut.isPending}>Deploy</Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function EtcdTab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const { data: snapshots, isLoading } = useQuery({ queryKey: ['etcd-snapshots', id], queryFn: () => getEtcdSnapshots(id) });
+  const snapshotMut = useMutation({ mutationFn: (b: { storage_target: string; apply: boolean }) => createEtcdSnapshot(id, b), onSuccess: () => qc.invalidateQueries({ queryKey: ['etcd-snapshots', id] }) });
+  const restoreMut = useMutation({ mutationFn: (b: { snapshot_id: number; apply: boolean }) => restoreEtcdSnapshot(id, b) });
+
+  const [storageTarget, setStorageTarget] = useState('backups/etcd');
+  const [applySnapshot, setApplySnapshot] = useState(false);
+  const [restoreModal, setRestoreModal] = useState<{ open: boolean; snapshotId: number }>({ open: false, snapshotId: 0 });
+  const [applyRestore, setApplyRestore] = useState(false);
+
+  return (
+    <div className="space-y-6">
+      {/* Create snapshot */}
+      <Card>
+        <CardHeader><CardTitle>Create Snapshot</CardTitle></CardHeader>
+        <CardContent className="flex items-end gap-3 flex-wrap">
+          <Input label="Storage target" value={storageTarget} onChange={(e) => setStorageTarget(e.target.value)} className="w-64" />
+          <label className="flex items-center gap-2 pb-1">
+            <input type="checkbox" checked={applySnapshot} onChange={(e) => setApplySnapshot(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+            <span className="text-sm text-slate-700">Apply now</span>
+          </label>
+          <Button onClick={() => snapshotMut.mutate({ storage_target: storageTarget, apply: applySnapshot })} loading={snapshotMut.isPending}>Create Snapshot</Button>
+          {snapshotMut.data && <Alert variant="success" className="w-full">Snapshot {snapshotMut.data.snapshot_name} created (ID: {snapshotMut.data.snapshot_id})</Alert>}
+          {snapshotMut.error && <ErrorMessage error={snapshotMut.error} />}
+        </CardContent>
+      </Card>
+
+      {/* Snapshots list */}
+      <Card>
+        <CardHeader><CardTitle>Snapshots</CardTitle></CardHeader>
+        {isLoading ? (
+          <CardContent><PageSpinner /></CardContent>
+        ) : !snapshots || snapshots.length === 0 ? (
+          <CardContent><p className="text-sm text-slate-400">No snapshots yet.</p></CardContent>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">ID</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
+                  <th className="px-6 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {snapshots.map((s) => (
+                  <tr key={s.id}>
+                    <td className="px-6 py-3 text-slate-500">{s.id}</td>
+                    <td className="px-6 py-3 font-medium text-slate-900">{s.snapshot_name}</td>
+                    <td className="px-6 py-3"><StatusBadge status={s.status} /></td>
+                    <td className="px-6 py-3 text-slate-500">{new Date(s.created_at).toLocaleString()}</td>
+                    <td className="px-6 py-3">
+                      <Button variant="danger" size="sm" onClick={() => setRestoreModal({ open: true, snapshotId: s.id })}>Restore</Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {restoreMut.data && <Alert variant="success">Restore status: {restoreMut.data.status}</Alert>}
+      {restoreMut.error && <ErrorMessage error={restoreMut.error} />}
+
+      <Modal open={restoreModal.open} onClose={() => setRestoreModal({ open: false, snapshotId: 0 })} title="Restore etcd Snapshot">
+        <p className="text-sm text-slate-600 mb-4">
+          Restore snapshot <strong>#{restoreModal.snapshotId}</strong>? This will overwrite the current cluster state.
+        </p>
+        <label className="flex items-center gap-3 mb-6">
+          <input type="checkbox" checked={applyRestore} onChange={(e) => setApplyRestore(e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+          <span className="text-sm text-slate-700">Apply restore immediately</span>
+        </label>
+        <div className="flex gap-3">
+          <Button
+            variant="danger"
+            loading={restoreMut.isPending}
+            onClick={async () => {
+              await restoreMut.mutateAsync({ snapshot_id: restoreModal.snapshotId, apply: applyRestore });
+              setRestoreModal({ open: false, snapshotId: 0 });
+            }}
+          >
+            Confirm Restore
+          </Button>
+          <Button variant="secondary" onClick={() => setRestoreModal({ open: false, snapshotId: 0 })}>Cancel</Button>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+export function ClusterDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const clusterId = Number(id);
+  const qc = useQueryClient();
+  const { data: cluster, isLoading } = useQuery({ queryKey: ['cluster', clusterId], queryFn: () => getCluster(clusterId) });
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
+
+  if (isLoading) return <Layout><PageSpinner /></Layout>;
+  if (!cluster) return <Layout><p className="text-slate-500">Cluster not found.</p></Layout>;
+
+  return (
+    <Layout>
+      <PageHeader
+        title={cluster.name}
+        description={`${cluster.topology_type} · ${cluster.kubernetes_version}`}
+        actions={
+          <div className="flex items-center gap-3">
+            <StatusBadge status={cluster.status} />
+            <Button variant="ghost" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['cluster', clusterId] })}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+            <Link to="/clusters" className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 text-sm">
+              <ArrowLeft className="h-4 w-4" /> Back
+            </Link>
+          </div>
+        }
+      />
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto">
+        {TABS.map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
+              activeTab === key
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'overview' && <OverviewTab id={clusterId} />}
+      {activeTab === 'runs' && <RunsTab id={clusterId} />}
+      {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
+      {activeTab === 'day2' && <Day2Tab id={clusterId} />}
+      {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
+      {activeTab === 'etcd' && <EtcdTab id={clusterId} />}
+    </Layout>
+  );
+}

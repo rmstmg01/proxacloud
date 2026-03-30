@@ -48,5 +48,16 @@ services:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: k8s-proxmox-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
 volumes:
   postgres_data:
