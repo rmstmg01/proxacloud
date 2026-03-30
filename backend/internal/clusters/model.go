@@ -334,6 +334,8 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			APITokenID:     cred.APITokenID,
 			APITokenSecret: cred.APITokenSecret,
 			InsecureTLS:    cred.InsecureTLS,
+			SSHUsername:    sshUserFrom(cred),
+			SSHPassword:    cred.Password,
 		}
 		runResult, runErr := s.terraformRunner.Apply(workspace, auth)
 		terraformOutput = runResult.Output
@@ -1018,6 +1020,19 @@ func (s *Service) RestoreEtcdSnapshot(clusterID int64, req RestoreEtcdSnapshotRe
 		Status:     status,
 		Warning:    warning,
 	}, nil
+}
+
+// sshUserFrom derives the SSH system username from a Proxmox credential.
+// API usernames are like "root@pam" or "user@realm"; for SSH we just want "root" / "user".
+// For API-token-only credentials the token ID format is "user@realm!token-name".
+func sshUserFrom(cred proxmox.Credential) string {
+	if cred.Username != "" {
+		return strings.SplitN(cred.Username, "@", 2)[0]
+	}
+	if cred.APITokenID != "" {
+		return strings.SplitN(cred.APITokenID, "@", 2)[0]
+	}
+	return ""
 }
 
 func validateProvisionRequest(req ProvisionRequest) error {

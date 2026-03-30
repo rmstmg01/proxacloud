@@ -53,6 +53,10 @@ type ProxmoxAuth struct {
 	APITokenID     string
 	APITokenSecret string
 	InsecureTLS    bool
+	// SSHUsername / SSHPassword are used by the bpg/proxmox provider to SSH
+	// into the Proxmox host for file uploads (e.g. cloud-init snippets).
+	SSHUsername string
+	SSHPassword string
 }
 
 // toEnv converts the auth struct to PROXMOX_VE_* environment variable strings.
@@ -66,6 +70,12 @@ func (a ProxmoxAuth) toEnv() []string {
 	} else if a.Username != "" {
 		env = append(env, "PROXMOX_VE_USERNAME="+a.Username)
 		env = append(env, "PROXMOX_VE_PASSWORD="+a.Password)
+	}
+	if a.SSHUsername != "" {
+		env = append(env, "PROXMOX_VE_SSH_USERNAME="+a.SSHUsername)
+	}
+	if a.SSHPassword != "" {
+		env = append(env, "PROXMOX_VE_SSH_PASSWORD="+a.SSHPassword)
 	}
 	return env
 }
@@ -227,6 +237,16 @@ const terraformMainTF = `terraform {
       source  = "bpg/proxmox"
       version = ">= 0.66.0"
     }
+  }
+}
+
+# Auth is supplied via PROXMOX_VE_* environment variables:
+#   PROXMOX_VE_ENDPOINT, PROXMOX_VE_INSECURE
+#   PROXMOX_VE_API_TOKEN   or   PROXMOX_VE_USERNAME + PROXMOX_VE_PASSWORD
+#   PROXMOX_VE_SSH_USERNAME, PROXMOX_VE_SSH_PASSWORD
+provider "proxmox" {
+  ssh {
+    agent = false
   }
 }
 
