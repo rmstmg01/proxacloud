@@ -123,6 +123,12 @@ type ClusterSummary struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+type clusterDeleteInfo struct {
+	Name                string
+	ProxmoxCredentialID sql.NullInt64
+	TerraformWorkDir    string
+}
+
 type ProvisionRunRecord struct {
 	ID         int64      `json:"id"`
 	Action     string     `json:"action"`
@@ -549,6 +555,48 @@ func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
 }
 
 func (s *Service) DeleteCluster(clusterID int64) error {
+	info, err := s.getClusterDeleteInfo(clusterID)
+	if err != nil {
+		return err
+	}
+
+	workDir := strings.TrimSpace(info.TerraformWorkDir)
+	if workDir == "" {
+		workDir = s.terraformRunner.WorkspaceDir(info.Name)
+	}
+
+	if info.ProxmoxCredentialID.Valid {
+		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(info.ProxmoxCredentialID.Int64)
+		if credErr != nil {
+			return fmt.Errorf("load proxmox credential for delete: %w", credErr)
+		}
+		auth := terraform.ProxmoxAuth{
+			Endpoint:       cred.Endpoint,
+			Username:       cred.Username,
+			Password:       cred.Password,
+			APITokenID:     cred.APITokenID,
+			APITokenSecret: cred.APITokenSecret,
+			InsecureTLS:    cred.InsecureTLS,
+			SSHUsername:    sshUserFrom(cred),
+			SSHPassword:    cred.Password,
+		}
+		if _, statErr := os.Stat(workDir); statErr == nil {
+			if _, destroyErr := s.terraformRunner.Destroy(workDir, auth); destroyErr != nil {
+				return fmt.Errorf("destroy cluster infrastructure: %w", destroyErr)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect terraform workspace: %w", statErr)
+		}
+	} else {
+		nodes, nodeErr := s.getClusterNodes(clusterID)
+		if nodeErr != nil {
+			return nodeErr
+		}
+		if len(nodes) > 0 {
+			return errors.New("cluster cannot be deleted safely because its proxmox credential metadata is missing; re-save the credential mapping or destroy the VMs manually first")
+		}
+	}
+
 	res, err := s.db.Exec(`DELETE FROM clusters WHERE id = $1`, clusterID)
 	if err != nil {
 		return fmt.Errorf("delete cluster: %w", err)
@@ -556,6 +604,9 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		return ErrClusterNotFound
+	}
+	if workDir != "" {
+		_ = os.RemoveAll(workDir)
 	}
 	return nil
 }
@@ -1199,8 +1250,8 @@ func validateBootstrapRequest(req BootstrapRequest) error {
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
 	var clusterID int64
 	err := s.db.QueryRow(
-		`INSERT INTO clusters (name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'planned')
+		`INSERT INTO clusters (name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, proxmox_credential_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'planned')
 		 RETURNING id`,
 		req.Name,
 		plan.TopologyType,
@@ -1208,6 +1259,7 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 		req.NetworkProfileID,
 		plan.ControlPlaneCount,
 		plan.WorkerCount,
+		req.ProxmoxCredentialID,
 	).Scan(&clusterID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
@@ -1278,6 +1330,30 @@ func (s *Service) getClusterBase(clusterID int64) (string, string, error) {
 		return "", "", fmt.Errorf("query cluster: %w", err)
 	}
 	return name, kubernetesVersion, nil
+}
+
+func (s *Service) getClusterDeleteInfo(clusterID int64) (clusterDeleteInfo, error) {
+	var info clusterDeleteInfo
+	err := s.db.QueryRow(
+		`SELECT c.name, c.proxmox_credential_id,
+		        COALESCE((
+		          SELECT pr.work_dir
+		          FROM provision_runs pr
+		          WHERE pr.cluster_id = c.id AND pr.work_dir <> ''
+		          ORDER BY pr.created_at DESC
+		          LIMIT 1
+		        ), '')
+		 FROM clusters c
+		 WHERE c.id = $1`,
+		clusterID,
+	).Scan(&info.Name, &info.ProxmoxCredentialID, &info.TerraformWorkDir)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return clusterDeleteInfo{}, ErrClusterNotFound
+		}
+		return clusterDeleteInfo{}, fmt.Errorf("query cluster delete info: %w", err)
+	}
+	return info, nil
 }
 
 func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {

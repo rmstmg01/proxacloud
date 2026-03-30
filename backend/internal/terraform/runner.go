@@ -99,6 +99,10 @@ func NewRunner(binary, baseDir string) *Runner {
 	return &Runner{binary: binary, baseDir: baseDir}
 }
 
+func (r *Runner) WorkspaceDir(clusterName string) string {
+	return filepath.Join(r.baseDir, sanitizeName(clusterName))
+}
+
 func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 	if strings.TrimSpace(spec.ClusterName) == "" {
 		return "", errors.New("cluster name is required")
@@ -183,6 +187,30 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	}
 
 	return RunResult{WorkDir: workDir, Output: output.String(), Status: "applied"}, nil
+}
+
+func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	output := strings.Builder{}
+	authEnv := buildEnv(auth.toEnv())
+	steps := [][]string{
+		{"init", "-input=false"},
+		{"destroy", "-input=false", "-auto-approve"},
+	}
+
+	for _, args := range steps {
+		cmdOutput, err := r.execTerraform(workDir, authEnv, args...)
+		output.WriteString(cmdOutput)
+		output.WriteString("\n")
+		if err != nil {
+			fullOutput := strings.TrimSpace(output.String())
+			if fullOutput == "" {
+				return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroy-failed"}, err
+			}
+			return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroy-failed"}, fmt.Errorf("%w\nterraform output:\n%s", err, fullOutput)
+		}
+	}
+
+	return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroyed"}, nil
 }
 
 func (r *Runner) execTerraform(workDir string, env []string, args ...string) (string, error) {
