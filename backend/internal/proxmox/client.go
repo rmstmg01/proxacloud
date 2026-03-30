@@ -44,7 +44,12 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 	if cred.APITokenID != "" && cred.APITokenSecret != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("PVEAPIToken=%s=%s", cred.APITokenID, cred.APITokenSecret))
 	} else if cred.Username != "" && cred.Password != "" {
-		return nil, errors.New("username/password discovery is not yet implemented; use API token")
+		ticket, csrfToken, err := c.getTicket(httpClient, base, cred.Username, cred.Password)
+		if err != nil {
+			return nil, fmt.Errorf("authenticate with proxmox: %w", err)
+		}
+		req.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: ticket})
+		req.Header.Set("CSRFPreventionToken", csrfToken)
 	} else {
 		return nil, errors.New("missing proxmox authentication data")
 	}
@@ -86,4 +91,48 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 	}
 
 	return nodes, nil
+}
+
+// getTicket authenticates with the Proxmox API using username/password and
+// returns the PVEAuthCookie ticket and CSRFPreventionToken.
+func (c *Client) getTicket(httpClient *http.Client, base *url.URL, username, password string) (string, string, error) {
+	ticketURL := *base
+	ticketURL.Path = path.Join(ticketURL.Path, "/api2/json/access/ticket")
+
+	form := url.Values{}
+	form.Set("username", username)
+	form.Set("password", password)
+
+	req, err := http.NewRequest(http.MethodPost, ticketURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", fmt.Errorf("create ticket request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("ticket request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", "", errors.New("invalid username or password")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("ticket endpoint returned status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Data struct {
+			Ticket              string `json:"ticket"`
+			CSRFPreventionToken string `json:"CSRFPreventionToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", fmt.Errorf("decode ticket response: %w", err)
+	}
+	if payload.Data.Ticket == "" {
+		return "", "", errors.New("proxmox returned an empty ticket")
+	}
+	return payload.Data.Ticket, payload.Data.CSRFPreventionToken, nil
 }
