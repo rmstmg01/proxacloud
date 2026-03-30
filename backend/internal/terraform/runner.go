@@ -278,16 +278,30 @@ locals {
   }
 }
 
-# Provisioning scaffolding for Ubuntu 24 cloud-init VMs.
-# Provider auth and datastore details should be added via environment-specific tfvars.
+# Upload cloud-init snippets to each Proxmox node via SSH before the VMs start.
+resource "proxmox_virtual_environment_file" "cloud_init" {
+  for_each = local.node_map
+
+  content_type = "snippets"
+  datastore_id = "local"
+  node_name    = each.value.proxmox_node_name
+
+  source_raw {
+    data      = file("${path.module}/cloud-init/${each.value.vm_name}.yaml")
+    file_name = "${each.value.vm_name}.yaml"
+  }
+}
+
 resource "proxmox_virtual_environment_vm" "k8s" {
   for_each = local.node_map
 
   name      = each.value.vm_name
   node_name = each.value.proxmox_node_name
 
+  depends_on = [proxmox_virtual_environment_file.cloud_init]
+
   initialization {
-    user_data_file_id = "local:snippets/${each.value.vm_name}.yaml"
+    user_data_file_id = proxmox_virtual_environment_file.cloud_init[each.key].id
   }
 
   cpu {
@@ -299,7 +313,7 @@ resource "proxmox_virtual_environment_vm" "k8s" {
   }
 
   network_device {
-    bridge = var.bridge
+    bridge  = var.bridge
     vlan_id = var.vlan
   }
 
