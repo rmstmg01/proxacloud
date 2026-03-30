@@ -334,7 +334,7 @@ const playbookTemplate = `- hosts: k8s_cluster
 
     - name: Save join command
       copy:
-        content: "{{ join_command.stdout }} --cri-socket unix:///run/containerd/containerd.sock"
+				content: "{{ "{{ join_command.stdout }}" }} --cri-socket unix:///run/containerd/containerd.sock"
         dest: /tmp/kubeadm_join_cmd.sh
         mode: '0700'
 
@@ -353,12 +353,12 @@ const playbookTemplate = `- hosts: k8s_cluster
     - name: Read join command from first control plane
       slurp:
         src: /tmp/kubeadm_join_cmd.sh
-      delegate_to: "{{ groups['control_plane'][0] }}"
+			delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
       run_once: true
       register: join_script
 
     - name: Join cluster
-      shell: "{{ join_script.content | b64decode }}"
+			shell: "{{ "{{ join_script.content | b64decode }}" }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
 `

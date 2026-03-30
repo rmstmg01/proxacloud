@@ -453,9 +453,23 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 			}
 		}
 		if net.ParseIP(ip) == nil {
-			return BootstrapResponse{}, fmt.Errorf("missing or invalid ip for node %s; provide node_ips map", n.VMName)
+			if n.Role == "control-plane" {
+				return BootstrapResponse{}, fmt.Errorf("missing or invalid ip for control-plane node %s; provide node_ips map", n.VMName)
+			}
+			warnings = append(warnings, fmt.Sprintf("skipping worker %s due to missing/invalid ip", n.VMName))
+			continue
 		}
 		ansibleNodes = append(ansibleNodes, ansible.Node{Name: n.VMName, IP: ip, Role: n.Role})
+	}
+
+	controlPlaneCount := 0
+	for _, n := range ansibleNodes {
+		if n.Role == "control-plane" {
+			controlPlaneCount++
+		}
+	}
+	if controlPlaneCount == 0 {
+		return BootstrapResponse{}, errors.New("no control-plane nodes with valid IPs available for bootstrap")
 	}
 
 	if strings.TrimSpace(req.ControlPlaneVIP) == "" {
