@@ -101,6 +101,13 @@ type BootstrapResponse struct {
 	Warnings       []string `json:"warnings"`
 }
 
+type BootstrapConfigRecord struct {
+	ClusterID         int64     `json:"cluster_id"`
+	SSHUser           string    `json:"ssh_user"`
+	SSHPrivateKeyPath string    `json:"ssh_private_key_path"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
 type ClusterNodeRecord struct {
 	ID              int64  `json:"id"`
 	Role            string `json:"role"`
@@ -402,6 +409,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	if err := validateBootstrapRequest(req); err != nil {
 		return BootstrapResponse{}, err
 	}
+	if err := s.upsertBootstrapConfig(clusterID, req.SSHUser, req.SSHPrivateKeyPath); err != nil {
+		return BootstrapResponse{}, err
+	}
 
 	clusterName, kubernetesVersion, err := s.getClusterBase(clusterID)
 	if err != nil {
@@ -524,6 +534,14 @@ func (s *Service) ListClusterNodes(clusterID int64) ([]ClusterNodeRecord, error)
 		return nil, err
 	}
 	return s.getClusterNodes(clusterID)
+}
+
+func (s *Service) GetBootstrapConfig(clusterID int64) (BootstrapConfigRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return BootstrapConfigRecord{}, err
+	}
+
+	return s.getBootstrapConfig(clusterID)
 }
 
 func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
@@ -1406,6 +1424,44 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 		return ClusterSummary{}, fmt.Errorf("get cluster summary: %w", err)
 	}
 	return c, nil
+}
+
+func (s *Service) getBootstrapConfig(clusterID int64) (BootstrapConfigRecord, error) {
+	var out BootstrapConfigRecord
+	err := s.db.QueryRow(
+		`SELECT cluster_id, ssh_user, ssh_private_key_path, updated_at
+		 FROM cluster_bootstrap_configs
+		 WHERE cluster_id = $1`,
+		clusterID,
+	).Scan(&out.ClusterID, &out.SSHUser, &out.SSHPrivateKeyPath, &out.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return BootstrapConfigRecord{}, errors.New("bootstrap ssh config not found")
+		}
+		return BootstrapConfigRecord{}, fmt.Errorf("query bootstrap ssh config: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Service) upsertBootstrapConfig(clusterID int64, sshUser, sshPrivateKeyPath string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, ssh_private_key_path)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (cluster_id)
+		 DO UPDATE SET
+		   ssh_user = EXCLUDED.ssh_user,
+		   ssh_private_key_path = EXCLUDED.ssh_private_key_path,
+		   updated_at = NOW()`,
+		clusterID,
+		strings.TrimSpace(sshUser),
+		strings.TrimSpace(sshPrivateKeyPath),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert bootstrap ssh config: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) ClusterNameExists(name string) (bool, error) {

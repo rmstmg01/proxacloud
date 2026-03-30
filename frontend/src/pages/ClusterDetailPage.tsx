@@ -15,8 +15,9 @@ import {
   createEtcdSnapshot,
   getEtcdSnapshots,
   restoreEtcdSnapshot,
-    getClusterNodes,
-  } from '../api/clusters';
+  getClusterNodes,
+  getBootstrapConfig,
+} from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -155,6 +156,12 @@ function BootstrapTab({ id }: { id: number }) {
     queryFn: () => getClusterNodes(id),
   });
 
+  const savedBootstrapQuery = useQuery({
+    queryKey: ['cluster-bootstrap-config', id],
+    queryFn: () => getBootstrapConfig(id),
+    retry: false,
+  });
+
   useEffect(() => {
     if (!nodesQuery.data || nodesQuery.data.length === 0) return;
     const lines = nodesQuery.data
@@ -172,6 +179,24 @@ function BootstrapTab({ id }: { id: number }) {
     });
   }, [nodesQuery.data]);
 
+  useEffect(() => {
+    if (!savedBootstrapQuery.data) return;
+    setForm((f) => ({
+      ...f,
+      ssh_user: f.ssh_user || savedBootstrapQuery.data.ssh_user,
+      ssh_private_key_path: f.ssh_private_key_path || savedBootstrapQuery.data.ssh_private_key_path,
+    }));
+  }, [savedBootstrapQuery.data]);
+
+  const useSavedSSH = () => {
+    if (!savedBootstrapQuery.data) return;
+    setForm((f) => ({
+      ...f,
+      ssh_user: savedBootstrapQuery.data!.ssh_user,
+      ssh_private_key_path: savedBootstrapQuery.data!.ssh_private_key_path,
+    }));
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const node_ips: Record<string, string> = {};
@@ -187,15 +212,23 @@ function BootstrapTab({ id }: { id: number }) {
       <CardHeader><CardTitle>Bootstrap Kubernetes</CardTitle></CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
+          {savedBootstrapQuery.data && (
+            <Alert variant="info" title="Saved SSH settings found">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm">Use previous SSH user/key path from this cluster record.</span>
+                <Button type="button" variant="secondary" onClick={useSavedSSH}>Use saved values</Button>
+              </div>
+            </Alert>
+          )}
           <Input label="SSH user" value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} required />
-            {nodesQuery.isLoading && (
-              <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>
-            )}
-            {nodesQuery.data && nodesQuery.data.some((n) => n.ip_address) && form.node_ips_raw && (
-              <Alert variant="info" title="IPs pre-filled from provisioning">
-                Node names and IPs were detected from the last provisioning run. Review and correct if needed before bootstrapping.
-              </Alert>
-            )}
+          {nodesQuery.isLoading && (
+            <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>
+          )}
+          {nodesQuery.data && nodesQuery.data.some((n) => n.ip_address) && form.node_ips_raw && (
+            <Alert variant="info" title="IPs pre-filled from provisioning">
+              Node names and IPs were detected from the last provisioning run. Review and correct if needed before bootstrapping.
+            </Alert>
+          )}
           <Input label="SSH private key path" value={form.ssh_private_key_path} onChange={(e) => setForm({ ...form, ssh_private_key_path: e.target.value })} placeholder="/home/user/.ssh/id_ed25519" required />
           <Input label="Control plane VIP" value={form.control_plane_vip} onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })} placeholder="192.168.8.20" required />
           <Input label="Pod CIDR" value={form.pod_cidr} onChange={(e) => setForm({ ...form, pod_cidr: e.target.value })} required />

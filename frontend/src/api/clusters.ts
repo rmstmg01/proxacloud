@@ -2,9 +2,10 @@ import client from './client';
 import type {
   ClusterSummary,
   ProvisionRunRecord,
-    ClusterNodeRecord,
+  ClusterNodeRecord,
   ProvisionResponse,
   BootstrapResponse,
+  BootstrapConfigRecord,
   ScaleResponse,
   UpgradeResponse,
   ReplaceNodeResponse,
@@ -34,6 +35,9 @@ export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);
 export const getClusterNodes = (id: number) =>
   client.get<ClusterNodeRecord[]>(`/clusters/${id}/nodes`).then((r) => r.data);
+
+export const getBootstrapConfig = (id: number) =>
+  client.get<BootstrapConfigRecord>(`/clusters/${id}/bootstrap-config`).then((r) => r.data);
 
 
 export const provisionCluster = (body: {

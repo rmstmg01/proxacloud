@@ -127,6 +127,13 @@ export interface BootstrapResponse {
   warnings: string[];
 }
 
+export interface BootstrapConfigRecord {
+  cluster_id: number;
+  ssh_user: string;
+  ssh_private_key_path: string;
+  updated_at: string;
+}
+
 export interface ScaleResponse {
   cluster_id: number;
   previous_worker_count: number;
