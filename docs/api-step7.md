@@ -1,0 +1,52 @@
+# Step 7 API Endpoints
+
+## Observability
+
+- `POST /api/v1/clusters/{id}/observability/deploy`
+- `GET /api/v1/clusters/{id}/observability`
+
+Deploy request example:
+
+```json
+{
+  "grafana_admin_user": "admin",
+  "grafana_admin_password": "StrongPass!123",
+  "retention_days": 15,
+  "storage_class": "longhorn",
+  "apply": false
+}
+```
+
+Behavior:
+
+- Creates values file for kube-prometheus-stack under `infra/operations/runs/<cluster>/observability`
+- Stores observability configuration and status in database
+
+## etcd Backup
+
+- `POST /api/v1/clusters/{id}/etcd/snapshot`
+- `GET /api/v1/clusters/{id}/etcd/snapshots`
+
+Snapshot request example:
+
+```json
+{
+  "storage_target": "backups/etcd",
+  "apply": false
+}
+```
+
+## etcd Restore
+
+- `POST /api/v1/clusters/{id}/etcd/restore`
+
+Restore request example:
+
+```json
+{
+  "snapshot_id": 3,
+  "apply": false
+}
+```
+
+Current Step 7 behavior records deploy/backup/restore plans and runtime status. You can execute the operational runbooks with your production automation pipeline.

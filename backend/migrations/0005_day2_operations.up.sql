@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS kubeconfig_tokens (
+    id BIGSERIAL PRIMARY KEY,
+    cluster_id BIGINT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+    token TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

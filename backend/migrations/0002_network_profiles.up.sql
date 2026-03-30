@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS network_profiles (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    cidr TEXT NOT NULL,
+    gateway TEXT NOT NULL,
+    dns TEXT[] NOT NULL DEFAULT '{}',
+    bridge TEXT NOT NULL,
+    vlan INTEGER NOT NULL DEFAULT 0,
+    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

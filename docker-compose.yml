@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: k8s-proxmox-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: k8s_proxmox
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d k8s_proxmox"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: k8s-proxmox-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ADDR: ":8080"
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/k8s_proxmox?sslmode=disable
+      AUTO_MIGRATE: "true"
+      JWT_SECRET: change-me-in-prod
+      JWT_TTL_MINUTES: "120"
+      SUPER_ADMIN_USERNAME: k8s-admin
+      SUPER_ADMIN_PASSWORD: ChangeMeNow!
+      DEFAULT_NETWORK_NAME: homelab-default
+      DEFAULT_NETWORK_CIDR: 192.168.8.0/24
+      DEFAULT_NETWORK_GATEWAY: 192.168.8.1
+      DEFAULT_NETWORK_DNS: 1.1.1.1,8.8.8.8
+      DEFAULT_NETWORK_BRIDGE: vmbr0
+      DEFAULT_NETWORK_VLAN: "0"
+      TERRAFORM_AUTO_APPLY: "false"
+      ANSIBLE_AUTO_APPLY: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra:/app/backend/infra
+      - ./backups:/app/backend/backups
+
+volumes:
+  postgres_data:
