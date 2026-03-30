@@ -60,6 +60,7 @@ func NewApp() (*App, error) {
 		topologyService,
 		terraformRunner,
 		ansibleRunner,
+		proxmoxService,
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
 	)

@@ -4,6 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { checkClusterName, provisionCluster } from '../api/clusters';
 import { getNetworks } from '../api/networks';
+import { getCredentials } from '../api/proxmox';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Input, Select, Textarea } from '../components/ui/Input';
@@ -13,6 +14,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
+  const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
   const [debouncedName, setDebouncedName] = useState('');
 
   const [form, setForm] = useState({
@@ -21,6 +23,7 @@ export function ProvisionClusterPage() {
     control_plane_count: 3,
     worker_count: 3,
     network_profile_id: 0,
+    proxmox_credential_id: 0,
     kubernetes_version: 'v1.31.4',
     ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
     ssh_public_key: '',
@@ -60,6 +63,7 @@ export function ProvisionClusterPage() {
     const result = await mutation.mutateAsync({
       ...form,
       network_profile_id: Number(form.network_profile_id),
+      proxmox_credential_id: Number(form.proxmox_credential_id),
     });
     navigate(`/clusters/${result.cluster_id}`);
   };
@@ -131,6 +135,18 @@ export function ProvisionClusterPage() {
               {networks?.map((n) => (
                 <option key={n.id} value={n.id}>
                   {n.name} {n.is_default ? '(default)' : ''}
+                </option>
+              ))}
+            </Select>
+            <Select
+              label="Proxmox credential"
+              value={form.proxmox_credential_id}
+              onChange={(e) => setField('proxmox_credential_id', Number(e.target.value))}
+            >
+              <option value={0}>-- Select credential --</option>
+              {credentials?.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} ({c.endpoint})
                 </option>
               ))}
             </Select>

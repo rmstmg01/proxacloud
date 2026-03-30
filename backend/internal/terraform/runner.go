@@ -44,6 +44,32 @@ type RunResult struct {
 	Status  string `json:"status"`
 }
 
+// ProxmoxAuth holds Proxmox credentials passed to Terraform as environment
+// variables so the bpg/proxmox provider can authenticate.
+type ProxmoxAuth struct {
+	Endpoint       string
+	Username       string
+	Password       string
+	APITokenID     string
+	APITokenSecret string
+	InsecureTLS    bool
+}
+
+// toEnv converts the auth struct to PROXMOX_VE_* environment variable strings.
+func (a ProxmoxAuth) toEnv() []string {
+	env := []string{
+		"PROXMOX_VE_ENDPOINT=" + a.Endpoint,
+		fmt.Sprintf("PROXMOX_VE_INSECURE=%t", a.InsecureTLS),
+	}
+	if a.APITokenID != "" && a.APITokenSecret != "" {
+		env = append(env, "PROXMOX_VE_API_TOKEN="+a.APITokenID+"="+a.APITokenSecret)
+	} else if a.Username != "" {
+		env = append(env, "PROXMOX_VE_USERNAME="+a.Username)
+		env = append(env, "PROXMOX_VE_PASSWORD="+a.Password)
+	}
+	return env
+}
+
 type Runner struct {
 	binary  string
 	baseDir string
@@ -107,8 +133,21 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 	return workDir, nil
 }
 
-func (r *Runner) Apply(workDir string) (RunResult, error) {
+// buildEnv merges the current process environment with auth vars, stripping
+// any pre-existing PROXMOX_VE_* variables so DB credentials always win.
+func buildEnv(authEnv []string) []string {
+	filtered := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "PROXMOX_VE_") {
+			filtered = append(filtered, e)
+		}
+	}
+	return append(filtered, authEnv...)
+}
+
+func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	output := strings.Builder{}
+	authEnv := buildEnv(auth.toEnv())
 	steps := [][]string{
 		{"init", "-input=false"},
 		{"validate"},
@@ -117,23 +156,28 @@ func (r *Runner) Apply(workDir string) (RunResult, error) {
 	}
 
 	for _, args := range steps {
-		cmdOutput, err := r.execTerraform(workDir, args...)
+		cmdOutput, err := r.execTerraform(workDir, authEnv, args...)
 		output.WriteString(cmdOutput)
 		output.WriteString("\n")
 		if err != nil {
-			return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, err
+			fullOutput := strings.TrimSpace(output.String())
+			if fullOutput == "" {
+				return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, err
+			}
+			return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, fmt.Errorf("%w\nterraform output:\n%s", err, fullOutput)
 		}
 	}
 
 	return RunResult{WorkDir: workDir, Output: output.String(), Status: "applied"}, nil
 }
 
-func (r *Runner) execTerraform(workDir string, args ...string) (string, error) {
+func (r *Runner) execTerraform(workDir string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	cmd.Dir = workDir
+	cmd.Env = env
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

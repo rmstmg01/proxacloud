@@ -38,6 +38,7 @@ export const provisionCluster = (body: {
   control_plane_count: number;
   worker_count: number;
   network_profile_id: number;
+  proxmox_credential_id: number;
   kubernetes_version: string;
   ubuntu_image: string;
   ssh_public_key: string;

@@ -98,6 +98,30 @@ func (s *Service) DeleteCredential(id int64) error {
 	return nil
 }
 
+// GetCredentialWithSecrets returns the credential including the password and
+// API token secret fields (normally omitted from list responses).
+func (s *Service) GetCredentialWithSecrets(id int64) (Credential, error) {
+	var c Credential
+	err := s.db.QueryRow(
+		`SELECT id, name, endpoint,
+		        COALESCE(username, ''), COALESCE(password, ''),
+		        COALESCE(api_token_id, ''), COALESCE(api_token_secret, ''),
+		        insecure_tls
+		 FROM proxmox_credentials
+		 WHERE id = $1`, id,
+	).Scan(&c.ID, &c.Name, &c.Endpoint,
+		&c.Username, &c.Password,
+		&c.APITokenID, &c.APITokenSecret,
+		&c.InsecureTLS)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credential{}, ErrCredentialNotFound
+	}
+	if err != nil {
+		return Credential{}, fmt.Errorf("get proxmox credential: %w", err)
+	}
+	return c, nil
+}
+
 func (s *Service) ListCredentials() []Credential {
 	rows, err := s.db.Query(
 		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at

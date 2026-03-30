@@ -14,6 +14,7 @@ import (
 
 	"k8s-proxmox-manager/backend/internal/ansible"
 	"k8s-proxmox-manager/backend/internal/networks"
+	"k8s-proxmox-manager/backend/internal/proxmox"
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
 )
@@ -26,12 +27,19 @@ type NetworkStore interface {
 	GetByID(id int64) (networks.Profile, error)
 }
 
+// ProxmoxCredentialStore is satisfied by *proxmox.Service and is used to look
+// up stored credentials when running Terraform.
+type ProxmoxCredentialStore interface {
+	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+}
+
 type Service struct {
 	db              *sql.DB
 	networks        NetworkStore
 	planner         TopologyPlanner
 	terraformRunner *terraform.Runner
 	ansibleRunner   *ansible.Runner
+	proxmoxSvc      ProxmoxCredentialStore
 	autoApply       bool
 	autoBootstrap   bool
 }
@@ -40,21 +48,22 @@ var ErrClusterExists = errors.New("cluster already exists")
 var ErrClusterNotFound = errors.New("cluster not found")
 
 type ProvisionRequest struct {
-	Name              string `json:"name"`
-	TopologyType      string `json:"topology_type"`
-	ControlPlaneCount int    `json:"control_plane_count"`
-	WorkerCount       int    `json:"worker_count"`
-	NetworkProfileID  int64  `json:"network_profile_id"`
-	KubernetesVersion string `json:"kubernetes_version"`
-	UbuntuImage       string `json:"ubuntu_image"`
-	SSHPublicKey      string `json:"ssh_public_key"`
-	ControlPlaneCPU   int    `json:"control_plane_cpu"`
-	ControlPlaneRAMMB int    `json:"control_plane_ram_mb"`
-	ControlPlaneDisk  int    `json:"control_plane_disk_gb"`
-	WorkerCPU         int    `json:"worker_cpu"`
-	WorkerRAMMB       int    `json:"worker_ram_mb"`
-	WorkerDisk        int    `json:"worker_disk_gb"`
-	Apply             bool   `json:"apply"`
+	Name                string `json:"name"`
+	TopologyType        string `json:"topology_type"`
+	ControlPlaneCount   int    `json:"control_plane_count"`
+	WorkerCount         int    `json:"worker_count"`
+	NetworkProfileID    int64  `json:"network_profile_id"`
+	KubernetesVersion   string `json:"kubernetes_version"`
+	UbuntuImage         string `json:"ubuntu_image"`
+	SSHPublicKey        string `json:"ssh_public_key"`
+	ControlPlaneCPU     int    `json:"control_plane_cpu"`
+	ControlPlaneRAMMB   int    `json:"control_plane_ram_mb"`
+	ControlPlaneDisk    int    `json:"control_plane_disk_gb"`
+	WorkerCPU           int    `json:"worker_cpu"`
+	WorkerRAMMB         int    `json:"worker_ram_mb"`
+	WorkerDisk          int    `json:"worker_disk_gb"`
+	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
+	Apply               bool   `json:"apply"`
 }
 
 type ProvisionResponse struct {
@@ -236,6 +245,7 @@ func NewService(
 	planner TopologyPlanner,
 	terraformRunner *terraform.Runner,
 	ansibleRunner *ansible.Runner,
+	proxmoxSvc ProxmoxCredentialStore,
 	autoApply bool,
 	autoBootstrap bool,
 ) *Service {
@@ -245,6 +255,7 @@ func NewService(
 		planner:         planner,
 		terraformRunner: terraformRunner,
 		ansibleRunner:   ansibleRunner,
+		proxmoxSvc:      proxmoxSvc,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
 	}
@@ -312,7 +323,19 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	terraformOutput := ""
 	applyNow := req.Apply || s.autoApply
 	if applyNow {
-		runResult, runErr := s.terraformRunner.Apply(workspace)
+		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(req.ProxmoxCredentialID)
+		if credErr != nil {
+			return ProvisionResponse{}, fmt.Errorf("load proxmox credential: %w", credErr)
+		}
+		auth := terraform.ProxmoxAuth{
+			Endpoint:       cred.Endpoint,
+			Username:       cred.Username,
+			Password:       cred.Password,
+			APITokenID:     cred.APITokenID,
+			APITokenSecret: cred.APITokenSecret,
+			InsecureTLS:    cred.InsecureTLS,
+		}
+		runResult, runErr := s.terraformRunner.Apply(workspace, auth)
 		terraformOutput = runResult.Output
 		status = runResult.Status
 		if runErr != nil {
@@ -1017,6 +1040,9 @@ func validateProvisionRequest(req ProvisionRequest) error {
 	}
 	if req.SSHPublicKey == "" {
 		return errors.New("ssh_public_key is required")
+	}
+	if req.ProxmoxCredentialID <= 0 {
+		return errors.New("proxmox_credential_id is required")
 	}
 
 	return nil
