@@ -2,8 +2,17 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /src
 
+ARG GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+ARG GOSUMDB=off
+
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+
+RUN apk add --no-cache ca-certificates git
+
 COPY backend/go.mod backend/go.sum ./backend/
-RUN cd backend && go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+	sh -c 'cd backend && for i in 1 2 3; do go mod download && exit 0; echo "go mod download failed, retry $i/3"; sleep $((i*2)); done; exit 1'
 
 COPY backend ./backend
 RUN cd backend && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/api-server ./cmd/api-server
