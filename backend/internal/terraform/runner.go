@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,9 +13,6 @@ import (
 	"text/template"
 	"time"
 )
-
-// parseNet is a thin alias so the import is used in this file.
-var parseNet = net.ParseCIDR
 
 type VMNode struct {
 	VMName          string `json:"vm_name"`
@@ -241,25 +237,12 @@ func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
 		return "", fmt.Errorf("parse cloud-init template: %w", err)
 	}
 
-	// Derive prefix length from the network CIDR (e.g. "192.168.8.0/24" → 24).
-	prefix := ""
-	if spec.NetworkCIDR != "" {
-		if _, ipNet, err := parseNet(spec.NetworkCIDR); err == nil {
-			ones, _ := ipNet.Mask.Size()
-			prefix = fmt.Sprintf("%d", ones)
-		}
-	}
-
 	payload := map[string]any{
 		"VMName":       node.VMName,
 		"Role":         node.Role,
 		"ClusterName":  spec.ClusterName,
 		"SSHPublicKey": spec.SSHPublicKey,
-		// Static network fields – empty string means DHCP fallback.
-		"IPAddress": node.IPAddress,
-		"Prefix":    prefix,
-		"Gateway":   spec.Gateway,
-		"DNS":       strings.Join(spec.DNS, ","),
+		"IPAddress":    node.IPAddress,
 	}
 
 	var out bytes.Buffer
@@ -322,6 +305,7 @@ locals {
   node_map = {
     for n in var.nodes : n.vm_name => n
   }
+	network_prefix = tonumber(split("/", var.network_cidr)[1])
 }
 
 # Upload cloud-init snippets to each Proxmox node via SSH before the VMs start.
@@ -348,6 +332,13 @@ resource "proxmox_virtual_environment_vm" "k8s" {
 
   initialization {
     user_data_file_id = proxmox_virtual_environment_file.cloud_init[each.key].id
+
+		ip_config {
+			ipv4 {
+				address = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? "${each.value.ip_address}/${local.network_prefix}" : "dhcp"
+				gateway = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? var.gateway : null
+			}
+		}
   }
 
   cpu {
@@ -386,24 +377,6 @@ users:
     groups: sudo
     ssh_authorized_keys:
       - {{ .SSHPublicKey }}
-{{ if .IPAddress }}
-write_files:
-  - path: /etc/netplan/99-static.yaml
-    permissions: "0600"
-    content: |
-      network:
-        version: 2
-        ethernets:
-          ens18:
-            dhcp4: false
-            addresses:
-              - {{ .IPAddress }}/{{ .Prefix }}
-            routes:
-              - to: default
-                via: {{ .Gateway }}
-            nameservers:
-              addresses: [{{ .DNS }}]
-{{ end }}
 package_update: true
 packages:
   - qemu-guest-agent
@@ -413,9 +386,6 @@ packages:
 
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
-{{ if .IPAddress }}
-  - [ netplan, apply ]
-{{ end }}
   - [ bash, -lc, "echo CLUSTER_NAME={{ .ClusterName }} > /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_ROLE={{ .Role }} >> /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_IP={{ .IPAddress }} >> /etc/k8s-cluster.env" ]
