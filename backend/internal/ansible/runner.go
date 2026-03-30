@@ -105,6 +105,7 @@ func (r *Runner) Apply(workDir string) (RunResult, error) {
 
 	cmd := exec.CommandContext(ctx, r.binary, "-i", "inventory.ini", "bootstrap-k8s.yml")
 	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "ANSIBLE_HOST_KEY_CHECKING=False")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
