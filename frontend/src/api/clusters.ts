@@ -6,6 +6,7 @@ import type {
   ProvisionResponse,
   BootstrapResponse,
   BootstrapConfigRecord,
+  BootstrapSSHKeyRecord,
   ScaleResponse,
   UpgradeResponse,
   ReplaceNodeResponse,
@@ -39,6 +40,9 @@ export const getClusterNodes = (id: number) =>
 export const getBootstrapConfig = (id: number) =>
   client.get<BootstrapConfigRecord>(`/clusters/${id}/bootstrap-config`).then((r) => r.data);
 
+export const getBootstrapKeys = (id: number) =>
+  client.get<BootstrapSSHKeyRecord[]>(`/clusters/${id}/bootstrap-keys`).then((r) => r.data);
+
 
 export const provisionCluster = (body: {
   name: string;
@@ -64,7 +68,9 @@ export const bootstrapCluster = (
   id: number,
   body: {
     ssh_user: string;
-    ssh_private_key_path: string;
+    ssh_private_key?: string;
+    ssh_key_id?: number;
+    ssh_key_name?: string;
     control_plane_vip: string;
     pod_cidr: string;
     service_cidr: string;

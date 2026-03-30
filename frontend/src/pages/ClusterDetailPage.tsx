@@ -17,6 +17,7 @@ import {
   restoreEtcdSnapshot,
   getClusterNodes,
   getBootstrapConfig,
+  getBootstrapKeys,
 } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
@@ -141,7 +142,9 @@ function RunsTab({ id }: { id: number }) {
 function BootstrapTab({ id }: { id: number }) {
   const [form, setForm] = useState({
     ssh_user: 'ubuntu',
-    ssh_private_key_path: '',
+    ssh_private_key: '',
+    ssh_key_id: 0,
+    ssh_key_name: 'default',
     control_plane_vip: '',
     pod_cidr: '10.244.0.0/16',
     service_cidr: '10.96.0.0/12',
@@ -160,6 +163,11 @@ function BootstrapTab({ id }: { id: number }) {
     queryKey: ['cluster-bootstrap-config', id],
     queryFn: () => getBootstrapConfig(id),
     retry: false,
+  });
+
+  const savedKeysQuery = useQuery({
+    queryKey: ['cluster-bootstrap-keys', id],
+    queryFn: () => getBootstrapKeys(id),
   });
 
   useEffect(() => {
@@ -184,7 +192,7 @@ function BootstrapTab({ id }: { id: number }) {
     setForm((f) => ({
       ...f,
       ssh_user: f.ssh_user || savedBootstrapQuery.data.ssh_user,
-      ssh_private_key_path: f.ssh_private_key_path || savedBootstrapQuery.data.ssh_private_key_path,
+      ssh_key_id: f.ssh_key_id || Number(savedBootstrapQuery.data.last_ssh_key_id || 0),
     }));
   }, [savedBootstrapQuery.data]);
 
@@ -193,7 +201,8 @@ function BootstrapTab({ id }: { id: number }) {
     setForm((f) => ({
       ...f,
       ssh_user: savedBootstrapQuery.data!.ssh_user,
-      ssh_private_key_path: savedBootstrapQuery.data!.ssh_private_key_path,
+      ssh_key_id: Number(savedBootstrapQuery.data!.last_ssh_key_id || 0),
+      ssh_private_key: '',
     }));
   };
 
@@ -204,7 +213,18 @@ function BootstrapTab({ id }: { id: number }) {
       const [name, ip] = line.trim().split(/\s+/);
       if (name && ip) node_ips[name] = ip;
     }
-    await mutation.mutateAsync({ ...form, node_ips, apply: form.apply });
+    await mutation.mutateAsync({
+      ssh_user: form.ssh_user,
+      ssh_private_key: form.ssh_private_key.trim() || undefined,
+      ssh_key_id: form.ssh_private_key.trim() ? undefined : (form.ssh_key_id || undefined),
+      ssh_key_name: form.ssh_private_key.trim() ? form.ssh_key_name.trim() || 'default' : undefined,
+      control_plane_vip: form.control_plane_vip,
+      pod_cidr: form.pod_cidr,
+      service_cidr: form.service_cidr,
+      cni: form.cni,
+      node_ips,
+      apply: form.apply,
+    });
   };
 
   return (
@@ -215,12 +235,33 @@ function BootstrapTab({ id }: { id: number }) {
           {savedBootstrapQuery.data && (
             <Alert variant="info" title="Saved SSH settings found">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-sm">Use previous SSH user/key path from this cluster record.</span>
+                <span className="text-sm">Use previously saved SSH user/key selection from this cluster record.</span>
                 <Button type="button" variant="secondary" onClick={useSavedSSH}>Use saved values</Button>
               </div>
             </Alert>
           )}
           <Input label="SSH user" value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} required />
+          <Select label="Saved SSH key" value={form.ssh_key_id} onChange={(e) => setForm({ ...form, ssh_key_id: Number(e.target.value) })}>
+            <option value={0}>-- Select saved key (optional) --</option>
+            {savedKeysQuery.data?.map((k) => (
+              <option key={k.id} value={k.id}>{k.key_name}</option>
+            ))}
+          </Select>
+          <Input
+            label="Key name (when saving pasted key)"
+            value={form.ssh_key_name}
+            onChange={(e) => setForm({ ...form, ssh_key_name: e.target.value })}
+            placeholder="default"
+            helperText="Used when you paste a key below; updates existing key with same name"
+          />
+          <Textarea
+            label="SSH private key (optional)"
+            value={form.ssh_private_key}
+            onChange={(e) => setForm({ ...form, ssh_private_key: e.target.value })}
+            rows={6}
+            placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----'}
+            helperText="Paste to save/update a key and use it now. Leave empty to use selected saved key."
+          />
           {nodesQuery.isLoading && (
             <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>
           )}
@@ -229,7 +270,6 @@ function BootstrapTab({ id }: { id: number }) {
               Node names and IPs were detected from the last provisioning run. Review and correct if needed before bootstrapping.
             </Alert>
           )}
-          <Input label="SSH private key path" value={form.ssh_private_key_path} onChange={(e) => setForm({ ...form, ssh_private_key_path: e.target.value })} placeholder="/home/user/.ssh/id_ed25519" required />
           <Input label="Control plane VIP" value={form.control_plane_vip} onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })} placeholder="192.168.8.20" required />
           <Input label="Pod CIDR" value={form.pod_cidr} onChange={(e) => setForm({ ...form, pod_cidr: e.target.value })} required />
           <Input label="Service CIDR" value={form.service_cidr} onChange={(e) => setForm({ ...form, service_cidr: e.target.value })} required />

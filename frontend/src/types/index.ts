@@ -130,7 +130,14 @@ export interface BootstrapResponse {
 export interface BootstrapConfigRecord {
   cluster_id: number;
   ssh_user: string;
-  ssh_private_key_path: string;
+  last_ssh_key_id?: number | null;
+  updated_at: string;
+}
+
+export interface BootstrapSSHKeyRecord {
+  id: number;
+  cluster_id: number;
+  key_name: string;
   updated_at: string;
 }
 

@@ -139,6 +139,32 @@ func (h *Handler) GetBootstrapConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
+
+	out := map[string]any{
+		"cluster_id":      resp.ClusterID,
+		"ssh_user":        resp.SSHUser,
+		"updated_at":      resp.UpdatedAt,
+		"last_ssh_key_id": nil,
+	}
+	if resp.LastSSHKeyID.Valid {
+		out["last_ssh_key_id"] = resp.LastSSHKeyID.Int64
+	}
+
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *Handler) ListBootstrapSSHKeys(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.ListBootstrapSSHKeys(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

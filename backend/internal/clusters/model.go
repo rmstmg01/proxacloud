@@ -84,7 +84,10 @@ type ProvisionResponse struct {
 
 type BootstrapRequest struct {
 	SSHUser           string            `json:"ssh_user"`
-	SSHPrivateKeyPath string            `json:"ssh_private_key_path"`
+	SSHPrivateKey     string            `json:"ssh_private_key,omitempty"`
+	SSHPrivateKeyPath string            `json:"ssh_private_key_path,omitempty"`
+	SSHKeyID          int64             `json:"ssh_key_id,omitempty"`
+	SSHKeyName        string            `json:"ssh_key_name,omitempty"`
 	ControlPlaneVIP   string            `json:"control_plane_vip"`
 	PodCIDR           string            `json:"pod_cidr"`
 	ServiceCIDR       string            `json:"service_cidr"`
@@ -102,10 +105,17 @@ type BootstrapResponse struct {
 }
 
 type BootstrapConfigRecord struct {
-	ClusterID         int64     `json:"cluster_id"`
-	SSHUser           string    `json:"ssh_user"`
-	SSHPrivateKeyPath string    `json:"ssh_private_key_path"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ClusterID    int64         `json:"cluster_id"`
+	SSHUser      string        `json:"ssh_user"`
+	LastSSHKeyID sql.NullInt64 `json:"last_ssh_key_id"`
+	UpdatedAt    time.Time     `json:"updated_at"`
+}
+
+type BootstrapSSHKeyRecord struct {
+	ID        int64     `json:"id"`
+	ClusterID int64     `json:"cluster_id"`
+	KeyName   string    `json:"key_name"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type ClusterNodeRecord struct {
@@ -409,7 +419,13 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	if err := validateBootstrapRequest(req); err != nil {
 		return BootstrapResponse{}, err
 	}
-	if err := s.upsertBootstrapConfig(clusterID, req.SSHUser, req.SSHPrivateKeyPath); err != nil {
+
+	sshPrivateKey, keyID, err := s.resolveBootstrapSSHKey(clusterID, req)
+	if err != nil {
+		return BootstrapResponse{}, err
+	}
+
+	if err := s.upsertBootstrapConfig(clusterID, req.SSHUser, keyID); err != nil {
 		return BootstrapResponse{}, err
 	}
 
@@ -450,7 +466,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		ClusterName:       clusterName,
 		KubernetesVersion: kubernetesVersion,
 		SSHSUser:          req.SSHUser,
-		SSHPrivateKeyPath: req.SSHPrivateKeyPath,
+		SSHPrivateKey:     sshPrivateKey,
 		ControlPlaneVIP:   req.ControlPlaneVIP,
 		PodCIDR:           req.PodCIDR,
 		ServiceCIDR:       req.ServiceCIDR,
@@ -542,6 +558,14 @@ func (s *Service) GetBootstrapConfig(clusterID int64) (BootstrapConfigRecord, er
 	}
 
 	return s.getBootstrapConfig(clusterID)
+}
+
+func (s *Service) ListBootstrapSSHKeys(clusterID int64) ([]BootstrapSSHKeyRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+
+	return s.getBootstrapSSHKeys(clusterID)
 }
 
 func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
@@ -1247,9 +1271,6 @@ func validateBootstrapRequest(req BootstrapRequest) error {
 	if strings.TrimSpace(req.SSHUser) == "" {
 		return errors.New("ssh_user is required")
 	}
-	if strings.TrimSpace(req.SSHPrivateKeyPath) == "" {
-		return errors.New("ssh_private_key_path is required")
-	}
 
 	if strings.TrimSpace(req.PodCIDR) != "" {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(req.PodCIDR)); err != nil {
@@ -1429,11 +1450,11 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 func (s *Service) getBootstrapConfig(clusterID int64) (BootstrapConfigRecord, error) {
 	var out BootstrapConfigRecord
 	err := s.db.QueryRow(
-		`SELECT cluster_id, ssh_user, ssh_private_key_path, updated_at
+		`SELECT cluster_id, ssh_user, last_ssh_key_id, updated_at
 		 FROM cluster_bootstrap_configs
 		 WHERE cluster_id = $1`,
 		clusterID,
-	).Scan(&out.ClusterID, &out.SSHUser, &out.SSHPrivateKeyPath, &out.UpdatedAt)
+	).Scan(&out.ClusterID, &out.SSHUser, &out.LastSSHKeyID, &out.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return BootstrapConfigRecord{}, errors.New("bootstrap ssh config not found")
@@ -1444,24 +1465,143 @@ func (s *Service) getBootstrapConfig(clusterID int64) (BootstrapConfigRecord, er
 	return out, nil
 }
 
-func (s *Service) upsertBootstrapConfig(clusterID int64, sshUser, sshPrivateKeyPath string) error {
+func (s *Service) getBootstrapSSHKeys(clusterID int64) ([]BootstrapSSHKeyRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, key_name, updated_at
+		 FROM cluster_bootstrap_ssh_keys
+		 WHERE cluster_id = $1
+		 ORDER BY key_name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list bootstrap ssh keys: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]BootstrapSSHKeyRecord, 0)
+	for rows.Next() {
+		var rec BootstrapSSHKeyRecord
+		if scanErr := rows.Scan(&rec.ID, &rec.ClusterID, &rec.KeyName, &rec.UpdatedAt); scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+
+	return out, nil
+}
+
+func (s *Service) upsertBootstrapConfig(clusterID int64, sshUser string, lastSSHKeyID int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, ssh_private_key_path)
+		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, last_ssh_key_id)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (cluster_id)
 		 DO UPDATE SET
 		   ssh_user = EXCLUDED.ssh_user,
-		   ssh_private_key_path = EXCLUDED.ssh_private_key_path,
+		   last_ssh_key_id = EXCLUDED.last_ssh_key_id,
 		   updated_at = NOW()`,
 		clusterID,
 		strings.TrimSpace(sshUser),
-		strings.TrimSpace(sshPrivateKeyPath),
+		lastSSHKeyID,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert bootstrap ssh config: %w", err)
 	}
 
 	return nil
+}
+
+func (s *Service) resolveBootstrapSSHKey(clusterID int64, req BootstrapRequest) (string, int64, error) {
+	if key := strings.TrimSpace(req.SSHPrivateKey); key != "" {
+		name := strings.TrimSpace(req.SSHKeyName)
+		if name == "" {
+			name = "default"
+		}
+		keyID, err := s.upsertBootstrapSSHKey(clusterID, name, key)
+		if err != nil {
+			return "", 0, err
+		}
+		return key, keyID, nil
+	}
+
+	if req.SSHKeyID > 0 {
+		key, err := s.getBootstrapSSHKeyByID(clusterID, req.SSHKeyID)
+		if err != nil {
+			return "", 0, err
+		}
+		return key, req.SSHKeyID, nil
+	}
+
+	cfg, err := s.getBootstrapConfig(clusterID)
+	if err == nil && cfg.LastSSHKeyID.Valid {
+		key, keyErr := s.getBootstrapSSHKeyByID(clusterID, cfg.LastSSHKeyID.Int64)
+		if keyErr != nil {
+			return "", 0, keyErr
+		}
+		return key, cfg.LastSSHKeyID.Int64, nil
+	}
+
+	if path := strings.TrimSpace(req.SSHPrivateKeyPath); path != "" {
+		bytes, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return "", 0, fmt.Errorf("read ssh private key path: %w", readErr)
+		}
+		key := strings.TrimSpace(string(bytes))
+		if key == "" {
+			return "", 0, errors.New("ssh private key file is empty")
+		}
+		keyID, err := s.upsertBootstrapSSHKey(clusterID, "legacy-path-import", key)
+		if err != nil {
+			return "", 0, err
+		}
+		return key, keyID, nil
+	}
+
+	return "", 0, errors.New("provide ssh_private_key or select an existing ssh_key_id")
+}
+
+func (s *Service) upsertBootstrapSSHKey(clusterID int64, keyName, privateKey string) (int64, error) {
+	var keyID int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_bootstrap_ssh_keys (cluster_id, key_name, private_key)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (cluster_id, key_name)
+		 DO UPDATE SET
+		   private_key = EXCLUDED.private_key,
+		   updated_at = NOW()
+		 RETURNING id`,
+		clusterID,
+		strings.TrimSpace(keyName),
+		strings.TrimSpace(privateKey),
+	).Scan(&keyID)
+	if err != nil {
+		return 0, fmt.Errorf("upsert bootstrap ssh key: %w", err)
+	}
+
+	return keyID, nil
+}
+
+func (s *Service) getBootstrapSSHKeyByID(clusterID, keyID int64) (string, error) {
+	var privateKey string
+	err := s.db.QueryRow(
+		`SELECT private_key
+		 FROM cluster_bootstrap_ssh_keys
+		 WHERE id = $1 AND cluster_id = $2`,
+		keyID,
+		clusterID,
+	).Scan(&privateKey)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", errors.New("selected bootstrap ssh key not found")
+		}
+		return "", fmt.Errorf("query bootstrap ssh key: %w", err)
+	}
+
+	privateKey = strings.TrimSpace(privateKey)
+	if privateKey == "" {
+		return "", errors.New("selected bootstrap ssh key is empty")
+	}
+
+	return privateKey, nil
 }
 
 func (s *Service) ClusterNameExists(name string) (bool, error) {

@@ -23,7 +23,7 @@ type BootstrapSpec struct {
 	ClusterName       string
 	KubernetesVersion string
 	SSHSUser          string
-	SSHPrivateKeyPath string
+	SSHPrivateKey     string
 	ControlPlaneVIP   string
 	PodCIDR           string
 	ServiceCIDR       string
@@ -62,8 +62,8 @@ func (r *Runner) PrepareWorkspace(spec BootstrapSpec) (string, error) {
 	if strings.TrimSpace(spec.SSHSUser) == "" {
 		return "", errors.New("ssh_user is required")
 	}
-	if strings.TrimSpace(spec.SSHPrivateKeyPath) == "" {
-		return "", errors.New("ssh_private_key_path is required")
+	if strings.TrimSpace(spec.SSHPrivateKey) == "" {
+		return "", errors.New("ssh_private_key is required")
 	}
 	if len(spec.Nodes) == 0 {
 		return "", errors.New("at least one node is required")
@@ -74,7 +74,13 @@ func (r *Runner) PrepareWorkspace(spec BootstrapSpec) (string, error) {
 		return "", fmt.Errorf("create ansible workdir: %w", err)
 	}
 
-	inventory, err := renderInventory(spec)
+	keyPath := filepath.Join(workDir, "id_bootstrap")
+	keyBody := strings.TrimSpace(spec.SSHPrivateKey) + "\n"
+	if err := os.WriteFile(keyPath, []byte(keyBody), 0o600); err != nil {
+		return "", fmt.Errorf("write bootstrap ssh key: %w", err)
+	}
+
+	inventory, err := renderInventory(spec, keyPath)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +120,7 @@ func (r *Runner) Apply(workDir string) (RunResult, error) {
 	return RunResult{WorkDir: workDir, Output: combined, Status: "bootstrapped"}, nil
 }
 
-func renderInventory(spec BootstrapSpec) (string, error) {
+func renderInventory(spec BootstrapSpec, keyPath string) (string, error) {
 	tpl, err := template.New("inventory").Parse(inventoryTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse inventory template: %w", err)
@@ -134,7 +140,7 @@ func renderInventory(spec BootstrapSpec) (string, error) {
 		"ControlPlanes":     controlPlanes,
 		"Workers":           workers,
 		"SSHUser":           spec.SSHSUser,
-		"SSHPrivateKeyPath": spec.SSHPrivateKeyPath,
+		"SSHPrivateKeyPath": keyPath,
 	}
 
 	var out bytes.Buffer
