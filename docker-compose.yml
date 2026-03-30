@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       args:
-        GOPROXY: https://proxy.golang.org,https://goproxy.io,direct
+        GOPROXY: https://goproxy.cn,https://proxy.golang.org,https://goproxy.io
         GOSUMDB: "off"
     container_name: k8s-proxmox-backend
     restart: unless-stopped

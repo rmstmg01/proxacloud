@@ -2,13 +2,11 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /src
 
-ARG GOPROXY=https://proxy.golang.org,https://goproxy.io,direct
+ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,https://goproxy.io
 ARG GOSUMDB=off
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
-
-RUN apk add --no-cache ca-certificates git
 
 COPY backend/go.mod backend/go.sum ./backend/
 RUN --mount=type=cache,target=/go/pkg/mod \
