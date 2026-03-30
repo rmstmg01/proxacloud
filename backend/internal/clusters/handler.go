@@ -56,7 +56,11 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	status := http.StatusOK
+	if resp.Status == "bootstrapping" {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, resp)
 }
 
 func (h *Handler) ListClusters(w http.ResponseWriter, _ *http.Request) {

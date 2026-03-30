@@ -495,14 +495,29 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	ansibleOutput := ""
 	applyNow := req.Apply || s.autoBootstrap
 	if applyNow {
-		runResult, runErr := s.ansibleRunner.Apply(workDir)
-		status = runResult.Status
-		ansibleOutput = runResult.Output
-		if runErr != nil {
-			_ = s.insertProvisionRun(clusterID, "bootstrap", status, workDir, ansibleOutput)
-			_ = s.updateClusterStatus(clusterID, "failed")
-			return BootstrapResponse{}, runErr
-		}
+		status = "bootstrapping"
+		_ = s.insertProvisionRun(clusterID, "bootstrap", status, workDir, "")
+		_ = s.updateClusterStatus(clusterID, status)
+
+		go func() {
+			runResult, runErr := s.ansibleRunner.Apply(workDir)
+			runStatus := runResult.Status
+			runOutput := runResult.Output
+			if runErr != nil {
+				_ = s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput)
+				_ = s.updateClusterStatus(clusterID, "failed")
+				return
+			}
+			_ = s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput)
+			_ = s.updateClusterStatus(clusterID, runStatus)
+		}()
+
+		return BootstrapResponse{
+			ClusterID:      clusterID,
+			Status:         status,
+			AnsibleWorkDir: workDir,
+			Warnings:       warnings,
+		}, nil
 	}
 
 	if err := s.insertProvisionRun(clusterID, "bootstrap", status, workDir, ansibleOutput); err != nil {
