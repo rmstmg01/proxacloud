@@ -114,7 +114,11 @@ func (r *Runner) Apply(workDir string) (RunResult, error) {
 	err := cmd.Run()
 	combined := stdout.String() + stderr.String()
 	if err != nil {
-		return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w", err)
+		trimmed := strings.TrimSpace(combined)
+		if trimmed == "" {
+			return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w", err)
+		}
+		return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w\nansible output:\n%s", err, trimmed)
 	}
 
 	return RunResult{WorkDir: workDir, Output: combined, Status: "bootstrapped"}, nil
