@@ -319,7 +319,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			IPAddress:       assignedIP,
 		})
 
-		if err := s.insertClusterNode(clusterID, placement, vmName); err != nil {
+		if err := s.insertClusterNode(clusterID, placement, vmName, assignedIP); err != nil {
 			return ProvisionResponse{}, err
 		}
 	}
@@ -1219,15 +1219,16 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 	return clusterID, nil
 }
 
-func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string) error {
+func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string, ipAddress string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
 		clusterID,
 		placement.Role,
 		placement.Index,
 		placement.ProxmoxNodeName,
 		vmName,
+		strings.TrimSpace(ipAddress),
 	)
 	if err != nil {
 		return fmt.Errorf("insert cluster node: %w", err)
