@@ -1492,11 +1492,12 @@ func (s *Service) getBootstrapSSHKeys(clusterID int64) ([]BootstrapSSHKeyRecord,
 
 func (s *Service) upsertBootstrapConfig(clusterID int64, sshUser string, lastSSHKeyID int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, last_ssh_key_id)
-		 VALUES ($1, $2, $3)
+		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, ssh_private_key_path, last_ssh_key_id)
+		 VALUES ($1, $2, '', $3)
 		 ON CONFLICT (cluster_id)
 		 DO UPDATE SET
 		   ssh_user = EXCLUDED.ssh_user,
+		   ssh_private_key_path = EXCLUDED.ssh_private_key_path,
 		   last_ssh_key_id = EXCLUDED.last_ssh_key_id,
 		   updated_at = NOW()`,
 		clusterID,
