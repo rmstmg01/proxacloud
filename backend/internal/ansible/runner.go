@@ -236,133 +236,133 @@ ansible_python_interpreter=/usr/bin/python3
 `
 
 const playbookTemplate = `- hosts: k8s_cluster
-  become: true
-  gather_facts: true
-  tasks:
-    - name: Disable swap
-      command: swapoff -a
-      changed_when: false
+	become: true
+	gather_facts: true
+	tasks:
+		- name: Disable swap
+			command: swapoff -a
+			changed_when: false
 
-    - name: Remove swap from fstab
-      replace:
-        path: /etc/fstab
-        regexp: '^([^#].*\\sswap\\s+sw\\s+.*)$'
-        replace: '# \\1'
+		- name: Remove swap from fstab
+			replace:
+				path: /etc/fstab
+				regexp: '^([^#].*\\sswap\\s+sw\\s+.*)$'
+				replace: '# \\1'
 
-    - name: Load required kernel modules
-      copy:
-        dest: /etc/modules-load.d/k8s.conf
-        content: |
-          overlay
-          br_netfilter
+		- name: Load required kernel modules
+			copy:
+				dest: /etc/modules-load.d/k8s.conf
+				content: |
+					overlay
+					br_netfilter
 
-    - name: Ensure modules loaded
-      shell: |
-        modprobe overlay
-        modprobe br_netfilter
+		- name: Ensure modules loaded
+			shell: |
+				modprobe overlay
+				modprobe br_netfilter
 
-    - name: Set sysctl params
-      copy:
-        dest: /etc/sysctl.d/k8s.conf
-        content: |
-          net.bridge.bridge-nf-call-iptables = 1
-          net.bridge.bridge-nf-call-ip6tables = 1
-          net.ipv4.ip_forward = 1
+		- name: Set sysctl params
+			copy:
+				dest: /etc/sysctl.d/k8s.conf
+				content: |
+					net.bridge.bridge-nf-call-iptables = 1
+					net.bridge.bridge-nf-call-ip6tables = 1
+					net.ipv4.ip_forward = 1
 
-    - name: Apply sysctl
-      command: sysctl --system
-      changed_when: false
+		- name: Apply sysctl
+			command: sysctl --system
+			changed_when: false
 
-    - name: Install containerd and dependencies
-      apt:
-        name:
-          - apt-transport-https
-          - ca-certificates
-          - curl
-          - gpg
-          - containerd
-        update_cache: true
-        state: present
+		- name: Install containerd and dependencies
+			apt:
+				name:
+					- apt-transport-https
+					- ca-certificates
+					- curl
+					- gpg
+					- containerd
+				update_cache: true
+				state: present
 
-    - name: Configure containerd with systemd cgroup
-      shell: |
-        mkdir -p /etc/containerd
-        containerd config default > /etc/containerd/config.toml
-        sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-        systemctl restart containerd
-        systemctl enable containerd
-      args:
-        creates: /etc/containerd/config.toml
+		- name: Configure containerd with systemd cgroup
+			shell: |
+				mkdir -p /etc/containerd
+				containerd config default > /etc/containerd/config.toml
+				sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+				systemctl restart containerd
+				systemctl enable containerd
+			args:
+				creates: /etc/containerd/config.toml
 
-    - name: Add Kubernetes apt key
-      shell: |
-        mkdir -p /etc/apt/keyrings
+		- name: Add Kubernetes apt key
+			shell: |
+				mkdir -p /etc/apt/keyrings
 				curl -fsSL https://pkgs.k8s.io/core:/stable:/{{ .KubernetesAptChannel }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-      args:
-        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+			args:
+				creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
 
-    - name: Add Kubernetes apt repo
-      copy:
-        dest: /etc/apt/sources.list.d/kubernetes.list
-        content: |
+		- name: Add Kubernetes apt repo
+			copy:
+				dest: /etc/apt/sources.list.d/kubernetes.list
+				content: |
 					deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/{{ .KubernetesAptChannel }}/deb/ /
 
-    - name: Install kubeadm kubelet kubectl
-      apt:
-        name:
-          - kubelet
-          - kubeadm
-          - kubectl
-        update_cache: true
-        state: present
+		- name: Install kubeadm kubelet kubectl
+			apt:
+				name:
+					- kubelet
+					- kubeadm
+					- kubectl
+				update_cache: true
+				state: present
 
-    - name: Hold Kubernetes packages
-      shell: apt-mark hold kubelet kubeadm kubectl
-      changed_when: false
+		- name: Hold Kubernetes packages
+			shell: apt-mark hold kubelet kubeadm kubectl
+			changed_when: false
 
 - hosts: control_plane[0]
-  become: true
-  tasks:
-    - name: Initialize first control plane
-      command: >
-        kubeadm init
-        --pod-network-cidr={{ .PodCIDR }}
-        --service-cidr={{ .ServiceCIDR }}
+	become: true
+	tasks:
+		- name: Initialize first control plane
+			command: >
+				kubeadm init
+				--pod-network-cidr={{ .PodCIDR }}
+				--service-cidr={{ .ServiceCIDR }}
 				{{ .InitEndpointArg }}
-      args:
-        creates: /etc/kubernetes/admin.conf
+			args:
+				creates: /etc/kubernetes/admin.conf
 
-    - name: Create join command
-      command: kubeadm token create --print-join-command
-      register: join_command
+		- name: Create join command
+			command: kubeadm token create --print-join-command
+			register: join_command
 
-    - name: Save join command
-      copy:
+		- name: Save join command
+			copy:
 				content: "{{ "{{ join_command.stdout }}" }} --cri-socket unix:///run/containerd/containerd.sock"
-        dest: /tmp/kubeadm_join_cmd.sh
-        mode: '0700'
+				dest: /tmp/kubeadm_join_cmd.sh
+				mode: '0700'
 
-    - name: Install CNI
-      shell: |
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        if [ "{{ .CNI }}" = "calico" ]; then
-          kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml
-        else
-          kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml
-        fi
+		- name: Install CNI
+			shell: |
+				export KUBECONFIG=/etc/kubernetes/admin.conf
+				if [ "{{ .CNI }}" = "calico" ]; then
+					kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml
+				else
+					kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml
+				fi
 
 - hosts: control_plane:workers:!control_plane[0]
-  become: true
-  tasks:
-    - name: Read join command from first control plane
-      slurp:
-        src: /tmp/kubeadm_join_cmd.sh
+	become: true
+	tasks:
+		- name: Read join command from first control plane
+			slurp:
+				src: /tmp/kubeadm_join_cmd.sh
 			delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
-      run_once: true
-      register: join_script
+			run_once: true
+			register: join_script
 
-    - name: Join cluster
+		- name: Join cluster
 			shell: "{{ "{{ join_script.content | b64decode }}" }}"
-      args:
-        creates: /etc/kubernetes/kubelet.conf
+			args:
+				creates: /etc/kubernetes/kubelet.conf
 `
