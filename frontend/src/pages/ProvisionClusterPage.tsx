@@ -24,7 +24,7 @@ export function ProvisionClusterPage() {
     worker_count: 3,
     network_profile_id: 0,
     proxmox_credential_id: 0,
-    node_ip_pool_start: '',
+    node_ip_pool_start: '192.168.8.100',
     kubernetes_version: 'v1.31.4',
     ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
     ssh_public_key: '',
@@ -65,6 +65,7 @@ export function ProvisionClusterPage() {
       ...form,
       network_profile_id: Number(form.network_profile_id),
       proxmox_credential_id: Number(form.proxmox_credential_id),
+      node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
     });
     navigate(`/clusters/${result.cluster_id}`);
   };
