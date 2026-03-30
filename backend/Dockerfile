@@ -19,8 +19,7 @@ FROM hashicorp/terraform:1.9 AS terraform-bin
 
 FROM alpine:3.20
 
-RUN apk add --no-cache python3 py3-pip openssh-client \
-	&& pip3 install --no-cache-dir ansible-core
+RUN apk add --no-cache ansible-core openssh-client
 
 RUN adduser -D -g '' appuser
 
