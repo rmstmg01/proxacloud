@@ -1226,6 +1226,12 @@ func validateProvisionRequest(req ProvisionRequest) error {
 	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)) == nil {
 		return errors.New("node_ip_pool_start is not a valid IP address")
 	}
+	if req.ControlPlaneRAMMB > 0 && req.ControlPlaneRAMMB < 2048 {
+		return errors.New("control_plane_ram_mb must be at least 2048")
+	}
+	if req.WorkerRAMMB > 0 && req.WorkerRAMMB < 2048 {
+		return errors.New("worker_ram_mb must be at least 2048")
+	}
 
 	return nil
 }

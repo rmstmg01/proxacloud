@@ -206,7 +206,7 @@ export function ProvisionClusterPage() {
             <Input
               label="RAM (MB)"
               type="number"
-              min={1024}
+              min={2048}
               step={1024}
               value={form.control_plane_ram_mb}
               onChange={(e) => setField('control_plane_ram_mb', Number(e.target.value))}
@@ -235,7 +235,7 @@ export function ProvisionClusterPage() {
             <Input
               label="RAM (MB)"
               type="number"
-              min={1024}
+              min={2048}
               step={1024}
               value={form.worker_ram_mb}
               onChange={(e) => setField('worker_ram_mb', Number(e.target.value))}

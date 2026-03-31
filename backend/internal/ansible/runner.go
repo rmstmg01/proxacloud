@@ -335,6 +335,11 @@ const playbookTemplate = `---
 - hosts: control_plane[0]
   become: true
   tasks:
+    - name: Validate control plane memory
+      fail:
+        msg: "Control-plane node requires at least 1700 MB RAM for kubeadm init (found {{ "{{ ansible_memtotal_mb }}" }} MB). Increase VM memory and retry."
+      when: ansible_memtotal_mb | int < 1700
+
     - name: Initialize first control plane
       command: >
         kubeadm init
