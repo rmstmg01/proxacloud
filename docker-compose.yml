@@ -43,8 +43,8 @@ services:
       DEFAULT_NETWORK_DNS: 1.1.1.1,8.8.8.8
       DEFAULT_NETWORK_BRIDGE: vmbr0
       DEFAULT_NETWORK_VLAN: "0"
-      TERRAFORM_WORKDIR: /app/backend/infra/terraform/runs
-      ANSIBLE_WORKDIR: /app/backend/infra/ansible/runs
+      TERRAFORM_WORKDIR: /app/backend/data/terraform/runs
+      ANSIBLE_WORKDIR: /app/backend/data/ansible/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
     ports:
@@ -52,6 +52,7 @@ services:
     volumes:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
+      - backend_data:/app/backend/data
 
   frontend:
     build:
@@ -66,3 +67,4 @@ services:
 
 volumes:
   postgres_data:
+  backend_data:
