@@ -161,6 +161,13 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		return "", fmt.Errorf("parse playbook template: %w", err)
 	}
 
+	controlPlaneCount := 0
+	for _, n := range spec.Nodes {
+		if n.Role == "control-plane" {
+			controlPlaneCount++
+		}
+	}
+
 	cni := strings.TrimSpace(spec.CNI)
 	if cni == "" {
 		cni = "calico"
@@ -173,7 +180,7 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		"PodCIDR":              nonEmpty(spec.PodCIDR, "10.244.0.0/16"),
 		"ServiceCIDR":          nonEmpty(spec.ServiceCIDR, "10.96.0.0/12"),
 		"CNI":                  cni,
-		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP),
+		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, controlPlaneCount),
 	}
 
 	var out bytes.Buffer
@@ -196,7 +203,10 @@ func sanitizeName(name string) string {
 	return strings.ToLower(replacer.Replace(strings.TrimSpace(name)))
 }
 
-func initEndpointArg(vip string) string {
+func initEndpointArg(vip string, controlPlaneCount int) string {
+	if controlPlaneCount <= 1 {
+		return ""
+	}
 	trimmed := strings.TrimSpace(vip)
 	if trimmed == "" {
 		return ""
