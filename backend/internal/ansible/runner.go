@@ -251,6 +251,13 @@ const playbookTemplate = `---
   become: true
   gather_facts: true
   tasks:
+    - name: Wait for cloud-init to finish
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --wait
+        fi
+      changed_when: false
+
     - name: Disable swap
       command: swapoff -a
       changed_when: false
@@ -294,6 +301,7 @@ const playbookTemplate = `---
           - gpg
           - conntrack
           - containerd
+        lock_timeout: 600
         update_cache: true
         state: present
 
@@ -325,6 +333,7 @@ const playbookTemplate = `---
           - kubelet
           - kubeadm
           - kubectl
+				lock_timeout: 600
         update_cache: true
         state: present
 
