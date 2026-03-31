@@ -173,6 +173,33 @@ export interface RotateKubeconfigResponse {
   status: string;
 }
 
+export interface MetalLBAddressPool {
+  name: string;
+  addresses: string[];
+  auto_assign: boolean;
+  avoid_buggy_ips: boolean;
+}
+
+export interface DeployMetalLBResponse {
+  cluster_id: number;
+  status: string;
+  namespace: string;
+  version: string;
+  manifest_dir: string;
+  warnings: string[];
+}
+
+export interface MetalLBStatusResponse {
+  cluster_id: number;
+  namespace: string;
+  version: string;
+  address_pools: MetalLBAddressPool[];
+  interfaces: string[];
+  status: string;
+  manifest_dir: string;
+  updated_at: string;
+}
+
 export interface DeployObservabilityResponse {
   cluster_id: number;
   status: string;

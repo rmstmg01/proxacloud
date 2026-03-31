@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -213,6 +214,41 @@ type DeployObservabilityRequest struct {
 	RetentionDays        int    `json:"retention_days"`
 	StorageClass         string `json:"storage_class"`
 	Apply                bool   `json:"apply"`
+}
+
+type MetalLBAddressPool struct {
+	Name          string   `json:"name"`
+	Addresses     []string `json:"addresses"`
+	AutoAssign    bool     `json:"auto_assign"`
+	AvoidBuggyIPs bool     `json:"avoid_buggy_ips"`
+}
+
+type DeployMetalLBRequest struct {
+	Namespace    string               `json:"namespace"`
+	Version      string               `json:"version"`
+	AddressPools []MetalLBAddressPool `json:"address_pools"`
+	Interfaces   []string             `json:"interfaces"`
+	Apply        bool                 `json:"apply"`
+}
+
+type DeployMetalLBResponse struct {
+	ClusterID   int64    `json:"cluster_id"`
+	Status      string   `json:"status"`
+	Namespace   string   `json:"namespace"`
+	Version     string   `json:"version"`
+	ManifestDir string   `json:"manifest_dir"`
+	Warnings    []string `json:"warnings"`
+}
+
+type MetalLBStatusResponse struct {
+	ClusterID    int64                `json:"cluster_id"`
+	Namespace    string               `json:"namespace"`
+	Version      string               `json:"version"`
+	AddressPools []MetalLBAddressPool `json:"address_pools"`
+	Interfaces   []string             `json:"interfaces"`
+	Status       string               `json:"status"`
+	ManifestDir  string               `json:"manifest_dir"`
+	UpdatedAt    time.Time            `json:"updated_at"`
 }
 
 type DeployObservabilityResponse struct {
@@ -1035,6 +1071,140 @@ func (s *Service) DeployObservability(clusterID int64, req DeployObservabilityRe
 	}, nil
 }
 
+func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (DeployMetalLBResponse, error) {
+	cluster, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return DeployMetalLBResponse{}, err
+	}
+
+	namespace, version, addressPools, interfaces, err := normalizeMetalLBRequest(req)
+	if err != nil {
+		return DeployMetalLBResponse{}, err
+	}
+
+	manifestDir := filepath.Join("infra", "operations", "runs", sanitizePathToken(cluster.Name), "metallb")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("create metallb workspace: %w", err)
+	}
+
+	configManifest := buildMetalLBConfigManifest(namespace, addressPools, interfaces)
+	configPath := filepath.Join(manifestDir, "metallb-resources.yaml")
+	if err := os.WriteFile(configPath, []byte(configManifest), 0o644); err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("write metallb resources manifest: %w", err)
+	}
+
+	readmePath := filepath.Join(manifestDir, "README.md")
+	if err := os.WriteFile(readmePath, []byte(buildMetalLBREADME(cluster.Name, namespace, version)), 0o644); err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("write metallb readme: %w", err)
+	}
+
+	psPath := filepath.Join(manifestDir, "apply-metallb.ps1")
+	if err := os.WriteFile(psPath, []byte(buildMetalLBPowerShell(namespace, version)), 0o644); err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("write metallb powershell helper: %w", err)
+	}
+
+	shPath := filepath.Join(manifestDir, "apply-metallb.sh")
+	if err := os.WriteFile(shPath, []byte(buildMetalLBShell(namespace, version)), 0o755); err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("write metallb shell helper: %w", err)
+	}
+
+	addressPoolsJSON, err := json.Marshal(addressPools)
+	if err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("marshal metallb address pools: %w", err)
+	}
+	interfacesJSON, err := json.Marshal(interfaces)
+	if err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("marshal metallb interfaces: %w", err)
+	}
+
+	status := "metallb-prepared"
+	warnings := []string{}
+	if req.Apply {
+		status = "metallb-apply-requested"
+		warnings = append(warnings, "runtime kubectl apply is not executed yet; use the generated helper script or README in the manifest directory")
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO metallb_configs (cluster_id, namespace, version, address_pools, interfaces, status, manifest_dir)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (cluster_id)
+		 DO UPDATE SET
+		   namespace = EXCLUDED.namespace,
+		   version = EXCLUDED.version,
+		   address_pools = EXCLUDED.address_pools,
+		   interfaces = EXCLUDED.interfaces,
+		   status = EXCLUDED.status,
+		   manifest_dir = EXCLUDED.manifest_dir,
+		   updated_at = NOW()`,
+		clusterID,
+		namespace,
+		version,
+		string(addressPoolsJSON),
+		string(interfacesJSON),
+		status,
+		manifestDir,
+	)
+	if err != nil {
+		return DeployMetalLBResponse{}, fmt.Errorf("upsert metallb config: %w", err)
+	}
+
+	if err := s.insertProvisionRun(clusterID, "metallb-deploy", status, manifestDir, configPath); err != nil {
+		return DeployMetalLBResponse{}, err
+	}
+	if err := s.updateClusterStatus(clusterID, status); err != nil {
+		return DeployMetalLBResponse{}, err
+	}
+
+	return DeployMetalLBResponse{
+		ClusterID:   clusterID,
+		Status:      status,
+		Namespace:   namespace,
+		Version:     version,
+		ManifestDir: manifestDir,
+		Warnings:    warnings,
+	}, nil
+}
+
+func (s *Service) GetMetalLB(clusterID int64) (MetalLBStatusResponse, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return MetalLBStatusResponse{}, err
+	}
+
+	var out MetalLBStatusResponse
+	var addressPoolsJSON []byte
+	var interfacesJSON []byte
+	err := s.db.QueryRow(
+		`SELECT cluster_id, namespace, version, address_pools, interfaces, status, manifest_dir, updated_at
+		 FROM metallb_configs
+		 WHERE cluster_id = $1`,
+		clusterID,
+	).Scan(
+		&out.ClusterID,
+		&out.Namespace,
+		&out.Version,
+		&addressPoolsJSON,
+		&interfacesJSON,
+		&out.Status,
+		&out.ManifestDir,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MetalLBStatusResponse{}, errors.New("metallb not configured for this cluster")
+		}
+		return MetalLBStatusResponse{}, fmt.Errorf("get metallb config: %w", err)
+	}
+
+	if err := json.Unmarshal(addressPoolsJSON, &out.AddressPools); err != nil {
+		return MetalLBStatusResponse{}, fmt.Errorf("decode metallb address pools: %w", err)
+	}
+	if err := json.Unmarshal(interfacesJSON, &out.Interfaces); err != nil {
+		return MetalLBStatusResponse{}, fmt.Errorf("decode metallb interfaces: %w", err)
+	}
+
+	return out, nil
+}
+
 func (s *Service) GetObservability(clusterID int64) (ObservabilityStatusResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return ObservabilityStatusResponse{}, err
@@ -1338,6 +1508,86 @@ func validateBootstrapRequest(req BootstrapRequest) error {
 	}
 
 	return nil
+}
+
+func normalizeMetalLBRequest(req DeployMetalLBRequest) (string, string, []MetalLBAddressPool, []string, error) {
+	namespace := strings.TrimSpace(req.Namespace)
+	if namespace == "" {
+		namespace = "metallb-system"
+	}
+
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = "v0.14.9"
+	}
+
+	pools := make([]MetalLBAddressPool, 0, len(req.AddressPools))
+	for index, pool := range req.AddressPools {
+		name := strings.TrimSpace(pool.Name)
+		if name == "" {
+			name = fmt.Sprintf("pool-%d", index+1)
+		}
+
+		addresses := make([]string, 0, len(pool.Addresses))
+		for _, address := range pool.Addresses {
+			trimmed := strings.TrimSpace(address)
+			if trimmed == "" {
+				continue
+			}
+			if err := validateMetalLBAddress(trimmed); err != nil {
+				return "", "", nil, nil, fmt.Errorf("address_pools[%d]: %w", index, err)
+			}
+			addresses = append(addresses, trimmed)
+		}
+		if len(addresses) == 0 {
+			return "", "", nil, nil, fmt.Errorf("address_pools[%d] must include at least one address range or CIDR", index)
+		}
+
+		pools = append(pools, MetalLBAddressPool{
+			Name:          name,
+			Addresses:     addresses,
+			AutoAssign:    pool.AutoAssign,
+			AvoidBuggyIPs: pool.AvoidBuggyIPs,
+		})
+	}
+	if len(pools) == 0 {
+		return "", "", nil, nil, errors.New("at least one address pool is required")
+	}
+
+	interfaces := make([]string, 0, len(req.Interfaces))
+	for _, iface := range req.Interfaces {
+		trimmed := strings.TrimSpace(iface)
+		if trimmed == "" {
+			continue
+		}
+		interfaces = append(interfaces, trimmed)
+	}
+
+	return namespace, version, pools, interfaces, nil
+}
+
+func validateMetalLBAddress(value string) error {
+	if strings.Contains(value, "-") {
+		parts := strings.SplitN(value, "-", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid address range %q", value)
+		}
+		start := strings.TrimSpace(parts[0])
+		end := strings.TrimSpace(parts[1])
+		if net.ParseIP(start) == nil || net.ParseIP(end) == nil {
+			return fmt.Errorf("invalid address range %q", value)
+		}
+		return nil
+	}
+
+	if _, _, err := net.ParseCIDR(value); err == nil {
+		return nil
+	}
+	if net.ParseIP(value) != nil {
+		return nil
+	}
+
+	return fmt.Errorf("invalid address or CIDR %q", value)
 }
 
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
@@ -1791,4 +2041,88 @@ prometheus:
 						requests:
 							storage: 40Gi
 `, adminUser, adminPassword, storageClass, retentionDays, storageClass)
+}
+
+func buildMetalLBConfigManifest(namespace string, addressPools []MetalLBAddressPool, interfaces []string) string {
+	var builder strings.Builder
+	builder.WriteString("---\n")
+	builder.WriteString("apiVersion: metallb.io/v1beta1\n")
+	builder.WriteString("kind: IPAddressPool\n")
+	for index, pool := range addressPools {
+		if index > 0 {
+			builder.WriteString("---\n")
+			builder.WriteString("apiVersion: metallb.io/v1beta1\n")
+			builder.WriteString("kind: IPAddressPool\n")
+		}
+		builder.WriteString(fmt.Sprintf("metadata:\n  name: %s\n  namespace: %s\n", pool.Name, namespace))
+		builder.WriteString("spec:\n")
+		builder.WriteString(fmt.Sprintf("  autoAssign: %t\n", pool.AutoAssign))
+		builder.WriteString(fmt.Sprintf("  avoidBuggyIPs: %t\n", pool.AvoidBuggyIPs))
+		builder.WriteString("  addresses:\n")
+		for _, address := range pool.Addresses {
+			builder.WriteString(fmt.Sprintf("    - %s\n", address))
+		}
+		builder.WriteString("---\n")
+		builder.WriteString("apiVersion: metallb.io/v1beta1\n")
+		builder.WriteString("kind: L2Advertisement\n")
+		builder.WriteString(fmt.Sprintf("metadata:\n  name: %s-l2\n  namespace: %s\n", pool.Name, namespace))
+		builder.WriteString("spec:\n")
+		builder.WriteString("  ipAddressPools:\n")
+		builder.WriteString(fmt.Sprintf("    - %s\n", pool.Name))
+		if len(interfaces) > 0 {
+			builder.WriteString("  interfaces:\n")
+			for _, iface := range interfaces {
+				builder.WriteString(fmt.Sprintf("    - %s\n", iface))
+			}
+		}
+	}
+	return builder.String()
+}
+
+func buildMetalLBREADME(clusterName, namespace, version string) string {
+	return fmt.Sprintf(`# MetalLB Deployment
+
+Cluster: %s
+Namespace: %s
+Version: %s
+
+Files in this directory:
+
+- metallb-resources.yaml: IPAddressPool and L2Advertisement resources for this cluster.
+- apply-metallb.ps1: PowerShell helper for Windows operators.
+- apply-metallb.sh: Shell helper for Linux operators.
+
+Manual install flow:
+
+1. Install MetalLB controllers from the official upstream manifest.
+2. Wait for the controller deployment to become available.
+3. Apply metallb-resources.yaml.
+
+Official manifest URL:
+
+https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml
+`, clusterName, namespace, version, version)
+}
+
+func buildMetalLBPowerShell(namespace, version string) string {
+	return fmt.Sprintf(`$ErrorActionPreference = "Stop"
+
+$manifest = "https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
+
+kubectl apply -f $manifest
+kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
+kubectl apply -f ./metallb-resources.yaml
+`, version, namespace)
+}
+
+func buildMetalLBShell(namespace, version string) string {
+	return fmt.Sprintf(`#!/usr/bin/env sh
+set -eu
+
+manifest="https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
+
+kubectl apply -f "$manifest"
+kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
+kubectl apply -f ./metallb-resources.yaml
+`, version, namespace)
 }

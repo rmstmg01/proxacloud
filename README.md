@@ -48,6 +48,7 @@ Step-by-step implementation of a self-hosted application to provision production
 
 ## Step 7 (Implemented)
 
+- MetalLB deployment configuration API and manifest generation
 - Observability deployment configuration API (Prometheus/Grafana values generation)
 - etcd snapshot planning and restore planning APIs
 - Snapshot and restore tracking persistence

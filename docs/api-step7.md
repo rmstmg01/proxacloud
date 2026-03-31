@@ -22,6 +22,38 @@ Behavior:
 - Creates values file for kube-prometheus-stack under `infra/operations/runs/<cluster>/observability`
 - Stores observability configuration and status in database
 
+## MetalLB
+
+- `POST /api/v1/clusters/{id}/metallb/deploy`
+- `GET /api/v1/clusters/{id}/metallb`
+
+Deploy request example:
+
+```json
+{
+  "namespace": "metallb-system",
+  "version": "v0.14.9",
+  "address_pools": [
+    {
+      "name": "services",
+      "addresses": [
+        "192.168.8.220-192.168.8.240"
+      ],
+      "auto_assign": true,
+      "avoid_buggy_ips": false
+    }
+  ],
+  "interfaces": ["ens18"],
+  "apply": false
+}
+```
+
+Behavior:
+
+- Creates cluster-specific MetalLB manifests and helper scripts under `infra/operations/runs/<cluster>/metallb`
+- Stores MetalLB configuration and status in database
+- `apply=true` marks the deployment as requested but does not execute `kubectl` directly from the API
+
 ## etcd Backup
 
 - `POST /api/v1/clusters/{id}/etcd/snapshot`

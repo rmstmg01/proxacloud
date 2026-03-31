@@ -10,6 +10,8 @@ import {
   upgradeCluster,
   replaceNode,
   rotateKubeconfig,
+  deployMetalLB,
+  getMetalLB,
   deployObservability,
   getObservability,
   createEtcdSnapshot,
@@ -28,13 +30,14 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'runs', label: 'Run History' },
   { key: 'bootstrap', label: 'Bootstrap' },
   { key: 'day2', label: 'Day-2 Ops' },
+  { key: 'metallb', label: 'MetalLB' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
 ];
@@ -437,6 +440,125 @@ function ObservabilityTab({ id }: { id: number }) {
   );
 }
 
+function MetalLBTab({ id }: { id: number }) {
+  const deployMut = useMutation({ mutationFn: (b: Parameters<typeof deployMetalLB>[1]) => deployMetalLB(id, b) });
+  const { data: status, refetch } = useQuery({ queryKey: ['metallb', id], queryFn: () => getMetalLB(id), retry: false });
+
+  const [form, setForm] = useState({
+    namespace: 'metallb-system',
+    version: 'v0.14.9',
+    pool_name: 'services',
+    addresses_raw: '',
+    interfaces_raw: '',
+    auto_assign: true,
+    avoid_buggy_ips: false,
+    apply: false,
+  });
+
+  const handleDeploy = async (e: FormEvent) => {
+    e.preventDefault();
+    const addresses = form.addresses_raw
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const interfaces = form.interfaces_raw
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    await deployMut.mutateAsync({
+      namespace: form.namespace,
+      version: form.version,
+      address_pools: [{
+        name: form.pool_name,
+        addresses,
+        auto_assign: form.auto_assign,
+        avoid_buggy_ips: form.avoid_buggy_ips,
+      }],
+      interfaces,
+      apply: form.apply,
+    });
+    refetch();
+  };
+
+  return (
+    <div className="space-y-6">
+      {status && (
+        <Card>
+          <CardHeader><CardTitle>Current Status</CardTitle></CardHeader>
+          <div className="divide-y divide-slate-100">
+            {[
+              ['Status', <StatusBadge key="s" status={status.status} />],
+              ['Namespace', status.namespace],
+              ['Version', status.version],
+              ['Address Pools', status.address_pools.map((pool) => `${pool.name}: ${pool.addresses.join(', ')}`).join(' | ') || '—'],
+              ['Interfaces', status.interfaces.join(', ') || 'all eligible interfaces'],
+              ['Manifest Dir', status.manifest_dir || '—'],
+              ['Updated', new Date(status.updated_at).toLocaleString()],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="flex items-center px-6 py-3">
+                <span className="w-40 text-sm text-slate-500 font-medium flex-shrink-0">{label}</span>
+                <span className="text-sm text-slate-900 break-all">{value}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader><CardTitle>Prepare MetalLB</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleDeploy} className="space-y-4 max-w-xl">
+            <Alert variant="info" title="Generated deployment assets">
+              This prepares cluster-specific MetalLB manifests and helper scripts under infra/operations/runs. It does not run kubectl in the cluster at request time.
+            </Alert>
+            <Input label="Namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} placeholder="metallb-system" required />
+            <Input label="MetalLB version" value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="v0.14.9" required />
+            <Input label="Address pool name" value={form.pool_name} onChange={(e) => setForm({ ...form, pool_name: e.target.value })} placeholder="services" required />
+            <Textarea
+              label="Address ranges"
+              value={form.addresses_raw}
+              onChange={(e) => setForm({ ...form, addresses_raw: e.target.value })}
+              rows={4}
+              placeholder={'192.168.8.220-192.168.8.240\n192.168.8.250/32'}
+              helperText="One CIDR, IP, or IP range per line"
+              required
+            />
+            <Textarea
+              label="L2 interfaces (optional)"
+              value={form.interfaces_raw}
+              onChange={(e) => setForm({ ...form, interfaces_raw: e.target.value })}
+              rows={3}
+              placeholder={'ens18\neth0'}
+              helperText="Leave empty to advertise on all eligible interfaces"
+            />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.auto_assign} onChange={(e) => setForm({ ...form, auto_assign: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Enable auto assignment from this pool</span>
+            </label>
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.avoid_buggy_ips} onChange={(e) => setForm({ ...form, avoid_buggy_ips: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Avoid buggy .0 and .255 addresses</span>
+            </label>
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.apply} onChange={(e) => setForm({ ...form, apply: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Mark as apply requested</span>
+            </label>
+            {deployMut.data && (
+              <Alert variant="success" title="MetalLB assets prepared">
+                Status: {deployMut.data.status}<br />
+                Manifest directory: {deployMut.data.manifest_dir}
+              </Alert>
+            )}
+            {deployMut.error && <ErrorMessage error={deployMut.error} />}
+            <Button type="submit" loading={deployMut.isPending}>Prepare MetalLB</Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function EtcdTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: snapshots, isLoading } = useQuery({ queryKey: ['etcd-snapshots', id], queryFn: () => getEtcdSnapshots(id) });
@@ -582,6 +704,7 @@ export function ClusterDetailPage() {
       {activeTab === 'runs' && <RunsTab id={clusterId} />}
       {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
       {activeTab === 'day2' && <Day2Tab id={clusterId} />}
+      {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
       {activeTab === 'etcd' && <EtcdTab id={clusterId} />}
     </Layout>

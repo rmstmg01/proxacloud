@@ -11,6 +11,8 @@ import type {
   UpgradeResponse,
   ReplaceNodeResponse,
   RotateKubeconfigResponse,
+  DeployMetalLBResponse,
+  MetalLBStatusResponse,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
   EtcdSnapshotRecord,
@@ -96,6 +98,30 @@ export const replaceNode = (
 export const rotateKubeconfig = (id: number, ttl_hours: number) =>
   client
     .post<RotateKubeconfigResponse>(`/clusters/${id}/rotate-kubeconfig`, { ttl_hours })
+    .then((r) => r.data);
+
+export const deployMetalLB = (
+  id: number,
+  body: {
+    namespace: string;
+    version: string;
+    address_pools: Array<{
+      name: string;
+      addresses: string[];
+      auto_assign: boolean;
+      avoid_buggy_ips: boolean;
+    }>;
+    interfaces: string[];
+    apply: boolean;
+  },
+) =>
+  client
+    .post<DeployMetalLBResponse>(`/clusters/${id}/metallb/deploy`, body)
+    .then((r) => r.data);
+
+export const getMetalLB = (id: number) =>
+  client
+    .get<MetalLBStatusResponse>(`/clusters/${id}/metallb`)
     .then((r) => r.data);
 
 export const deployObservability = (
