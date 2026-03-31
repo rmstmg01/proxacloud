@@ -1407,7 +1407,7 @@ func (s *Service) getClusterDeleteInfo(clusterID int64) (clusterDeleteInfo, erro
 		        COALESCE((
 		          SELECT pr.work_dir
 		          FROM provision_runs pr
-		          WHERE pr.cluster_id = c.id AND pr.work_dir <> ''
+		          WHERE pr.cluster_id = c.id AND pr.work_dir <> '' AND pr.action = 'provision'
 		          ORDER BY pr.created_at DESC
 		          LIMIT 1
 		        ), '')
