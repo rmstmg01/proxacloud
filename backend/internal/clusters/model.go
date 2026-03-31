@@ -666,7 +666,15 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 			if _, destroyErr := s.terraformRunner.Destroy(workDir, auth); destroyErr != nil {
 				return fmt.Errorf("destroy cluster infrastructure: %w", destroyErr)
 			}
-		} else if !os.IsNotExist(statErr) {
+		} else if os.IsNotExist(statErr) {
+			nodes, nodeErr := s.getClusterNodes(clusterID)
+			if nodeErr != nil {
+				return nodeErr
+			}
+			if len(nodes) > 0 {
+				return fmt.Errorf("terraform workspace %q is missing (container restarted?); VMs still exist in Proxmox — destroy them manually or restore the workspace before deleting", workDir)
+			}
+		} else {
 			return fmt.Errorf("inspect terraform workspace: %w", statErr)
 		}
 	} else {
