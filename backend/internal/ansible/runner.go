@@ -333,7 +333,7 @@ const playbookTemplate = `---
           - kubelet
           - kubeadm
           - kubectl
-				lock_timeout: 600
+        lock_timeout: 600
         update_cache: true
         state: present
 
