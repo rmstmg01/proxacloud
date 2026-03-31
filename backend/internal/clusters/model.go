@@ -232,13 +232,19 @@ type DeployMetalLBRequest struct {
 	Apply        bool                 `json:"apply"`
 }
 
+type MetalLBCommands struct {
+	PowerShell string `json:"powershell"`
+	Shell      string `json:"shell"`
+}
+
 type DeployMetalLBResponse struct {
-	ClusterID   int64    `json:"cluster_id"`
-	Status      string   `json:"status"`
-	Namespace   string   `json:"namespace"`
-	Version     string   `json:"version"`
-	ManifestDir string   `json:"manifest_dir"`
-	Warnings    []string `json:"warnings"`
+	ClusterID   int64           `json:"cluster_id"`
+	Status      string          `json:"status"`
+	Namespace   string          `json:"namespace"`
+	Version     string          `json:"version"`
+	ManifestDir string          `json:"manifest_dir"`
+	Commands    MetalLBCommands `json:"commands"`
+	Warnings    []string        `json:"warnings"`
 }
 
 type MetalLBStatusResponse struct {
@@ -249,6 +255,7 @@ type MetalLBStatusResponse struct {
 	Interfaces   []string             `json:"interfaces"`
 	Status       string               `json:"status"`
 	ManifestDir  string               `json:"manifest_dir"`
+	Commands     MetalLBCommands      `json:"commands"`
 	UpdatedAt    time.Time            `json:"updated_at"`
 }
 
@@ -1163,12 +1170,15 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 		return DeployMetalLBResponse{}, err
 	}
 
+	commands := buildMetalLBCommands(manifestDir)
+
 	return DeployMetalLBResponse{
 		ClusterID:   clusterID,
 		Status:      status,
 		Namespace:   namespace,
 		Version:     version,
 		ManifestDir: manifestDir,
+		Commands:    commands,
 		Warnings:    warnings,
 	}, nil
 }
@@ -1209,6 +1219,8 @@ func (s *Service) GetMetalLB(clusterID int64) (MetalLBStatusResponse, error) {
 	if err := json.Unmarshal(interfacesJSON, &out.Interfaces); err != nil {
 		return MetalLBStatusResponse{}, fmt.Errorf("decode metallb interfaces: %w", err)
 	}
+
+	out.Commands = buildMetalLBCommands(out.ManifestDir)
 
 	return out, nil
 }
@@ -2137,4 +2149,12 @@ kubectl apply -f "$manifest"
 kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
 kubectl apply -f ./metallb-resources.yaml
 `, version, namespace)
+}
+
+func buildMetalLBCommands(manifestDir string) MetalLBCommands {
+	quotedDir := fmt.Sprintf("%q", manifestDir)
+	return MetalLBCommands{
+		PowerShell: fmt.Sprintf("Set-Location %s\n.\\apply-metallb.ps1", quotedDir),
+		Shell:      fmt.Sprintf("cd %s\nsh ./apply-metallb.sh", quotedDir),
+	}
 }

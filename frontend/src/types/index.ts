@@ -180,12 +180,18 @@ export interface MetalLBAddressPool {
   avoid_buggy_ips: boolean;
 }
 
+export interface MetalLBCommands {
+  powershell: string;
+  shell: string;
+}
+
 export interface DeployMetalLBResponse {
   cluster_id: number;
   status: string;
   namespace: string;
   version: string;
   manifest_dir: string;
+  commands: MetalLBCommands;
   warnings: string[];
 }
 
@@ -197,6 +203,7 @@ export interface MetalLBStatusResponse {
   interfaces: string[];
   status: string;
   manifest_dir: string;
+  commands: MetalLBCommands;
   updated_at: string;
 }
 

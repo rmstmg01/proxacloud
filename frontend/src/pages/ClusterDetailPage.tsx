@@ -443,6 +443,7 @@ function ObservabilityTab({ id }: { id: number }) {
 function MetalLBTab({ id }: { id: number }) {
   const deployMut = useMutation({ mutationFn: (b: Parameters<typeof deployMetalLB>[1]) => deployMetalLB(id, b) });
   const { data: status, refetch } = useQuery({ queryKey: ['metallb', id], queryFn: () => getMetalLB(id), retry: false });
+  const commandSource = deployMut.data ?? status;
 
   const [form, setForm] = useState({
     namespace: 'metallb-system',
@@ -483,6 +484,35 @@ function MetalLBTab({ id }: { id: number }) {
 
   return (
     <div className="space-y-6">
+      {commandSource && (
+        <Card>
+          <CardHeader><CardTitle>Operator Commands</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <Input
+              label="Manifest directory"
+              value={commandSource.manifest_dir}
+              readOnly
+            />
+            <Textarea
+              label="PowerShell"
+              value={commandSource.commands.powershell}
+              readOnly
+              rows={3}
+              className="font-mono text-xs"
+              helperText="Run from a Windows machine with kubectl pointed at the target cluster"
+            />
+            <Textarea
+              label="Shell"
+              value={commandSource.commands.shell}
+              readOnly
+              rows={3}
+              className="font-mono text-xs"
+              helperText="Run from a Linux machine with kubectl pointed at the target cluster"
+            />
+          </CardContent>
+        </Card>
+      )}
+
       {status && (
         <Card>
           <CardHeader><CardTitle>Current Status</CardTitle></CardHeader>
@@ -546,8 +576,11 @@ function MetalLBTab({ id }: { id: number }) {
             </label>
             {deployMut.data && (
               <Alert variant="success" title="MetalLB assets prepared">
-                Status: {deployMut.data.status}<br />
-                Manifest directory: {deployMut.data.manifest_dir}
+                <div className="space-y-2">
+                  <p>Status: {deployMut.data.status}</p>
+                  <p>Manifest directory: {deployMut.data.manifest_dir}</p>
+                  <p className="text-xs">Use the Operator Commands card above to run the generated helper script.</p>
+                </div>
               </Alert>
             )}
             {deployMut.error && <ErrorMessage error={deployMut.error} />}
