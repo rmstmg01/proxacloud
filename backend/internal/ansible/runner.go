@@ -408,4 +408,16 @@ const playbookTemplate = `---
       shell: "{{ "{{ join_script.content | b64decode }}" }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
+
+- hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Label worker nodes
+      shell: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        label node {{ "{{ item }}" }}
+        node-role.kubernetes.io/worker=worker
+        --overwrite
+      loop: "{{ "{{ groups['workers'] }}" }}"
+      when: "{{ "{{ groups['workers'] | length > 0 }}" }}"
 `
