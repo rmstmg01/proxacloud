@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -504,12 +505,22 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 			runStatus := runResult.Status
 			runOutput := runResult.Output
 			if runErr != nil {
-				_ = s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput)
-				_ = s.updateClusterStatus(clusterID, "failed")
+				log.Printf("ERROR bootstrap cluster %d: %v", clusterID, runErr)
+				if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
+					log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
+				}
+				if dbErr := s.updateClusterStatus(clusterID, "failed"); dbErr != nil {
+					log.Printf("ERROR updating cluster %d status to failed: %v", clusterID, dbErr)
+				}
 				return
 			}
-			_ = s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput)
-			_ = s.updateClusterStatus(clusterID, runStatus)
+			log.Printf("INFO bootstrap cluster %d completed with status %s", clusterID, runStatus)
+			if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
+				log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
+			}
+			if dbErr := s.updateClusterStatus(clusterID, runStatus); dbErr != nil {
+				log.Printf("ERROR updating cluster %d status: %v", clusterID, dbErr)
+			}
 		}()
 
 		return BootstrapResponse{

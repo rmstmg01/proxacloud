@@ -293,8 +293,6 @@ const playbookTemplate = `---
         sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
         systemctl restart containerd
         systemctl enable containerd
-      args:
-        creates: /etc/containerd/config.toml
 
     - name: Add Kubernetes apt key
       shell: |
