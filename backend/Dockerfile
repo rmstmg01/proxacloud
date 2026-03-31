@@ -29,7 +29,7 @@ COPY --from=builder /out/api-server /app/backend/api-server
 COPY --from=builder /src/backend/migrations /app/backend/migrations
 COPY --from=terraform-bin /bin/terraform /usr/local/bin/terraform
 
-RUN mkdir -p /app/backend/data/terraform/runs /app/backend/data/ansible/runs
+RUN mkdir -p /app/backend/data/terraform/runs /app/backend/data/ansible/runs /app/backend/data/operations/runs
 RUN chown -R appuser:appuser /app
 USER appuser
 

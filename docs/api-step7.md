@@ -19,7 +19,7 @@ Deploy request example:
 
 Behavior:
 
-- Creates values file for kube-prometheus-stack under `infra/operations/runs/<cluster>/observability`
+- Creates values file for kube-prometheus-stack under the configured operations workspace, defaulting to `backend/data/operations/runs/<cluster>/observability`
 - Stores observability configuration and status in database
 
 ## MetalLB
@@ -50,7 +50,7 @@ Deploy request example:
 
 Behavior:
 
-- Creates cluster-specific MetalLB manifests and helper scripts under `infra/operations/runs/<cluster>/metallb`
+- Creates cluster-specific MetalLB manifests and helper scripts under the configured operations workspace, defaulting to `backend/data/operations/runs/<cluster>/metallb`
 - Stores MetalLB configuration and status in database
 - `apply=true` marks the deployment as requested but does not execute `kubectl` directly from the API
 

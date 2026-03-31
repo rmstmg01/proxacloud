@@ -44,6 +44,7 @@ type Service struct {
 	terraformRunner *terraform.Runner
 	ansibleRunner   *ansible.Runner
 	proxmoxSvc      ProxmoxCredentialStore
+	operationsDir   string
 	autoApply       bool
 	autoBootstrap   bool
 }
@@ -312,9 +313,15 @@ func NewService(
 	terraformRunner *terraform.Runner,
 	ansibleRunner *ansible.Runner,
 	proxmoxSvc ProxmoxCredentialStore,
+	operationsDir string,
 	autoApply bool,
 	autoBootstrap bool,
 ) *Service {
+	operationsDir = strings.TrimSpace(operationsDir)
+	if operationsDir == "" {
+		operationsDir = filepath.Join("data", "operations", "runs")
+	}
+
 	return &Service{
 		db:              db,
 		networks:        networks,
@@ -322,6 +329,7 @@ func NewService(
 		terraformRunner: terraformRunner,
 		ansibleRunner:   ansibleRunner,
 		proxmoxSvc:      proxmoxSvc,
+		operationsDir:   operationsDir,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
 	}
@@ -1012,7 +1020,7 @@ func (s *Service) DeployObservability(clusterID int64, req DeployObservabilityRe
 		storageClass = "default"
 	}
 
-	manifestDir := filepath.Join("infra", "operations", "runs", sanitizePathToken(cluster.Name), "observability")
+	manifestDir := s.operationsManifestDir(cluster.Name, "observability")
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		return DeployObservabilityResponse{}, fmt.Errorf("create observability workspace: %w", err)
 	}
@@ -1082,7 +1090,7 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 		return DeployMetalLBResponse{}, err
 	}
 
-	manifestDir := filepath.Join("infra", "operations", "runs", sanitizePathToken(cluster.Name), "metallb")
+	manifestDir := s.operationsManifestDir(cluster.Name, "metallb")
 	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		return DeployMetalLBResponse{}, fmt.Errorf("create metallb workspace: %w", err)
 	}
@@ -2018,6 +2026,10 @@ func sanitizePathToken(name string) string {
 		return "cluster"
 	}
 	return token
+}
+
+func (s *Service) operationsManifestDir(clusterName, component string) string {
+	return filepath.Join(s.operationsDir, sanitizePathToken(clusterName), component)
 }
 
 func buildObservabilityManifest(adminUser, adminPassword string, retentionDays int, storageClass string) string {

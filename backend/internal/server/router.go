@@ -61,6 +61,7 @@ func NewApp() (*App, error) {
 		terraformRunner,
 		ansibleRunner,
 		proxmoxService,
+		cfg.OperationsWorkDir,
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
 	)

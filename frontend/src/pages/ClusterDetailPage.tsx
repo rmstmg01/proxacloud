@@ -510,7 +510,7 @@ function MetalLBTab({ id }: { id: number }) {
         <CardContent>
           <form onSubmit={handleDeploy} className="space-y-4 max-w-xl">
             <Alert variant="info" title="Generated deployment assets">
-              This prepares cluster-specific MetalLB manifests and helper scripts under infra/operations/runs. It does not run kubectl in the cluster at request time.
+              This prepares cluster-specific MetalLB manifests and helper scripts in the backend operations workspace. It does not run kubectl in the cluster at request time.
             </Alert>
             <Input label="Namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} placeholder="metallb-system" required />
             <Input label="MetalLB version" value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })} placeholder="v0.14.9" required />

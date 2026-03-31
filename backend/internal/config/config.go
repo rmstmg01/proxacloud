@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -16,6 +17,7 @@ type Config struct {
 	AnsibleBinary      string
 	AnsibleWorkDir     string
 	AnsibleAutoApply   bool
+	OperationsWorkDir  string
 	JWTSecret          string
 	JWTTTLMinutes      int
 	SuperAdminUsername string
@@ -40,6 +42,7 @@ func Load() Config {
 		AnsibleBinary:         getenv("ANSIBLE_BINARY", "ansible-playbook"),
 		AnsibleWorkDir:        getenv("ANSIBLE_WORKDIR", "infra/ansible/runs"),
 		AnsibleAutoApply:      getenvBool("ANSIBLE_AUTO_APPLY", false),
+		OperationsWorkDir:     getenv("OPERATIONS_WORKDIR", filepath.Join("data", "operations", "runs")),
 		JWTSecret:             getenv("JWT_SECRET", "change-me-in-prod"),
 		JWTTTLMinutes:         getenvInt("JWT_TTL_MINUTES", 120),
 		SuperAdminUsername:    getenv("SUPER_ADMIN_USERNAME", "k8s-admin"),

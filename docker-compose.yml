@@ -45,6 +45,7 @@ services:
       DEFAULT_NETWORK_VLAN: "0"
       TERRAFORM_WORKDIR: /app/backend/data/terraform/runs
       ANSIBLE_WORKDIR: /app/backend/data/ansible/runs
+      OPERATIONS_WORKDIR: /app/backend/data/operations/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
     ports:
