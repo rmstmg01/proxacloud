@@ -91,6 +91,29 @@ Notes:
 - Backend API will be at `http://localhost:8080`
 - PostgreSQL will be at `localhost:5432`
 - Terraform/Ansible apply operations are disabled by default in compose (`*_AUTO_APPLY=false`)
+- A dedicated `kubectl-runner` service is available under the `ops` compose profile for operational apply actions
+
+## Apply MetalLB From Docker
+
+After preparing MetalLB from the API/UI, use the generated `manifest_dir` with the ops runner.
+
+PowerShell example:
+
+```powershell
+cd .
+docker compose --profile ops up -d kubectl-runner
+docker compose run --rm -e KUBECONFIG=/kube/config -v "$env:USERPROFILE/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
+```
+
+Bash example:
+
+```bash
+cd .
+docker compose --profile ops up -d kubectl-runner
+docker compose run --rm -e KUBECONFIG=/kube/config -v "$HOME/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
+```
+
+Replace `<cluster>` with the cluster slug from `manifest_dir`.
 
 ## Next Steps
 

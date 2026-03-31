@@ -54,6 +54,13 @@ Behavior:
 - Stores MetalLB configuration and status in database
 - `apply=true` marks the deployment as requested but does not execute `kubectl` directly from the API
 
+Run prepared manifests via Docker example:
+
+```powershell
+docker compose --profile ops up -d kubectl-runner
+docker compose run --rm -e KUBECONFIG=/kube/config -v "$env:USERPROFILE/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
+```
+
 ## etcd Backup
 
 - `POST /api/v1/clusters/{id}/etcd/snapshot`

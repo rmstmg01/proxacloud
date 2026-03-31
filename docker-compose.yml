@@ -66,6 +66,20 @@ services:
     ports:
       - "3000:80"
 
+  kubectl-runner:
+    image: bitnami/kubectl:1.30
+    container_name: k8s-proxmox-kubectl-runner
+    profiles:
+      - ops
+    depends_on:
+      - backend
+    environment:
+      KUBECONFIG: /kube/config
+    entrypoint: ["/bin/sh", "-lc"]
+    command: ["sleep infinity"]
+    volumes:
+      - backend_data:/app/backend/data
+
 volumes:
   postgres_data:
   backend_data:
