@@ -51,7 +51,7 @@ export function DashboardPage() {
 
   const failedClusters = clusters?.filter((c) => c.status.toLowerCase() === 'failed') ?? [];
   const runningClusters =
-    clusters?.filter((c) => ['running', 'active', 'completed'].includes(c.status.toLowerCase())) ?? [];
+    clusters?.filter((c) => ['running', 'active', 'completed', 'bootstrapped'].includes(c.status.toLowerCase())) ?? [];
 
   if (loadingClusters || loadingNetworks || loadingNodes) return <Layout><PageSpinner /></Layout>;
 

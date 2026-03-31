@@ -377,6 +377,23 @@ const playbookTemplate = `---
           kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.1/manifests/calico.yaml
         fi
 
+    - name: Create .kube directory for ansible user
+      file:
+        path: "/home/{{ "{{ ansible_user }}" }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ "{{ ansible_user }}" }}"
+        group: "{{ "{{ ansible_user }}" }}"
+
+    - name: Copy admin.conf to user kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ "{{ ansible_user }}" }}/.kube/config"
+        remote_src: true
+        owner: "{{ "{{ ansible_user }}" }}"
+        group: "{{ "{{ ansible_user }}" }}"
+        mode: '0600'
+
 - hosts: control_plane:workers:!control_plane[0]
   become: true
   tasks:
