@@ -282,6 +282,7 @@ const playbookTemplate = `---
           - ca-certificates
           - curl
           - gpg
+          - conntrack
           - containerd
         update_cache: true
         state: present
