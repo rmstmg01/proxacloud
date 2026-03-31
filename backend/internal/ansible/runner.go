@@ -292,6 +292,7 @@ const playbookTemplate = `---
         mkdir -p /etc/containerd
         containerd config default > /etc/containerd/config.toml
         sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+        sed -i 's|sandbox_image = "registry.k8s.io/pause:.*"|sandbox_image = "registry.k8s.io/pause:3.10"|g' /etc/containerd/config.toml
         systemctl restart containerd
         systemctl enable containerd
 
