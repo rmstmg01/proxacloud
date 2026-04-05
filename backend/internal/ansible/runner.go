@@ -352,34 +352,34 @@ const playbookTemplate = `---
       when: ansible_memtotal_mb | int < 1700
 
 {{- if .DeployKubeVIP }}
-		- name: Ensure kube-vip static manifest directory exists
-			file:
-				path: /etc/kubernetes/manifests
-				state: directory
-				mode: '0755'
+    - name: Ensure kube-vip static manifest directory exists
+      file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: '0755'
 
-		- name: Detect default network interface for kube-vip
-			shell: ip -o -4 route show to default | awk '{print $5}' | head -n1
-			register: kubevip_interface
-			changed_when: false
+    - name: Detect default network interface for kube-vip
+      shell: ip -o -4 route show to default | awk '{print $5}' | head -n1
+      register: kubevip_interface
+      changed_when: false
 
-		- name: Validate detected kube-vip interface
-			fail:
-				msg: "Unable to detect default network interface for kube-vip"
-			when: kubevip_interface.stdout | trim == ""
+    - name: Validate detected kube-vip interface
+      fail:
+        msg: "Unable to detect default network interface for kube-vip"
+      when: kubevip_interface.stdout | trim == ""
 
-		- name: Generate kube-vip static pod manifest
-			shell: |
-				ctr --namespace k8s.io image pull ghcr.io/kube-vip/kube-vip:v0.8.2
-				ctr --namespace k8s.io run --rm --net-host ghcr.io/kube-vip/kube-vip:v0.8.2 vip /kube-vip manifest pod \
-					--interface {{ "{{ kubevip_interface.stdout | trim }}" }} \
-					--address {{ .ControlPlaneVIP }} \
-					--controlplane \
-					--services \
-					--arp \
-					--leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
-			args:
-				executable: /bin/bash
+    - name: Generate kube-vip static pod manifest
+      shell: |
+        ctr --namespace k8s.io image pull ghcr.io/kube-vip/kube-vip:v0.8.2
+        ctr --namespace k8s.io run --rm --net-host ghcr.io/kube-vip/kube-vip:v0.8.2 vip /kube-vip manifest pod \
+          --interface {{ "{{ kubevip_interface.stdout | trim }}" }} \
+          --address {{ .ControlPlaneVIP }} \
+          --controlplane \
+          --services \
+          --arp \
+          --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
+      args:
+        executable: /bin/bash
 {{- end }}
 
     - name: Initialize first control plane
@@ -442,19 +442,19 @@ const playbookTemplate = `---
         mode: '0600'
 
 - hosts: control_plane:!control_plane[0]
-	become: true
-	tasks:
-		- name: Read control-plane join command from first control plane
-			slurp:
-				src: /tmp/kubeadm_join_control_plane.sh
-			delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
-			run_once: true
-			register: cp_join_script
+  become: true
+  tasks:
+    - name: Read control-plane join command from first control plane
+      slurp:
+        src: /tmp/kubeadm_join_control_plane.sh
+      delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
+      run_once: true
+      register: cp_join_script
 
-		- name: Join secondary control plane
-			shell: "{{ "{{ cp_join_script.content | b64decode }}" }}"
-			args:
-				creates: /etc/kubernetes/kubelet.conf
+    - name: Join secondary control plane
+      shell: "{{ "{{ cp_join_script.content | b64decode }}" }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
 
 - hosts: workers
   become: true
