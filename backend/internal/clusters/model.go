@@ -103,6 +103,7 @@ type BootstrapRequest struct {
 	SSHKeyPairID      int64             `json:"ssh_key_pair_id,omitempty"`
 	SSHKeyID          int64             `json:"ssh_key_id,omitempty"`
 	SSHKeyName        string            `json:"ssh_key_name,omitempty"`
+	DeployKubeVIP     bool              `json:"deploy_kube_vip,omitempty"`
 	ControlPlaneVIP   string            `json:"control_plane_vip"`
 	PodCIDR           string            `json:"pod_cidr"`
 	ServiceCIDR       string            `json:"service_cidr"`
@@ -646,6 +647,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	if controlPlaneCount == 0 {
 		return BootstrapResponse{}, errors.New("no control-plane nodes with valid IPs available for bootstrap")
 	}
+	if controlPlaneCount > 1 && req.DeployKubeVIP && strings.TrimSpace(req.ControlPlaneVIP) == "" {
+		return BootstrapResponse{}, errors.New("control_plane_vip is required when deploy_kube_vip is enabled for multi-control-plane bootstrap")
+	}
 
 	if strings.TrimSpace(req.ControlPlaneVIP) == "" {
 		warnings = append(warnings, "control_plane_vip is empty; kubeadm init will use primary control-plane endpoint")
@@ -657,6 +661,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		SSHSUser:          req.SSHUser,
 		SSHPrivateKey:     sshPrivateKey,
 		ControlPlaneVIP:   req.ControlPlaneVIP,
+		DeployKubeVIP:     req.DeployKubeVIP,
 		PodCIDR:           req.PodCIDR,
 		ServiceCIDR:       req.ServiceCIDR,
 		CNI:               req.CNI,

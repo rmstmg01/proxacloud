@@ -76,6 +76,7 @@ export const bootstrapCluster = (
     ssh_private_key?: string;
     ssh_key_id?: number;
     ssh_key_name?: string;
+    deploy_kube_vip?: boolean;
     control_plane_vip: string;
     pod_cidr: string;
     service_cidr: string;

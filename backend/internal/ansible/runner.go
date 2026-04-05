@@ -25,6 +25,7 @@ type BootstrapSpec struct {
 	SSHSUser          string
 	SSHPrivateKey     string
 	ControlPlaneVIP   string
+	DeployKubeVIP     bool
 	PodCIDR           string
 	ServiceCIDR       string
 	CNI               string
@@ -177,6 +178,7 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		"KubernetesVersion":    strings.TrimSpace(spec.KubernetesVersion),
 		"KubernetesAptChannel": kubernetesAptChannel(spec.KubernetesVersion),
 		"ControlPlaneVIP":      strings.TrimSpace(spec.ControlPlaneVIP),
+		"DeployKubeVIP":        spec.DeployKubeVIP,
 		"PodCIDR":              nonEmpty(spec.PodCIDR, "10.244.0.0/16"),
 		"ServiceCIDR":          nonEmpty(spec.ServiceCIDR, "10.96.0.0/12"),
 		"CNI":                  cni,
@@ -349,6 +351,37 @@ const playbookTemplate = `---
         msg: "Control-plane node requires at least 1700 MB RAM for kubeadm init (found {{ "{{ ansible_memtotal_mb }}" }} MB). Increase VM memory and retry."
       when: ansible_memtotal_mb | int < 1700
 
+{{- if .DeployKubeVIP }}
+		- name: Ensure kube-vip static manifest directory exists
+			file:
+				path: /etc/kubernetes/manifests
+				state: directory
+				mode: '0755'
+
+		- name: Detect default network interface for kube-vip
+			shell: ip -o -4 route show to default | awk '{print $5}' | head -n1
+			register: kubevip_interface
+			changed_when: false
+
+		- name: Validate detected kube-vip interface
+			fail:
+				msg: "Unable to detect default network interface for kube-vip"
+			when: kubevip_interface.stdout | trim == ""
+
+		- name: Generate kube-vip static pod manifest
+			shell: |
+				ctr --namespace k8s.io image pull ghcr.io/kube-vip/kube-vip:v0.8.2
+				ctr --namespace k8s.io run --rm --net-host ghcr.io/kube-vip/kube-vip:v0.8.2 vip /kube-vip manifest pod \
+					--interface {{ "{{ kubevip_interface.stdout | trim }}" }} \
+					--address {{ .ControlPlaneVIP }} \
+					--controlplane \
+					--services \
+					--arp \
+					--leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
+			args:
+				executable: /bin/bash
+{{- end }}
+
     - name: Initialize first control plane
       command: >
         kubeadm init
@@ -362,11 +395,25 @@ const playbookTemplate = `---
       command: kubeadm token create --print-join-command
       register: join_command
 
-    - name: Save join command
+		- name: Upload control-plane certificates
+			command: kubeadm init phase upload-certs --upload-certs
+			register: upload_certs_output
+
+		- name: Extract certificate key
+			set_fact:
+				kubeadm_certificate_key: "{{ "{{ upload_certs_output.stdout_lines[-1] | trim }}" }}"
+
+		- name: Save worker join command
       copy:
         content: "{{ "{{ join_command.stdout }}" }} --cri-socket unix:///run/containerd/containerd.sock"
-        dest: /tmp/kubeadm_join_cmd.sh
+				dest: /tmp/kubeadm_join_worker.sh
         mode: '0700'
+
+		- name: Save control-plane join command
+			copy:
+				content: "{{ "{{ join_command.stdout }}" }} --control-plane --certificate-key {{ "{{ kubeadm_certificate_key }}" }} --cri-socket unix:///run/containerd/containerd.sock"
+				dest: /tmp/kubeadm_join_control_plane.sh
+				mode: '0700'
 
     - name: Install CNI
       shell: |
@@ -394,18 +441,33 @@ const playbookTemplate = `---
         group: "{{ "{{ ansible_user }}" }}"
         mode: '0600'
 
-- hosts: control_plane:workers:!control_plane[0]
+- hosts: control_plane:!control_plane[0]
+	become: true
+	tasks:
+		- name: Read control-plane join command from first control plane
+			slurp:
+				src: /tmp/kubeadm_join_control_plane.sh
+			delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
+			run_once: true
+			register: cp_join_script
+
+		- name: Join secondary control plane
+			shell: "{{ "{{ cp_join_script.content | b64decode }}" }}"
+			args:
+				creates: /etc/kubernetes/kubelet.conf
+
+- hosts: workers
   become: true
   tasks:
-    - name: Read join command from first control plane
+		- name: Read worker join command from first control plane
       slurp:
-        src: /tmp/kubeadm_join_cmd.sh
+				src: /tmp/kubeadm_join_worker.sh
       delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
       run_once: true
-      register: join_script
+			register: worker_join_script
 
-    - name: Join cluster
-      shell: "{{ "{{ join_script.content | b64decode }}" }}"
+		- name: Join worker node
+			shell: "{{ "{{ worker_join_script.content | b64decode }}" }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
 

@@ -150,6 +150,7 @@ function BootstrapTab({ id }: { id: number }) {
     ssh_private_key: '',
     ssh_key_id: 0,
     ssh_key_name: 'default',
+    deploy_kube_vip: true,
     control_plane_vip: '',
     pod_cidr: '10.244.0.0/16',
     service_cidr: '10.96.0.0/12',
@@ -229,6 +230,7 @@ function BootstrapTab({ id }: { id: number }) {
       ssh_private_key: form.ssh_private_key.trim() || undefined,
       ssh_key_id: form.ssh_private_key.trim() || form.ssh_key_pair_id ? undefined : (form.ssh_key_id || undefined),
       ssh_key_name: form.ssh_private_key.trim() ? form.ssh_key_name.trim() || 'default' : undefined,
+      deploy_kube_vip: form.deploy_kube_vip,
       control_plane_vip: form.control_plane_vip,
       pod_cidr: form.pod_cidr,
       service_cidr: form.service_cidr,
@@ -292,6 +294,15 @@ function BootstrapTab({ id }: { id: number }) {
             placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----'}
             helperText="Paste to save/update a cluster key. Leave empty to use global key pair or selected saved key."
           />
+          <label className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={form.deploy_kube_vip}
+              onChange={(e) => setForm({ ...form, deploy_kube_vip: e.target.checked })}
+              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-sm text-slate-700">Deploy kube-vip static pod before kubeadm init (HA VIP)</span>
+          </label>
           {nodesQuery.isLoading && (
             <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>
           )}
