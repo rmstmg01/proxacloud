@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	TypeSingle = "single"
-	TypeDual   = "dual"
-	TypeTri    = "tri"
+	TypeSingle                       = "single"
+	TypeDual                         = "dual"
+	TypeTri                          = "tri"
+	lowMemoryPlacementThresholdBytes = 4 * 1024 * 1024 * 1024
 )
 
 type PlanRequest struct {
@@ -90,7 +91,12 @@ func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {
-		return nodes[i].NodeName < nodes[j].NodeName
+		leftAvailable := availableMemoryBytes(nodes[i])
+		rightAvailable := availableMemoryBytes(nodes[j])
+		if leftAvailable == rightAvailable {
+			return nodes[i].NodeName < nodes[j].NodeName
+		}
+		return leftAvailable > rightAvailable
 	})
 
 	selectedNodeCount := minNodes
@@ -102,18 +108,28 @@ func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
 	}
 
 	placements := make([]Placement, 0, controlPlaneCount+workerCount)
+	placementCountByNode := make(map[string]int, len(selected))
+	nextNodeIndex := 0
 	for i := 0; i < controlPlaneCount; i++ {
+		nodeName, pickErr := pickPlacementNode(selected, placementCountByNode, &nextNodeIndex)
+		if pickErr != nil {
+			return PlanResponse{}, pickErr
+		}
 		placements = append(placements, Placement{
 			Role:            "control-plane",
 			Index:           i + 1,
-			ProxmoxNodeName: selected[i%len(selected)].NodeName,
+			ProxmoxNodeName: nodeName,
 		})
 	}
 	for i := 0; i < workerCount; i++ {
+		nodeName, pickErr := pickPlacementNode(selected, placementCountByNode, &nextNodeIndex)
+		if pickErr != nil {
+			return PlanResponse{}, pickErr
+		}
 		placements = append(placements, Placement{
 			Role:            "worker",
 			Index:           i + 1,
-			ProxmoxNodeName: selected[i%len(selected)].NodeName,
+			ProxmoxNodeName: nodeName,
 		})
 	}
 
@@ -123,6 +139,11 @@ func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
 	}
 	if t == TypeDual {
 		warnings = append(warnings, "dual-node topology has weaker control-plane quorum than tri-node")
+	}
+	for _, n := range selected {
+		if availableMemoryBytes(n) < lowMemoryPlacementThresholdBytes {
+			warnings = append(warnings, fmt.Sprintf("proxmox node %s has less than 4GB free RAM; planner limits it to a single VM placement", n.NodeName))
+		}
 	}
 
 	return PlanResponse{
@@ -135,6 +156,35 @@ func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
 		Placements:          placements,
 		Warnings:            warnings,
 	}, nil
+}
+
+func pickPlacementNode(selected []proxmox.Node, placementCountByNode map[string]int, nextNodeIndex *int) (string, error) {
+	if len(selected) == 0 {
+		return "", errors.New("no proxmox nodes selected for placement")
+	}
+
+	for i := 0; i < len(selected); i++ {
+		idx := (*nextNodeIndex + i) % len(selected)
+		node := selected[idx]
+		count := placementCountByNode[node.NodeName]
+		if availableMemoryBytes(node) < lowMemoryPlacementThresholdBytes && count >= 1 {
+			continue
+		}
+
+		placementCountByNode[node.NodeName] = count + 1
+		*nextNodeIndex = (idx + 1) % len(selected)
+		return node.NodeName, nil
+	}
+
+	return "", fmt.Errorf("insufficient placement capacity: nodes below 4GB free RAM can host only one VM each")
+}
+
+func availableMemoryBytes(node proxmox.Node) int64 {
+	available := node.MemoryTotalBytes - node.MemoryUsedBytes
+	if available < 0 {
+		return 0
+	}
+	return available
 }
 
 func minimumNodesForTopology(topologyType string) int {

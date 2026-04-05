@@ -16,6 +16,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
 	"k8s-proxmox-manager/backend/internal/rbac"
+	"k8s-proxmox-manager/backend/internal/sshkeys"
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
 	"k8s-proxmox-manager/backend/internal/users"
@@ -51,6 +52,7 @@ func NewApp() (*App, error) {
 
 	networkService := networks.NewService(database)
 	proxmoxService := proxmox.NewService(database)
+	sshKeyService := sshkeys.NewService(database)
 	topologyService := topology.NewService(proxmoxService)
 	terraformRunner := terraform.NewRunner(cfg.TerraformBinary, cfg.TerraformWorkDir)
 	ansibleRunner := ansible.NewRunner(cfg.AnsibleBinary, cfg.AnsibleWorkDir)
@@ -61,6 +63,7 @@ func NewApp() (*App, error) {
 		terraformRunner,
 		ansibleRunner,
 		proxmoxService,
+		sshKeyService,
 		cfg.OperationsWorkDir,
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
@@ -86,6 +89,7 @@ func NewApp() (*App, error) {
 	userHandler := users.NewHandler(userService, tokens)
 	networkHandler := networks.NewHandler(networkService)
 	proxmoxHandler := proxmox.NewHandler(proxmoxService)
+	sshKeyHandler := sshkeys.NewHandler(sshKeyService)
 	topologyHandler := topology.NewHandler(topologyService)
 	clusterHandler := clusters.NewHandler(clusterService)
 
@@ -121,6 +125,10 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/proxmox/credentials/{id}/discover-nodes", proxmoxHandler.DiscoverNodes)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxmox/nodes", proxmoxHandler.ListNodes)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Patch("/proxmox/nodes/{id}", proxmoxHandler.SetNodeEnabled)
+
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/ssh-keys", sshKeyHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/ssh-keys", sshKeyHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/ssh-keys/{id}", sshKeyHandler.Delete)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/topology/plan", topologyHandler.Plan)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters", clusterHandler.ListClusters)

@@ -21,6 +21,7 @@ import {
   getBootstrapConfig,
   getBootstrapKeys,
 } from '../api/clusters';
+import { getSSHKeys } from '../api/sshKeys';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -145,6 +146,7 @@ function RunsTab({ id }: { id: number }) {
 function BootstrapTab({ id }: { id: number }) {
   const [form, setForm] = useState({
     ssh_user: 'ubuntu',
+    ssh_key_pair_id: 0,
     ssh_private_key: '',
     ssh_key_id: 0,
     ssh_key_name: 'default',
@@ -171,6 +173,11 @@ function BootstrapTab({ id }: { id: number }) {
   const savedKeysQuery = useQuery({
     queryKey: ['cluster-bootstrap-keys', id],
     queryFn: () => getBootstrapKeys(id),
+  });
+
+  const globalKeysQuery = useQuery({
+    queryKey: ['ssh-keys'],
+    queryFn: getSSHKeys,
   });
 
   useEffect(() => {
@@ -218,8 +225,9 @@ function BootstrapTab({ id }: { id: number }) {
     }
     await mutation.mutateAsync({
       ssh_user: form.ssh_user,
+      ssh_key_pair_id: form.ssh_key_pair_id || undefined,
       ssh_private_key: form.ssh_private_key.trim() || undefined,
-      ssh_key_id: form.ssh_private_key.trim() ? undefined : (form.ssh_key_id || undefined),
+      ssh_key_id: form.ssh_private_key.trim() || form.ssh_key_pair_id ? undefined : (form.ssh_key_id || undefined),
       ssh_key_name: form.ssh_private_key.trim() ? form.ssh_key_name.trim() || 'default' : undefined,
       control_plane_vip: form.control_plane_vip,
       pod_cidr: form.pod_cidr,
@@ -244,6 +252,25 @@ function BootstrapTab({ id }: { id: number }) {
             </Alert>
           )}
           <Input label="SSH user" value={form.ssh_user} onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} required />
+          <Select
+            label="Global SSH key pair"
+            value={form.ssh_key_pair_id}
+            onChange={(e) => {
+              const selectedID = Number(e.target.value);
+              const selected = globalKeysQuery.data?.find((item) => item.id === selectedID);
+              setForm((prev) => ({
+                ...prev,
+                ssh_key_pair_id: selectedID,
+                ssh_user: selected?.ssh_user || prev.ssh_user,
+                ssh_private_key: selectedID > 0 ? '' : prev.ssh_private_key,
+              }));
+            }}
+          >
+            <option value={0}>-- Select global key pair (optional) --</option>
+            {globalKeysQuery.data?.map((k) => (
+              <option key={k.id} value={k.id}>{k.name} ({k.ssh_user})</option>
+            ))}
+          </Select>
           <Select label="Saved SSH key" value={form.ssh_key_id} onChange={(e) => setForm({ ...form, ssh_key_id: Number(e.target.value) })}>
             <option value={0}>-- Select saved key (optional) --</option>
             {savedKeysQuery.data?.map((k) => (
@@ -263,7 +290,7 @@ function BootstrapTab({ id }: { id: number }) {
             onChange={(e) => setForm({ ...form, ssh_private_key: e.target.value })}
             rows={6}
             placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----'}
-            helperText="Paste to save/update a key and use it now. Leave empty to use selected saved key."
+            helperText="Paste to save/update a cluster key. Leave empty to use global key pair or selected saved key."
           />
           {nodesQuery.isLoading && (
             <p className="text-sm text-slate-500">Loading provisioned node IPs…</p>

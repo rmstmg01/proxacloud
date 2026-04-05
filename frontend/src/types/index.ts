@@ -54,6 +54,15 @@ export interface ProxmoxNode {
   last_discovered_at: string;
 }
 
+export interface SSHKeyPair {
+  id: number;
+  name: string;
+  ssh_user: string;
+  public_key: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
 export type TopologyType = 'single' | 'dual' | 'tri';

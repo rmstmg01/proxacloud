@@ -53,6 +53,7 @@ export const provisionCluster = (body: {
   worker_count: number;
   network_profile_id: number;
   proxmox_credential_id: number;
+  ssh_key_pair_id?: number;
   node_credential_ids?: Record<string, number>;
   node_ip_pool_start: string;
   kubernetes_version: string;
@@ -71,6 +72,7 @@ export const bootstrapCluster = (
   id: number,
   body: {
     ssh_user: string;
+    ssh_key_pair_id?: number;
     ssh_private_key?: string;
     ssh_key_id?: number;
     ssh_key_name?: string;

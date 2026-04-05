@@ -11,6 +11,7 @@ import { NetworksPage } from './pages/NetworksPage';
 import { ProxmoxPage } from './pages/ProxmoxPage';
 import { UsersPage } from './pages/UsersPage';
 import { TopologyPage } from './pages/TopologyPage';
+import { SSHKeysPage } from './pages/SSHKeysPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -82,6 +83,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <UsersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/ssh-keys"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <SSHKeysPage />
                 </ProtectedRoute>
               }
             />

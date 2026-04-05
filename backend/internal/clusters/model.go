@@ -20,6 +20,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/ansible"
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
+	"k8s-proxmox-manager/backend/internal/sshkeys"
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
 )
@@ -38,6 +39,10 @@ type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 }
 
+type SSHKeyPairStore interface {
+	GetByID(id int64) (sshkeys.KeyPair, error)
+}
+
 type Service struct {
 	db              *sql.DB
 	networks        NetworkStore
@@ -45,6 +50,7 @@ type Service struct {
 	terraformRunner *terraform.Runner
 	ansibleRunner   *ansible.Runner
 	proxmoxSvc      ProxmoxCredentialStore
+	sshKeys         SSHKeyPairStore
 	operationsDir   string
 	autoApply       bool
 	autoBootstrap   bool
@@ -69,6 +75,7 @@ type ProvisionRequest struct {
 	WorkerRAMMB         int    `json:"worker_ram_mb"`
 	WorkerDisk          int    `json:"worker_disk_gb"`
 	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
+	SSHKeyPairID        int64  `json:"ssh_key_pair_id"`
 	// NodeCredentialIDs optionally overrides the Proxmox credential per node name.
 	// Key: proxmox node name, Value: proxmox credential id.
 	NodeCredentialIDs map[string]int64 `json:"node_credential_ids"`
@@ -93,6 +100,7 @@ type BootstrapRequest struct {
 	SSHUser           string            `json:"ssh_user"`
 	SSHPrivateKey     string            `json:"ssh_private_key,omitempty"`
 	SSHPrivateKeyPath string            `json:"ssh_private_key_path,omitempty"`
+	SSHKeyPairID      int64             `json:"ssh_key_pair_id,omitempty"`
 	SSHKeyID          int64             `json:"ssh_key_id,omitempty"`
 	SSHKeyName        string            `json:"ssh_key_name,omitempty"`
 	ControlPlaneVIP   string            `json:"control_plane_vip"`
@@ -325,6 +333,7 @@ func NewService(
 	terraformRunner *terraform.Runner,
 	ansibleRunner *ansible.Runner,
 	proxmoxSvc ProxmoxCredentialStore,
+	sshKeys SSHKeyPairStore,
 	operationsDir string,
 	autoApply bool,
 	autoBootstrap bool,
@@ -341,6 +350,7 @@ func NewService(
 		terraformRunner: terraformRunner,
 		ansibleRunner:   ansibleRunner,
 		proxmoxSvc:      proxmoxSvc,
+		sshKeys:         sshKeys,
 		operationsDir:   operationsDir,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
@@ -348,6 +358,10 @@ func NewService(
 }
 
 func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
+	if err := s.resolveProvisionSSHKey(&req); err != nil {
+		return ProvisionResponse{}, err
+	}
+
 	if err := validateProvisionRequest(req); err != nil {
 		return ProvisionResponse{}, err
 	}
@@ -484,6 +498,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	}
 	if clusterID <= 0 {
 		return BootstrapResponse{}, errors.New("cluster id is required")
+	}
+	if err := s.hydrateBootstrapSSHUser(&req); err != nil {
+		return BootstrapResponse{}, err
 	}
 	if err := validateBootstrapRequest(req); err != nil {
 		return BootstrapResponse{}, err
@@ -1936,6 +1953,28 @@ func (s *Service) resolveBootstrapSSHKey(clusterID int64, req BootstrapRequest) 
 		return key, keyID, nil
 	}
 
+	if req.SSHKeyPairID > 0 {
+		if s.sshKeys == nil {
+			return "", 0, errors.New("ssh key pair service is not configured")
+		}
+		pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
+		if err != nil {
+			if errors.Is(err, sshkeys.ErrKeyPairNotFound) {
+				return "", 0, errors.New("selected ssh key pair not found")
+			}
+			return "", 0, fmt.Errorf("load ssh key pair: %w", err)
+		}
+		privateKey := strings.TrimSpace(pair.PrivateKey)
+		if privateKey == "" {
+			return "", 0, errors.New("selected ssh key pair has empty private key")
+		}
+		keyID, saveErr := s.upsertBootstrapSSHKey(clusterID, strings.TrimSpace(pair.Name), privateKey)
+		if saveErr != nil {
+			return "", 0, saveErr
+		}
+		return privateKey, keyID, nil
+	}
+
 	if req.SSHKeyID > 0 {
 		key, err := s.getBootstrapSSHKeyByID(clusterID, req.SSHKeyID)
 		if err != nil {
@@ -1969,7 +2008,56 @@ func (s *Service) resolveBootstrapSSHKey(clusterID int64, req BootstrapRequest) 
 		return key, keyID, nil
 	}
 
-	return "", 0, errors.New("provide ssh_private_key or select an existing ssh_key_id")
+	return "", 0, errors.New("provide ssh_private_key, select ssh_key_pair_id, or select an existing ssh_key_id")
+}
+
+func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
+	req.SSHPublicKey = strings.TrimSpace(req.SSHPublicKey)
+	if req.SSHPublicKey != "" {
+		return nil
+	}
+	if req.SSHKeyPairID <= 0 {
+		return nil
+	}
+	if s.sshKeys == nil {
+		return errors.New("ssh key pair service is not configured")
+	}
+
+	pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
+	if err != nil {
+		if errors.Is(err, sshkeys.ErrKeyPairNotFound) {
+			return errors.New("selected ssh key pair not found")
+		}
+		return fmt.Errorf("load ssh key pair: %w", err)
+	}
+	req.SSHPublicKey = strings.TrimSpace(pair.PublicKey)
+	if req.SSHPublicKey == "" {
+		return errors.New("selected ssh key pair has empty public key")
+	}
+	return nil
+}
+
+func (s *Service) hydrateBootstrapSSHUser(req *BootstrapRequest) error {
+	req.SSHUser = strings.TrimSpace(req.SSHUser)
+	if req.SSHUser != "" || req.SSHKeyPairID <= 0 {
+		return nil
+	}
+	if s.sshKeys == nil {
+		return errors.New("ssh key pair service is not configured")
+	}
+
+	pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
+	if err != nil {
+		if errors.Is(err, sshkeys.ErrKeyPairNotFound) {
+			return errors.New("selected ssh key pair not found")
+		}
+		return fmt.Errorf("load ssh key pair: %w", err)
+	}
+	req.SSHUser = strings.TrimSpace(pair.SSHUser)
+	if req.SSHUser == "" {
+		req.SSHUser = "ubuntu"
+	}
+	return nil
 }
 
 func (s *Service) upsertBootstrapSSHKey(clusterID int64, keyName, privateKey string) (int64, error) {

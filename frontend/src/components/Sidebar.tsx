@@ -5,6 +5,7 @@ import {
   Network,
   Cpu,
   Users,
+  KeyRound,
   GitBranch,
   LogOut,
 } from 'lucide-react';
@@ -17,6 +18,7 @@ const navItems = [
   { to: '/proxmox', icon: Cpu, label: 'Proxmox' },
   { to: '/topology', icon: GitBranch, label: 'Topology' },
   { to: '/users', icon: Users, label: 'Users' },
+  { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
 ];
 
 export function Sidebar() {

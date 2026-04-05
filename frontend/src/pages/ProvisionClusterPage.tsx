@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react';
 import { checkClusterName, provisionCluster } from '../api/clusters';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
+import { getSSHKeys } from '../api/sshKeys';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Input, Select, Textarea } from '../components/ui/Input';
@@ -16,6 +17,7 @@ export function ProvisionClusterPage() {
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
   const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
+  const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
   const [debouncedName, setDebouncedName] = useState('');
 
   const [form, setForm] = useState({
@@ -35,6 +37,7 @@ export function ProvisionClusterPage() {
     worker_cpu: 4,
     worker_ram_mb: 8192,
     worker_disk_gb: 120,
+    ssh_key_pair_id: 0,
     node_credential_ids: {} as Record<string, number>,
     apply: false,
   });
@@ -99,6 +102,7 @@ export function ProvisionClusterPage() {
       ...form,
       network_profile_id: Number(form.network_profile_id),
       proxmox_credential_id: fallbackCredentialID,
+      ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
       node_credential_ids: nodeCredentialIDs,
       node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
     });
@@ -242,6 +246,26 @@ export function ProvisionClusterPage() {
               placeholder="v1.31.4"
               required
             />
+            <Select
+              label="SSH key pair"
+              value={form.ssh_key_pair_id}
+              onChange={(e) => {
+                const selectedID = Number(e.target.value);
+                const selectedKey = sshKeys?.find((key) => key.id === selectedID);
+                setForm((prev) => ({
+                  ...prev,
+                  ssh_key_pair_id: selectedID,
+                  ssh_public_key: selectedKey ? selectedKey.public_key : prev.ssh_public_key,
+                }));
+              }}
+            >
+              <option value={0}>-- Select saved key pair (optional) --</option>
+              {sshKeys?.map((key) => (
+                <option key={key.id} value={key.id}>
+                  {key.name} ({key.ssh_user})
+                </option>
+              ))}
+            </Select>
             <Input
               label="Node IP pool start"
               value={form.node_ip_pool_start}
@@ -270,7 +294,8 @@ export function ProvisionClusterPage() {
               onChange={(e) => setField('ssh_public_key', e.target.value)}
               rows={3}
               placeholder="ssh-ed25519 AAAA..."
-              required
+              helperText="Pick a saved key pair above or paste a public key manually"
+              required={Number(form.ssh_key_pair_id) === 0}
             />
           </CardContent>
         </Card>
