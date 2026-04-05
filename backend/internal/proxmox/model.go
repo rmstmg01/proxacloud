@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 var (
 	ErrCredentialNotFound = errors.New("proxmox credential not found")
+	ErrCredentialInUse    = errors.New("proxmox credential is in use by one or more clusters")
 )
 
 type Credential struct {
@@ -87,8 +90,21 @@ func (s *Service) CreateCredential(in Credential) (Credential, error) {
 }
 
 func (s *Service) DeleteCredential(id int64) error {
+	var inUseCount int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM clusters WHERE proxmox_credential_id = $1`, id).Scan(&inUseCount)
+	if err != nil {
+		return fmt.Errorf("check proxmox credential usage: %w", err)
+	}
+	if inUseCount > 0 {
+		return fmt.Errorf("%w (%d cluster(s) still reference it)", ErrCredentialInUse, inUseCount)
+	}
+
 	res, err := s.db.Exec(`DELETE FROM proxmox_credentials WHERE id = $1`, id)
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return ErrCredentialInUse
+		}
 		return fmt.Errorf("delete proxmox credential: %w", err)
 	}
 	affected, _ := res.RowsAffected()

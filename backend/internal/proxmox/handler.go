@@ -64,6 +64,8 @@ func (h *Handler) DeleteCredential(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrCredentialNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrCredentialInUse):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
