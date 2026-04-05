@@ -34,7 +34,11 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, resp)
+	status := http.StatusCreated
+	if resp.Status == "provisioning" {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, resp)
 }
 
 func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {

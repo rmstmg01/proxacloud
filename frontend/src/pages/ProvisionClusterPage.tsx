@@ -199,7 +199,7 @@ export function ProvisionClusterPage() {
                   Override credentials per Proxmox node. Leave a node on default by keeping "Use default cluster credential".
                 </p>
                 <p className="text-xs text-amber-700">
-                  Note: direct "apply" currently supports a single effective credential; use "prepare" when mixing credentials.
+                  Note: "apply" runs in background. For multi-credential topologies, Terraform is applied per credential group.
                 </p>
                 {enabledNodesByName.length === 0 ? (
                   <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>

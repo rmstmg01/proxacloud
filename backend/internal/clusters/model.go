@@ -326,6 +326,11 @@ type RestoreEtcdSnapshotResponse struct {
 	Warning    string `json:"warning,omitempty"`
 }
 
+type provisionApplyWork struct {
+	CredentialID int64
+	Workspace    string
+}
+
 func NewService(
 	db *sql.DB,
 	networks NetworkStore,
@@ -441,7 +446,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 
 	applyNow := req.Apply || s.autoApply
 	if applyNow {
-		outputs := make([]string, 0, len(effectiveCredentialIDs))
+		applyWork := make([]provisionApplyWork, 0, len(effectiveCredentialIDs))
 		for _, credentialID := range effectiveCredentialIDs {
 			groupNodes := vmGroups[credentialID]
 			workspaceKey := req.Name
@@ -468,33 +473,29 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			if workspace == "" {
 				workspace = groupWorkspace
 			}
-
-			cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(credentialID)
-			if credErr != nil {
-				return ProvisionResponse{}, fmt.Errorf("load proxmox credential %d: %w", credentialID, credErr)
-			}
-			auth := terraform.ProxmoxAuth{
-				Endpoint:       cred.Endpoint,
-				Username:       cred.Username,
-				Password:       cred.Password,
-				APITokenID:     cred.APITokenID,
-				APITokenSecret: cred.APITokenSecret,
-				InsecureTLS:    cred.InsecureTLS,
-				SSHUsername:    sshUserFrom(cred),
-				SSHPassword:    cred.Password,
-			}
-			runResult, runErr := s.terraformRunner.Apply(groupWorkspace, auth)
-			outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", credentialID, groupWorkspace, strings.TrimSpace(runResult.Output)))
-			if runErr != nil {
-				terraformOutput = strings.Join(outputs, "\n\n")
-				status = "failed"
-				_ = s.insertProvisionRun(clusterID, "apply", status, workspace, terraformOutput)
-				_ = s.updateClusterStatus(clusterID, "failed")
-				return ProvisionResponse{}, runErr
-			}
+			applyWork = append(applyWork, provisionApplyWork{CredentialID: credentialID, Workspace: groupWorkspace})
 		}
-		terraformOutput = strings.Join(outputs, "\n\n")
-		status = "applied"
+
+		status = "provisioning"
+		warnings = append(warnings, "terraform apply is running in background; check cluster run history for progress")
+		if err := s.insertProvisionRun(clusterID, "provision", status, workspace, ""); err != nil {
+			return ProvisionResponse{}, err
+		}
+		if err := s.updateClusterStatus(clusterID, status); err != nil {
+			return ProvisionResponse{}, err
+		}
+
+		go s.runProvisionApplyAsync(clusterID, applyWork, workspace)
+
+		return ProvisionResponse{
+			ClusterID:        clusterID,
+			ClusterName:      req.Name,
+			Status:           status,
+			Topology:         plan,
+			TerraformWorkDir: workspace,
+			TerraformOutput:  terraformOutput,
+			Warnings:         warnings,
+		}, nil
 	} else {
 		workspace, err = s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
 			ClusterName:       req.Name,
@@ -529,6 +530,55 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		TerraformOutput:  terraformOutput,
 		Warnings:         warnings,
 	}, nil
+}
+
+func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionApplyWork, primaryWorkspace string) {
+	outputs := make([]string, 0, len(applyWork))
+	for _, work := range applyWork {
+		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(work.CredentialID)
+		if credErr != nil {
+			failureOutput := strings.Join(append(outputs, fmt.Sprintf("load proxmox credential %d failed: %v", work.CredentialID, credErr)), "\n\n")
+			if dbErr := s.insertProvisionRun(clusterID, "apply", "failed", primaryWorkspace, failureOutput); dbErr != nil {
+				log.Printf("ERROR saving failed apply run for cluster %d: %v", clusterID, dbErr)
+			}
+			if dbErr := s.updateClusterStatus(clusterID, "failed"); dbErr != nil {
+				log.Printf("ERROR updating cluster %d status to failed: %v", clusterID, dbErr)
+			}
+			return
+		}
+
+		auth := terraform.ProxmoxAuth{
+			Endpoint:       cred.Endpoint,
+			Username:       cred.Username,
+			Password:       cred.Password,
+			APITokenID:     cred.APITokenID,
+			APITokenSecret: cred.APITokenSecret,
+			InsecureTLS:    cred.InsecureTLS,
+			SSHUsername:    sshUserFrom(cred),
+			SSHPassword:    cred.Password,
+		}
+
+		runResult, runErr := s.terraformRunner.Apply(work.Workspace, auth)
+		outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", work.CredentialID, work.Workspace, strings.TrimSpace(runResult.Output)))
+		if runErr != nil {
+			failureOutput := strings.Join(outputs, "\n\n")
+			if dbErr := s.insertProvisionRun(clusterID, "apply", "failed", primaryWorkspace, failureOutput); dbErr != nil {
+				log.Printf("ERROR saving failed apply run for cluster %d: %v", clusterID, dbErr)
+			}
+			if dbErr := s.updateClusterStatus(clusterID, "failed"); dbErr != nil {
+				log.Printf("ERROR updating cluster %d status to failed: %v", clusterID, dbErr)
+			}
+			return
+		}
+	}
+
+	finalOutput := strings.Join(outputs, "\n\n")
+	if dbErr := s.insertProvisionRun(clusterID, "apply", "applied", primaryWorkspace, finalOutput); dbErr != nil {
+		log.Printf("ERROR saving applied run for cluster %d: %v", clusterID, dbErr)
+	}
+	if dbErr := s.updateClusterStatus(clusterID, "applied"); dbErr != nil {
+		log.Printf("ERROR updating cluster %d status to applied: %v", clusterID, dbErr)
+	}
 }
 
 func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapResponse, error) {
