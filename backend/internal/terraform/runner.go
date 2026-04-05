@@ -26,6 +26,7 @@ type VMNode struct {
 }
 
 type WorkspaceSpec struct {
+	WorkspaceKey      string   `json:"-"`
 	ClusterName       string   `json:"cluster_name"`
 	KubernetesVersion string   `json:"kubernetes_version"`
 	NetworkCIDR       string   `json:"network_cidr"`
@@ -99,6 +100,10 @@ func (r *Runner) WorkspaceDir(clusterName string) string {
 	return filepath.Join(r.baseDir, sanitizeName(clusterName))
 }
 
+func (r *Runner) WorkspaceDirForKey(workspaceKey string) string {
+	return filepath.Join(r.baseDir, sanitizeName(workspaceKey))
+}
+
 func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 	if strings.TrimSpace(spec.ClusterName) == "" {
 		return "", errors.New("cluster name is required")
@@ -113,7 +118,11 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 		return "", errors.New("at least one node must be defined")
 	}
 
-	workDir := filepath.Join(r.baseDir, sanitizeName(spec.ClusterName))
+	workspaceKey := strings.TrimSpace(spec.WorkspaceKey)
+	if workspaceKey == "" {
+		workspaceKey = spec.ClusterName
+	}
+	workDir := r.WorkspaceDirForKey(workspaceKey)
 	if err := os.MkdirAll(filepath.Join(workDir, "cloud-init"), 0o755); err != nil {
 		return "", fmt.Errorf("create workspace: %w", err)
 	}

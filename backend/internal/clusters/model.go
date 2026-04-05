@@ -425,52 +425,91 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		}
 	}
 
-	workspace, err := s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
-		ClusterName:       req.Name,
-		KubernetesVersion: req.KubernetesVersion,
-		NetworkCIDR:       networkProfile.CIDR,
-		Gateway:           networkProfile.Gateway,
-		DNS:               networkProfile.DNS,
-		Bridge:            networkProfile.Bridge,
-		VLAN:              networkProfile.VLAN,
-		UbuntuImage:       req.UbuntuImage,
-		SSHPublicKey:      req.SSHPublicKey,
-		Nodes:             vms,
-	})
+	status := "prepared"
+	terraformOutput := ""
+	warnings := append([]string{}, plan.Warnings...)
+	workspace := ""
+
+	vmGroups, err := groupVMsByCredential(vms, nodeCredentialIDs)
 	if err != nil {
 		return ProvisionResponse{}, err
 	}
+	effectiveCredentialIDs := sortedCredentialIDs(vmGroups)
+	if len(effectiveCredentialIDs) == 0 {
+		return ProvisionResponse{}, errors.New("unable to resolve credential groups for provisioning")
+	}
 
-	status := "prepared"
-	terraformOutput := ""
 	applyNow := req.Apply || s.autoApply
 	if applyNow {
-		effectiveCredentialIDs := distinctPlacementCredentialIDs(plan, nodeCredentialIDs)
-		if len(effectiveCredentialIDs) != 1 {
-			return ProvisionResponse{}, errors.New("apply with multiple proxmox credentials is not supported yet; submit with apply=false to prepare the topology first")
-		}
+		outputs := make([]string, 0, len(effectiveCredentialIDs))
+		for _, credentialID := range effectiveCredentialIDs {
+			groupNodes := vmGroups[credentialID]
+			workspaceKey := req.Name
+			if len(effectiveCredentialIDs) > 1 {
+				workspaceKey = workspaceKeyForCredential(req.Name, credentialID)
+			}
 
-		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(effectiveCredentialIDs[0])
-		if credErr != nil {
-			return ProvisionResponse{}, fmt.Errorf("load proxmox credential: %w", credErr)
+			groupWorkspace, prepErr := s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
+				WorkspaceKey:      workspaceKey,
+				ClusterName:       req.Name,
+				KubernetesVersion: req.KubernetesVersion,
+				NetworkCIDR:       networkProfile.CIDR,
+				Gateway:           networkProfile.Gateway,
+				DNS:               networkProfile.DNS,
+				Bridge:            networkProfile.Bridge,
+				VLAN:              networkProfile.VLAN,
+				UbuntuImage:       req.UbuntuImage,
+				SSHPublicKey:      req.SSHPublicKey,
+				Nodes:             groupNodes,
+			})
+			if prepErr != nil {
+				return ProvisionResponse{}, prepErr
+			}
+			if workspace == "" {
+				workspace = groupWorkspace
+			}
+
+			cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(credentialID)
+			if credErr != nil {
+				return ProvisionResponse{}, fmt.Errorf("load proxmox credential %d: %w", credentialID, credErr)
+			}
+			auth := terraform.ProxmoxAuth{
+				Endpoint:       cred.Endpoint,
+				Username:       cred.Username,
+				Password:       cred.Password,
+				APITokenID:     cred.APITokenID,
+				APITokenSecret: cred.APITokenSecret,
+				InsecureTLS:    cred.InsecureTLS,
+				SSHUsername:    sshUserFrom(cred),
+				SSHPassword:    cred.Password,
+			}
+			runResult, runErr := s.terraformRunner.Apply(groupWorkspace, auth)
+			outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", credentialID, groupWorkspace, strings.TrimSpace(runResult.Output)))
+			if runErr != nil {
+				terraformOutput = strings.Join(outputs, "\n\n")
+				status = "failed"
+				_ = s.insertProvisionRun(clusterID, "apply", status, workspace, terraformOutput)
+				_ = s.updateClusterStatus(clusterID, "failed")
+				return ProvisionResponse{}, runErr
+			}
 		}
-		auth := terraform.ProxmoxAuth{
-			Endpoint:       cred.Endpoint,
-			Username:       cred.Username,
-			Password:       cred.Password,
-			APITokenID:     cred.APITokenID,
-			APITokenSecret: cred.APITokenSecret,
-			InsecureTLS:    cred.InsecureTLS,
-			SSHUsername:    sshUserFrom(cred),
-			SSHPassword:    cred.Password,
-		}
-		runResult, runErr := s.terraformRunner.Apply(workspace, auth)
-		terraformOutput = runResult.Output
-		status = runResult.Status
-		if runErr != nil {
-			_ = s.insertProvisionRun(clusterID, "apply", status, workspace, terraformOutput)
-			_ = s.updateClusterStatus(clusterID, "failed")
-			return ProvisionResponse{}, runErr
+		terraformOutput = strings.Join(outputs, "\n\n")
+		status = "applied"
+	} else {
+		workspace, err = s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
+			ClusterName:       req.Name,
+			KubernetesVersion: req.KubernetesVersion,
+			NetworkCIDR:       networkProfile.CIDR,
+			Gateway:           networkProfile.Gateway,
+			DNS:               networkProfile.DNS,
+			Bridge:            networkProfile.Bridge,
+			VLAN:              networkProfile.VLAN,
+			UbuntuImage:       req.UbuntuImage,
+			SSHPublicKey:      req.SSHPublicKey,
+			Nodes:             vms,
+		})
+		if err != nil {
+			return ProvisionResponse{}, err
 		}
 	}
 
@@ -488,7 +527,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		Topology:         plan,
 		TerraformWorkDir: workspace,
 		TerraformOutput:  terraformOutput,
-		Warnings:         plan.Warnings,
+		Warnings:         warnings,
 	}, nil
 }
 
@@ -728,47 +767,74 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 	}
 
 	workDir := strings.TrimSpace(info.TerraformWorkDir)
-	if workDir == "" {
-		workDir = s.terraformRunner.WorkspaceDir(info.Name)
+	nodes, nodeErr := s.getClusterNodes(clusterID)
+	if nodeErr != nil {
+		return nodeErr
 	}
 
-	if info.ProxmoxCredentialID.Valid {
-		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(info.ProxmoxCredentialID.Int64)
-		if credErr != nil {
-			return fmt.Errorf("load proxmox credential for delete: %w", credErr)
-		}
-		auth := terraform.ProxmoxAuth{
-			Endpoint:       cred.Endpoint,
-			Username:       cred.Username,
-			Password:       cred.Password,
-			APITokenID:     cred.APITokenID,
-			APITokenSecret: cred.APITokenSecret,
-			InsecureTLS:    cred.InsecureTLS,
-			SSHUsername:    sshUserFrom(cred),
-			SSHPassword:    cred.Password,
-		}
-		if _, statErr := os.Stat(workDir); statErr == nil {
-			if _, destroyErr := s.terraformRunner.Destroy(workDir, auth); destroyErr != nil {
-				return fmt.Errorf("destroy cluster infrastructure: %w", destroyErr)
-			}
-		} else if os.IsNotExist(statErr) {
-			nodes, nodeErr := s.getClusterNodes(clusterID)
-			if nodeErr != nil {
-				return nodeErr
-			}
-			if len(nodes) > 0 {
-				return fmt.Errorf("terraform workspace %q is missing (container restarted?); VMs still exist in Proxmox — destroy them manually or restore the workspace before deleting", workDir)
-			}
-		} else {
-			return fmt.Errorf("inspect terraform workspace: %w", statErr)
-		}
-	} else {
-		nodes, nodeErr := s.getClusterNodes(clusterID)
-		if nodeErr != nil {
-			return nodeErr
-		}
+	credentialIDs := distinctCredentialIDsFromClusterNodes(nodes)
+	if len(credentialIDs) == 0 && info.ProxmoxCredentialID.Valid {
+		credentialIDs = append(credentialIDs, info.ProxmoxCredentialID.Int64)
+	}
+
+	if len(credentialIDs) == 0 {
 		if len(nodes) > 0 {
 			return errors.New("cluster cannot be deleted safely because its proxmox credential metadata is missing; re-save the credential mapping or destroy the VMs manually first")
+		}
+	} else {
+		multiCredential := len(credentialIDs) > 1
+		for _, credentialID := range credentialIDs {
+			cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(credentialID)
+			if credErr != nil {
+				return fmt.Errorf("load proxmox credential for delete: %w", credErr)
+			}
+			auth := terraform.ProxmoxAuth{
+				Endpoint:       cred.Endpoint,
+				Username:       cred.Username,
+				Password:       cred.Password,
+				APITokenID:     cred.APITokenID,
+				APITokenSecret: cred.APITokenSecret,
+				InsecureTLS:    cred.InsecureTLS,
+				SSHUsername:    sshUserFrom(cred),
+				SSHPassword:    cred.Password,
+			}
+
+			candidates := make([]string, 0, 2)
+			if multiCredential {
+				candidates = append(candidates, s.terraformRunner.WorkspaceDirForKey(workspaceKeyForCredential(info.Name, credentialID)))
+			} else {
+				if workDir != "" {
+					candidates = append(candidates, workDir)
+				}
+				candidates = append(candidates, s.terraformRunner.WorkspaceDir(info.Name))
+			}
+
+			destroyed := false
+			seen := make(map[string]struct{})
+			for _, candidate := range candidates {
+				trimmed := strings.TrimSpace(candidate)
+				if trimmed == "" {
+					continue
+				}
+				if _, ok := seen[trimmed]; ok {
+					continue
+				}
+				seen[trimmed] = struct{}{}
+
+				if _, statErr := os.Stat(trimmed); statErr == nil {
+					if _, destroyErr := s.terraformRunner.Destroy(trimmed, auth); destroyErr != nil {
+						return fmt.Errorf("destroy cluster infrastructure: %w", destroyErr)
+					}
+					destroyed = true
+					break
+				} else if !os.IsNotExist(statErr) {
+					return fmt.Errorf("inspect terraform workspace: %w", statErr)
+				}
+			}
+
+			if !destroyed && len(nodes) > 0 {
+				return fmt.Errorf("terraform workspace for credential_id=%d is missing; VMs may still exist in Proxmox — destroy them manually or restore the workspace before deleting", credentialID)
+			}
 		}
 	}
 
@@ -782,6 +848,10 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 	}
 	if workDir != "" {
 		_ = os.RemoveAll(workDir)
+	}
+	_ = os.RemoveAll(s.terraformRunner.WorkspaceDir(info.Name))
+	for _, credentialID := range distinctCredentialIDsFromClusterNodes(nodes) {
+		_ = os.RemoveAll(s.terraformRunner.WorkspaceDirForKey(workspaceKeyForCredential(info.Name, credentialID)))
 	}
 	return nil
 }
@@ -1533,6 +1603,51 @@ func distinctPlacementCredentialIDs(plan topology.PlanResponse, nodeCredentialID
 		}
 		seen[credentialID] = struct{}{}
 		out = append(out, credentialID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func groupVMsByCredential(vms []terraform.VMNode, nodeCredentialIDs map[string]int64) (map[int64][]terraform.VMNode, error) {
+	out := make(map[int64][]terraform.VMNode)
+	for _, vm := range vms {
+		nodeName := strings.TrimSpace(vm.ProxmoxNodeName)
+		credentialID := nodeCredentialIDs[nodeName]
+		if credentialID <= 0 {
+			return nil, fmt.Errorf("missing proxmox credential mapping for node %q", nodeName)
+		}
+		out[credentialID] = append(out[credentialID], vm)
+	}
+	return out, nil
+}
+
+func sortedCredentialIDs(vmGroups map[int64][]terraform.VMNode) []int64 {
+	out := make([]int64, 0, len(vmGroups))
+	for credentialID := range vmGroups {
+		if credentialID > 0 {
+			out = append(out, credentialID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func workspaceKeyForCredential(clusterName string, credentialID int64) string {
+	return fmt.Sprintf("%s-cred-%d", strings.TrimSpace(clusterName), credentialID)
+}
+
+func distinctCredentialIDsFromClusterNodes(nodes []ClusterNodeRecord) []int64 {
+	seen := make(map[int64]struct{})
+	out := make([]int64, 0)
+	for _, node := range nodes {
+		if node.ProxmoxCredentialID <= 0 {
+			continue
+		}
+		if _, exists := seen[node.ProxmoxCredentialID]; exists {
+			continue
+		}
+		seen[node.ProxmoxCredentialID] = struct{}{}
+		out = append(out, node.ProxmoxCredentialID)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
