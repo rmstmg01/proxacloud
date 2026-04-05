@@ -395,25 +395,25 @@ const playbookTemplate = `---
       command: kubeadm token create --print-join-command
       register: join_command
 
-		- name: Upload control-plane certificates
-			command: kubeadm init phase upload-certs --upload-certs
-			register: upload_certs_output
+    - name: Upload control-plane certificates
+      command: kubeadm init phase upload-certs --upload-certs
+      register: upload_certs_output
 
-		- name: Extract certificate key
-			set_fact:
-				kubeadm_certificate_key: "{{ "{{ upload_certs_output.stdout_lines[-1] | trim }}" }}"
+    - name: Extract certificate key
+      set_fact:
+          kubeadm_certificate_key: "{{ "{{ upload_certs_output.stdout_lines[-1] | trim }}" }}"
 
-		- name: Save worker join command
+    - name: Save worker join command
       copy:
-        content: "{{ "{{ join_command.stdout }}" }} --cri-socket unix:///run/containerd/containerd.sock"
-				dest: /tmp/kubeadm_join_worker.sh
-        mode: '0700'
+          content: "{{ "{{ join_command.stdout }}" }} --cri-socket unix:///run/containerd/containerd.sock"
+          dest: /tmp/kubeadm_join_worker.sh
+          mode: '0700'
 
-		- name: Save control-plane join command
-			copy:
-				content: "{{ "{{ join_command.stdout }}" }} --control-plane --certificate-key {{ "{{ kubeadm_certificate_key }}" }} --cri-socket unix:///run/containerd/containerd.sock"
-				dest: /tmp/kubeadm_join_control_plane.sh
-				mode: '0700'
+    - name: Save control-plane join command
+      copy:
+          content: "{{ "{{ join_command.stdout }}" }} --control-plane --certificate-key {{ "{{ kubeadm_certificate_key }}" }} --cri-socket unix:///run/containerd/containerd.sock"
+          dest: /tmp/kubeadm_join_control_plane.sh
+          mode: '0700'
 
     - name: Install CNI
       shell: |
@@ -459,15 +459,15 @@ const playbookTemplate = `---
 - hosts: workers
   become: true
   tasks:
-		- name: Read worker join command from first control plane
+    - name: Read worker join command from first control plane
       slurp:
-				src: /tmp/kubeadm_join_worker.sh
+        src: /tmp/kubeadm_join_worker.sh
       delegate_to: "{{ "{{ groups['control_plane'][0] }}" }}"
       run_once: true
-			register: worker_join_script
+      register: worker_join_script
 
-		- name: Join worker node
-			shell: "{{ "{{ worker_join_script.content | b64decode }}" }}"
+    - name: Join worker node
+      shell: "{{ "{{ worker_join_script.content | b64decode }}" }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
 
