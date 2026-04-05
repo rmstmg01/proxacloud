@@ -97,6 +97,7 @@ export interface ClusterNodeRecord {
   vm_name: string;
   ip_address: string;
   proxmox_node_name: string;
+  proxmox_credential_id: number;
 }
 
 export interface ProvisionRunRecord {

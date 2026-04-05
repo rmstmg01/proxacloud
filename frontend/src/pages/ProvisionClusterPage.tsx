@@ -4,7 +4,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { checkClusterName, provisionCluster } from '../api/clusters';
 import { getNetworks } from '../api/networks';
-import { getCredentials } from '../api/proxmox';
+import { getCredentials, getNodes } from '../api/proxmox';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { Input, Select, Textarea } from '../components/ui/Input';
@@ -15,6 +15,7 @@ export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
   const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
+  const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const [debouncedName, setDebouncedName] = useState('');
 
   const [form, setForm] = useState({
@@ -34,8 +35,29 @@ export function ProvisionClusterPage() {
     worker_cpu: 4,
     worker_ram_mb: 8192,
     worker_disk_gb: 120,
+    node_credential_ids: {} as Record<string, number>,
     apply: false,
   });
+
+  const enabledNodesByName = Array.from(
+    new Map((proxmoxNodes ?? []).filter((n) => n.enabled).map((n) => [n.node_name, n])).values(),
+  );
+
+  useEffect(() => {
+    if (enabledNodesByName.length === 0) return;
+    setForm((prev) => {
+      const nextMap = { ...prev.node_credential_ids };
+      let changed = false;
+      for (const node of enabledNodesByName) {
+        if (!nextMap[node.node_name] && node.credential_id > 0) {
+          nextMap[node.node_name] = node.credential_id;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, node_credential_ids: nextMap };
+    });
+  }, [enabledNodesByName]);
 
   const mutation = useMutation({ mutationFn: provisionCluster });
 
@@ -61,10 +83,23 @@ export function ProvisionClusterPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (isNameTaken) return;
+
+    const nodeCredentialIDs = Object.fromEntries(
+      Object.entries(form.node_credential_ids)
+        .filter(([nodeName, credentialId]) => nodeName.trim() !== '' && Number(credentialId) > 0)
+        .map(([nodeName, credentialId]) => [nodeName, Number(credentialId)]),
+    );
+
+    const fallbackCredentialID =
+      Number(form.proxmox_credential_id) > 0
+        ? Number(form.proxmox_credential_id)
+        : Number(Object.values(nodeCredentialIDs)[0] ?? 0);
+
     const result = await mutation.mutateAsync({
       ...form,
       network_profile_id: Number(form.network_profile_id),
-      proxmox_credential_id: Number(form.proxmox_credential_id),
+      proxmox_credential_id: fallbackCredentialID,
+      node_credential_ids: nodeCredentialIDs,
       node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
     });
     navigate(`/clusters/${result.cluster_id}`);
@@ -152,6 +187,54 @@ export function ProvisionClusterPage() {
                 </option>
               ))}
             </Select>
+
+            {form.topology_type === 'tri' && (
+              <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <p className="text-sm font-medium text-slate-800">Per-node credential mapping (Tri-node HA)</p>
+                <p className="text-xs text-slate-600">
+                  Override credentials per Proxmox node. Leave a node on default by keeping "Use default cluster credential".
+                </p>
+                <p className="text-xs text-amber-700">
+                  Note: direct "apply" currently supports a single effective credential; use "prepare" when mixing credentials.
+                </p>
+                {enabledNodesByName.length === 0 ? (
+                  <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {enabledNodesByName.map((node) => (
+                      <div key={node.node_name} className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                        <Input
+                          label="Proxmox node"
+                          value={node.node_name}
+                          readOnly
+                        />
+                        <Select
+                          label="Credential"
+                          value={form.node_credential_ids[node.node_name] ?? 0}
+                          onChange={(e) => {
+                            const selected = Number(e.target.value);
+                            setForm((prev) => ({
+                              ...prev,
+                              node_credential_ids: {
+                                ...prev.node_credential_ids,
+                                [node.node_name]: selected,
+                              },
+                            }));
+                          }}
+                        >
+                          <option value={0}>Use default cluster credential</option>
+                          {credentials?.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name} ({c.endpoint})
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <Input
               label="Kubernetes version"
               value={form.kubernetes_version}

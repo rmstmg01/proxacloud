@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -68,6 +69,9 @@ type ProvisionRequest struct {
 	WorkerRAMMB         int    `json:"worker_ram_mb"`
 	WorkerDisk          int    `json:"worker_disk_gb"`
 	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
+	// NodeCredentialIDs optionally overrides the Proxmox credential per node name.
+	// Key: proxmox node name, Value: proxmox credential id.
+	NodeCredentialIDs map[string]int64 `json:"node_credential_ids"`
 	// NodeIPPoolStart is the first IP in the sequential pool to assign to VMs.
 	// For example "192.168.8.100" assigns .100, .101, .102 … to each VM.
 	// The subnet mask is derived from the selected network profile CIDR.
@@ -122,12 +126,13 @@ type BootstrapSSHKeyRecord struct {
 }
 
 type ClusterNodeRecord struct {
-	ID              int64  `json:"id"`
-	Role            string `json:"role"`
-	RoleIndex       int    `json:"role_index"`
-	VMName          string `json:"vm_name"`
-	IPAddress       string `json:"ip_address"`
-	ProxmoxNodeName string `json:"proxmox_node_name"`
+	ID                  int64  `json:"id"`
+	Role                string `json:"role"`
+	RoleIndex           int    `json:"role_index"`
+	VMName              string `json:"vm_name"`
+	IPAddress           string `json:"ip_address"`
+	ProxmoxNodeName     string `json:"proxmox_node_name"`
+	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
 }
 
 type ClusterSummary struct {
@@ -361,6 +366,12 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 
+	nodeCredentialIDs, clusterCredentialID, err := resolveProvisionNodeCredentials(req, plan)
+	if err != nil {
+		return ProvisionResponse{}, err
+	}
+	req.ProxmoxCredentialID = clusterCredentialID
+
 	clusterID, err := s.insertCluster(req, plan)
 	if err != nil {
 		return ProvisionResponse{}, err
@@ -375,6 +386,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	vms := make([]terraform.VMNode, 0, len(plan.Placements))
 	for _, placement := range plan.Placements {
 		vmName := buildVMName(req.Name, placement.Role, placement.Index)
+		credentialID := nodeCredentialIDs[placement.ProxmoxNodeName]
 		assignedIP := ""
 		if ipIter != nil {
 			ip, err := ipIter.nextAvailable()
@@ -394,7 +406,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			IPAddress:       assignedIP,
 		})
 
-		if err := s.insertClusterNode(clusterID, placement, vmName, assignedIP); err != nil {
+		if err := s.insertClusterNode(clusterID, placement, vmName, assignedIP, credentialID); err != nil {
 			return ProvisionResponse{}, err
 		}
 	}
@@ -419,7 +431,12 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	terraformOutput := ""
 	applyNow := req.Apply || s.autoApply
 	if applyNow {
-		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(req.ProxmoxCredentialID)
+		effectiveCredentialIDs := distinctPlacementCredentialIDs(plan, nodeCredentialIDs)
+		if len(effectiveCredentialIDs) != 1 {
+			return ProvisionResponse{}, errors.New("apply with multiple proxmox credentials is not supported yet; submit with apply=false to prepare the topology first")
+		}
+
+		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(effectiveCredentialIDs[0])
 		if credErr != nil {
 			return ProvisionResponse{}, fmt.Errorf("load proxmox credential: %w", credErr)
 		}
@@ -789,6 +806,11 @@ func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error
 	}
 
 	if req.TargetWorkerCount > len(currentWorkers) {
+		defaultCredentialID, err := s.getClusterCredentialID(clusterID)
+		if err != nil {
+			return ScaleResponse{}, err
+		}
+
 		nextIndex := 1
 		for _, n := range currentWorkers {
 			if n.RoleIndex >= nextIndex {
@@ -808,13 +830,18 @@ func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error
 		for i := 0; i < toAdd; i++ {
 			vmName := buildVMName(cluster.Name, "worker", nextIndex)
 			selectedNode := nodePool[i%len(nodePool)]
+			nodeCredentialID, credErr := s.resolveCredentialForNode(clusterID, selectedNode, defaultCredentialID)
+			if credErr != nil {
+				return ScaleResponse{}, credErr
+			}
 			_, execErr := s.db.Exec(
-				`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name)
-				 VALUES ($1, 'worker', $2, $3, $4)`,
+				`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, proxmox_credential_id)
+				 VALUES ($1, 'worker', $2, $3, $4, $5)`,
 				clusterID,
 				nextIndex,
 				selectedNode,
 				vmName,
+				nodeCredentialID,
 			)
 			if execErr != nil {
 				return ScaleResponse{}, fmt.Errorf("insert scaled worker node: %w", execErr)
@@ -904,12 +931,12 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 
 	var existing ClusterNodeRecord
 	err := s.db.QueryRow(
-		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name
+		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name, COALESCE(proxmox_credential_id, 0)
 		 FROM cluster_nodes
 		 WHERE cluster_id = $1 AND vm_name = $2`,
 		clusterID,
 		failedVM,
-	).Scan(&existing.ID, &existing.Role, &existing.RoleIndex, &existing.VMName, &existing.IPAddress, &existing.ProxmoxNodeName)
+	).Scan(&existing.ID, &existing.Role, &existing.RoleIndex, &existing.VMName, &existing.IPAddress, &existing.ProxmoxNodeName, &existing.ProxmoxCredentialID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ReplaceNodeResponse{}, errors.New("failed node not found")
@@ -933,14 +960,15 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
+		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address, proxmox_credential_id)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
 		clusterID,
 		existing.Role,
 		existing.RoleIndex,
 		newNode,
 		newVMName,
 		newIP,
+		existing.ProxmoxCredentialID,
 	); err != nil {
 		return ReplaceNodeResponse{}, fmt.Errorf("insert replacement node: %w", err)
 	}
@@ -1415,8 +1443,16 @@ func validateProvisionRequest(req ProvisionRequest) error {
 	if req.SSHPublicKey == "" {
 		return errors.New("ssh_public_key is required")
 	}
-	if req.ProxmoxCredentialID <= 0 {
-		return errors.New("proxmox_credential_id is required")
+	if req.ProxmoxCredentialID <= 0 && len(req.NodeCredentialIDs) == 0 {
+		return errors.New("proxmox_credential_id is required when node_credential_ids is empty")
+	}
+	for nodeName, credentialID := range req.NodeCredentialIDs {
+		if strings.TrimSpace(nodeName) == "" {
+			return errors.New("node_credential_ids keys must be non-empty proxmox node names")
+		}
+		if credentialID <= 0 {
+			return fmt.Errorf("node_credential_ids[%s] must be a valid credential id", nodeName)
+		}
 	}
 	if strings.TrimSpace(req.NodeIPPoolStart) == "" {
 		return errors.New("node_ip_pool_start is required (e.g. 192.168.8.100)")
@@ -1432,6 +1468,57 @@ func validateProvisionRequest(req ProvisionRequest) error {
 	}
 
 	return nil
+}
+
+func resolveProvisionNodeCredentials(req ProvisionRequest, plan topology.PlanResponse) (map[string]int64, int64, error) {
+	nodeCredentialIDs := make(map[string]int64, len(plan.SelectedProxmoxNode)+len(req.NodeCredentialIDs))
+	for nodeName, credentialID := range req.NodeCredentialIDs {
+		trimmed := strings.TrimSpace(nodeName)
+		if trimmed == "" || credentialID <= 0 {
+			continue
+		}
+		nodeCredentialIDs[trimmed] = credentialID
+	}
+
+	defaultCredentialID := req.ProxmoxCredentialID
+	for _, placement := range plan.Placements {
+		nodeName := strings.TrimSpace(placement.ProxmoxNodeName)
+		credentialID := nodeCredentialIDs[nodeName]
+		if credentialID <= 0 {
+			credentialID = defaultCredentialID
+		}
+		if credentialID <= 0 {
+			return nil, 0, fmt.Errorf("missing credential for proxmox node %q; provide node_credential_ids or proxmox_credential_id", nodeName)
+		}
+		nodeCredentialIDs[nodeName] = credentialID
+		if defaultCredentialID <= 0 {
+			defaultCredentialID = credentialID
+		}
+	}
+
+	if defaultCredentialID <= 0 {
+		return nil, 0, errors.New("no valid proxmox credential mapping resolved for planned nodes")
+	}
+
+	return nodeCredentialIDs, defaultCredentialID, nil
+}
+
+func distinctPlacementCredentialIDs(plan topology.PlanResponse, nodeCredentialIDs map[string]int64) []int64 {
+	seen := make(map[int64]struct{})
+	out := make([]int64, 0)
+	for _, placement := range plan.Placements {
+		credentialID := nodeCredentialIDs[strings.TrimSpace(placement.ProxmoxNodeName)]
+		if credentialID <= 0 {
+			continue
+		}
+		if _, exists := seen[credentialID]; exists {
+			continue
+		}
+		seen[credentialID] = struct{}{}
+		out = append(out, credentialID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // ipIterator hands out sequential IPs starting from a base address,
@@ -1634,16 +1721,17 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 	return clusterID, nil
 }
 
-func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string, ipAddress string) error {
+func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string, ipAddress string, proxmoxCredentialID int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
+		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address, proxmox_credential_id)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
 		clusterID,
 		placement.Role,
 		placement.Index,
 		placement.ProxmoxNodeName,
 		vmName,
 		strings.TrimSpace(ipAddress),
+		proxmoxCredentialID,
 	)
 	if err != nil {
 		return fmt.Errorf("insert cluster node: %w", err)
@@ -1721,7 +1809,7 @@ func (s *Service) getClusterDeleteInfo(clusterID int64) (clusterDeleteInfo, erro
 
 func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name
+		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name, COALESCE(proxmox_credential_id, 0)
 		 FROM cluster_nodes
 		 WHERE cluster_id = $1
 		 ORDER BY role, role_index`,
@@ -1735,7 +1823,7 @@ func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) 
 	out := make([]ClusterNodeRecord, 0)
 	for rows.Next() {
 		var n ClusterNodeRecord
-		if scanErr := rows.Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName); scanErr != nil {
+		if scanErr := rows.Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID); scanErr != nil {
 			continue
 		}
 		out = append(out, n)
@@ -1969,6 +2057,44 @@ func (s *Service) listDistinctProxmoxNodes(clusterID int64) ([]string, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+func (s *Service) getClusterCredentialID(clusterID int64) (int64, error) {
+	var credentialID sql.NullInt64
+	err := s.db.QueryRow(`SELECT proxmox_credential_id FROM clusters WHERE id = $1`, clusterID).Scan(&credentialID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, ErrClusterNotFound
+		}
+		return 0, fmt.Errorf("query cluster credential id: %w", err)
+	}
+	if !credentialID.Valid || credentialID.Int64 <= 0 {
+		return 0, errors.New("cluster has no default proxmox credential configured")
+	}
+	return credentialID.Int64, nil
+}
+
+func (s *Service) resolveCredentialForNode(clusterID int64, proxmoxNodeName string, fallbackCredentialID int64) (int64, error) {
+	var credentialID sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT proxmox_credential_id
+		 FROM cluster_nodes
+		 WHERE cluster_id = $1 AND proxmox_node_name = $2 AND proxmox_credential_id IS NOT NULL
+		 ORDER BY id ASC
+		 LIMIT 1`,
+		clusterID,
+		strings.TrimSpace(proxmoxNodeName),
+	).Scan(&credentialID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("resolve node credential id: %w", err)
+	}
+	if credentialID.Valid && credentialID.Int64 > 0 {
+		return credentialID.Int64, nil
+	}
+	if fallbackCredentialID > 0 {
+		return fallbackCredentialID, nil
+	}
+	return 0, fmt.Errorf("no proxmox credential mapped for node %q", proxmoxNodeName)
 }
 
 func (s *Service) updateClusterNodeIP(nodeID int64, ip string) error {
