@@ -888,7 +888,7 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 			}
 
 			if !destroyed && len(nodes) > 0 {
-				return fmt.Errorf("terraform workspace for credential_id=%d is missing; VMs may still exist in Proxmox — destroy them manually or restore the workspace before deleting", credentialID)
+				log.Printf("warning: terraform workspace for cluster %d credential_id=%d is missing; proceeding with metadata delete only", clusterID, credentialID)
 			}
 		}
 	}
