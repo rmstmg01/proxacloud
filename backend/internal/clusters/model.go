@@ -878,6 +878,11 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 
 				if _, statErr := os.Stat(trimmed); statErr == nil {
 					if _, destroyErr := s.terraformRunner.Destroy(trimmed, auth); destroyErr != nil {
+						if isIgnorableDestroyError(destroyErr) {
+							log.Printf("warning: terraform destroy failed for cluster %d credential_id=%d workspace=%s; proceeding with metadata delete only: %v", clusterID, credentialID, trimmed, destroyErr)
+							destroyed = true
+							break
+						}
 						return fmt.Errorf("destroy cluster infrastructure: %w", destroyErr)
 					}
 					destroyed = true
@@ -1783,6 +1788,21 @@ func isIPInUse(ip string) bool {
 		return true
 	}
 	return false
+}
+
+// isIgnorableDestroyError returns true for terraform destroy errors that are
+// caused by environment/connectivity issues (for example stale Proxmox host
+// names) where metadata cleanup should still be allowed.
+func isIgnorableDestroyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "hostname lookup") ||
+		strings.Contains(msg, "name or service not known") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "server misbehaving") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 func validateBootstrapRequest(req BootstrapRequest) error {
