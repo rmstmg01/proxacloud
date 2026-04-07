@@ -90,8 +90,44 @@ Notes:
 
 - Backend API will be at `http://localhost:8080`
 - PostgreSQL will be at `localhost:5432`
+- Admin portal will be at `https://<your-domain>` (default host port 443)
 - Terraform/Ansible apply operations are disabled by default in compose (`*_AUTO_APPLY=false`)
 - A dedicated `kubectl-runner` service is available under the `ops` compose profile for operational apply actions
+
+## HTTPS With Existing Let's Encrypt Certificates
+
+If you already have `fullchain.pem` and `privkey.pem`, place them in the TLS certs directory mounted into the frontend container.
+
+1. Copy cert files:
+
+```powershell
+cd .
+mkdir certs -Force
+Copy-Item <path-to-fullchain.pem> certs/fullchain.pem
+Copy-Item <path-to-privkey.pem> certs/privkey.pem
+```
+
+2. Optional: adjust ports/cert path in `.env` (defaults shown in `.env.example`):
+
+- `HTTP_PORT=80`
+- `HTTPS_PORT=443`
+- `TLS_CERTS_DIR=./certs`
+
+3. Rebuild and start:
+
+```powershell
+cd .
+docker compose up -d --build frontend
+```
+
+4. Open the portal:
+
+- `https://<your-domain>`
+
+Nginx now redirects all HTTP traffic to HTTPS and serves TLS using:
+
+- `/etc/nginx/certs/fullchain.pem`
+- `/etc/nginx/certs/privkey.pem`
 
 ## Apply MetalLB From Docker
 
