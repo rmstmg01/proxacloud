@@ -106,7 +106,7 @@ export function ProvisionClusterPage() {
       node_credential_ids: nodeCredentialIDs,
       node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
     });
-    navigate(`/clusters/${result.cluster_id}`);
+    navigate(`/clusters/${result.cluster_id}?tab=runs`);
   };
 
   return (

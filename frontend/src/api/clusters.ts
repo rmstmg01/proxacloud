@@ -2,6 +2,8 @@ import client from './client';
 import type {
   ClusterSummary,
   ProvisionRunRecord,
+  ClusterOperation,
+  ClusterOperationEvent,
   ClusterNodeRecord,
   ProvisionResponse,
   BootstrapResponse,
@@ -36,6 +38,25 @@ export const deleteCluster = (id: number) =>
 
 export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);
+
+export const getLatestClusterOperation = (id: number) =>
+  client.get<ClusterOperation>(`/clusters/${id}/operations/latest`).then((r) => r.data);
+
+export const getClusterOperationEvents = (
+  id: number,
+  operation_id?: number,
+  since_id?: number,
+  limit = 100,
+) => {
+  const params = new URLSearchParams();
+  if (operation_id && operation_id > 0) params.set('operation_id', String(operation_id));
+  if (since_id && since_id > 0) params.set('since_id', String(since_id));
+  if (limit > 0) params.set('limit', String(limit));
+  const query = params.toString();
+  const path = query ? `/clusters/${id}/operations/events?${query}` : `/clusters/${id}/operations/events`;
+  return client.get<ClusterOperationEvent[]>(path).then((r) => r.data);
+};
+
 export const getClusterNodes = (id: number) =>
   client.get<ClusterNodeRecord[]>(`/clusters/${id}/nodes`).then((r) => r.data);
 

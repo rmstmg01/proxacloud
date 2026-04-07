@@ -58,6 +58,7 @@ type Service struct {
 
 var ErrClusterExists = errors.New("cluster already exists")
 var ErrClusterNotFound = errors.New("cluster not found")
+var ErrOperationNotFound = errors.New("cluster operation not found")
 
 type ProvisionRequest struct {
 	Name                string `json:"name"`
@@ -171,6 +172,28 @@ type ProvisionRunRecord struct {
 	Output     string     `json:"output"`
 	CreatedAt  time.Time  `json:"created_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+type ClusterOperation struct {
+	ID              int64      `json:"id"`
+	ClusterID       int64      `json:"cluster_id"`
+	Action          string     `json:"action"`
+	Status          string     `json:"status"`
+	CurrentStep     string     `json:"current_step"`
+	ProgressPercent int        `json:"progress_percent"`
+	ErrorSummary    string     `json:"error_summary,omitempty"`
+	StartedAt       time.Time  `json:"started_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+}
+
+type ClusterOperationEvent struct {
+	ID          int64     `json:"id"`
+	OperationID int64     `json:"operation_id"`
+	Step        string    `json:"step"`
+	Level       string    `json:"level"`
+	Message     string    `json:"message"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type ScaleRequest struct {
@@ -447,6 +470,12 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 
 	applyNow := req.Apply || s.autoApply
 	if applyNow {
+		operationID, opErr := s.startClusterOperation(clusterID, "provision", "prepare-workspaces", 5)
+		if opErr != nil {
+			return ProvisionResponse{}, opErr
+		}
+		_ = s.appendOperationEvent(operationID, "prepare-workspaces", "info", "Preparing Terraform workspaces")
+
 		applyWork := make([]provisionApplyWork, 0, len(effectiveCredentialIDs))
 		for _, credentialID := range effectiveCredentialIDs {
 			groupNodes := vmGroups[credentialID]
@@ -469,8 +498,11 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 				Nodes:             groupNodes,
 			})
 			if prepErr != nil {
+				_ = s.updateClusterOperation(operationID, "failed", "prepare-workspaces", 100, prepErr.Error())
+				_ = s.appendOperationEvent(operationID, "prepare-workspaces", "error", prepErr.Error())
 				return ProvisionResponse{}, prepErr
 			}
+			_ = s.appendOperationEvent(operationID, "prepare-workspaces", "info", fmt.Sprintf("Workspace prepared for credential_id=%d", credentialID))
 			if workspace == "" {
 				workspace = groupWorkspace
 			}
@@ -485,8 +517,10 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		if err := s.updateClusterStatus(clusterID, status); err != nil {
 			return ProvisionResponse{}, err
 		}
+		_ = s.updateClusterOperation(operationID, "running", "terraform-apply", 15, "")
+		_ = s.appendOperationEvent(operationID, "terraform-apply", "info", "Terraform apply started")
 
-		go s.runProvisionApplyAsync(clusterID, applyWork, workspace)
+		go s.runProvisionApplyAsync(clusterID, applyWork, workspace, operationID)
 
 		return ProvisionResponse{
 			ClusterID:        clusterID,
@@ -533,12 +567,22 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	}, nil
 }
 
-func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionApplyWork, primaryWorkspace string) {
+func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionApplyWork, primaryWorkspace string, operationID int64) {
 	outputs := make([]string, 0, len(applyWork))
-	for _, work := range applyWork {
+	for index, work := range applyWork {
+		progress := 15
+		if len(applyWork) > 0 {
+			progress = 15 + int(float64(index)/float64(len(applyWork))*70)
+		}
+		stepLabel := fmt.Sprintf("apply-credential-%d", work.CredentialID)
+		_ = s.updateClusterOperation(operationID, "running", stepLabel, progress, "")
+		_ = s.appendOperationEvent(operationID, stepLabel, "info", fmt.Sprintf("Applying Terraform for credential_id=%d", work.CredentialID))
+
 		cred, credErr := s.proxmoxSvc.GetCredentialWithSecrets(work.CredentialID)
 		if credErr != nil {
 			failureOutput := strings.Join(append(outputs, fmt.Sprintf("load proxmox credential %d failed: %v", work.CredentialID, credErr)), "\n\n")
+			_ = s.updateClusterOperation(operationID, "failed", stepLabel, progress, credErr.Error())
+			_ = s.appendOperationEvent(operationID, stepLabel, "error", fmt.Sprintf("Credential load failed: %v", credErr))
 			if dbErr := s.insertProvisionRun(clusterID, "apply", "failed", primaryWorkspace, failureOutput); dbErr != nil {
 				log.Printf("ERROR saving failed apply run for cluster %d: %v", clusterID, dbErr)
 			}
@@ -563,6 +607,8 @@ func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionA
 		outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", work.CredentialID, work.Workspace, strings.TrimSpace(runResult.Output)))
 		if runErr != nil {
 			failureOutput := strings.Join(outputs, "\n\n")
+			_ = s.updateClusterOperation(operationID, "failed", stepLabel, progress, runErr.Error())
+			_ = s.appendOperationEvent(operationID, stepLabel, "error", fmt.Sprintf("Terraform apply failed: %v", runErr))
 			if dbErr := s.insertProvisionRun(clusterID, "apply", "failed", primaryWorkspace, failureOutput); dbErr != nil {
 				log.Printf("ERROR saving failed apply run for cluster %d: %v", clusterID, dbErr)
 			}
@@ -571,9 +617,12 @@ func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionA
 			}
 			return
 		}
+		_ = s.appendOperationEvent(operationID, stepLabel, "info", fmt.Sprintf("Credential_id=%d apply completed", work.CredentialID))
 	}
 
 	finalOutput := strings.Join(outputs, "\n\n")
+	_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
+	_ = s.appendOperationEvent(operationID, "completed", "info", "Provisioning apply completed successfully")
 	if dbErr := s.insertProvisionRun(clusterID, "apply", "applied", primaryWorkspace, finalOutput); dbErr != nil {
 		log.Printf("ERROR saving applied run for cluster %d: %v", clusterID, dbErr)
 	}
@@ -675,15 +724,25 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	ansibleOutput := ""
 	applyNow := req.Apply || s.autoBootstrap
 	if applyNow {
+		operationID, opErr := s.startClusterOperation(clusterID, "bootstrap", "prepare-ansible", 10)
+		if opErr != nil {
+			return BootstrapResponse{}, opErr
+		}
+		_ = s.appendOperationEvent(operationID, "prepare-ansible", "info", "Preparing bootstrap inventory and playbook")
+
 		status = "bootstrapping"
 		_ = s.insertProvisionRun(clusterID, "bootstrap", status, workDir, "")
 		_ = s.updateClusterStatus(clusterID, status)
+		_ = s.updateClusterOperation(operationID, "running", "ansible-apply", 35, "")
+		_ = s.appendOperationEvent(operationID, "ansible-apply", "info", "Ansible bootstrap started")
 
 		go func() {
 			runResult, runErr := s.ansibleRunner.Apply(workDir)
 			runStatus := runResult.Status
 			runOutput := runResult.Output
 			if runErr != nil {
+				_ = s.updateClusterOperation(operationID, "failed", "ansible-apply", 100, runErr.Error())
+				_ = s.appendOperationEvent(operationID, "ansible-apply", "error", fmt.Sprintf("Ansible bootstrap failed: %v", runErr))
 				log.Printf("ERROR bootstrap cluster %d: %v", clusterID, runErr)
 				if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
 					log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
@@ -693,6 +752,8 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 				}
 				return
 			}
+			_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
+			_ = s.appendOperationEvent(operationID, "completed", "info", "Bootstrap completed successfully")
 			log.Printf("INFO bootstrap cluster %d completed with status %s", clusterID, runStatus)
 			if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
 				log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
@@ -812,6 +873,96 @@ func (s *Service) ListRuns(clusterID int64) ([]ProvisionRunRecord, error) {
 		}
 		out = append(out, rec)
 	}
+	return out, nil
+}
+
+func (s *Service) GetLatestOperation(clusterID int64) (ClusterOperation, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterOperation{}, err
+	}
+
+	var op ClusterOperation
+	err := s.db.QueryRow(
+		`SELECT id, cluster_id, action, status, current_step, progress_percent,
+		        COALESCE(error_summary, ''), started_at, updated_at, finished_at
+		 FROM cluster_operations
+		 WHERE cluster_id = $1
+		 ORDER BY started_at DESC
+		 LIMIT 1`,
+		clusterID,
+	).Scan(
+		&op.ID,
+		&op.ClusterID,
+		&op.Action,
+		&op.Status,
+		&op.CurrentStep,
+		&op.ProgressPercent,
+		&op.ErrorSummary,
+		&op.StartedAt,
+		&op.UpdatedAt,
+		&op.FinishedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ClusterOperation{}, ErrOperationNotFound
+	}
+	if err != nil {
+		return ClusterOperation{}, fmt.Errorf("get latest operation: %w", err)
+	}
+
+	return op, nil
+}
+
+func (s *Service) ListOperationEvents(clusterID int64, operationID int64, sinceID int64, limit int) ([]ClusterOperationEvent, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+
+	if operationID <= 0 {
+		latest, err := s.GetLatestOperation(clusterID)
+		if err != nil {
+			if errors.Is(err, ErrOperationNotFound) {
+				return []ClusterOperationEvent{}, nil
+			}
+			return nil, err
+		}
+		operationID = latest.ID
+	}
+
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+
+	rows, err := s.db.Query(
+		`SELECT e.id, e.operation_id, e.step, e.level, e.message, e.created_at
+		 FROM cluster_operation_events e
+		 JOIN cluster_operations o ON o.id = e.operation_id
+		 WHERE o.cluster_id = $1
+		   AND e.operation_id = $2
+		   AND e.id > $3
+		 ORDER BY e.id ASC
+		 LIMIT $4`,
+		clusterID,
+		operationID,
+		sinceID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list operation events: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterOperationEvent, 0)
+	for rows.Next() {
+		var event ClusterOperationEvent
+		if scanErr := rows.Scan(&event.ID, &event.OperationID, &event.Step, &event.Level, &event.Message, &event.CreatedAt); scanErr != nil {
+			continue
+		}
+		out = append(out, event)
+	}
+
 	return out, nil
 }
 
@@ -1959,6 +2110,89 @@ func (s *Service) insertProvisionRun(clusterID int64, action, status, workDir, o
 	if err != nil {
 		return fmt.Errorf("insert provision run: %w", err)
 	}
+	return nil
+}
+
+func (s *Service) startClusterOperation(clusterID int64, action, step string, progressPercent int) (int64, error) {
+	var operationID int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_operations (cluster_id, action, status, current_step, progress_percent, started_at, updated_at)
+		 VALUES ($1, $2, 'running', $3, $4, NOW(), NOW())
+		 RETURNING id`,
+		clusterID,
+		action,
+		strings.TrimSpace(step),
+		progressPercent,
+	).Scan(&operationID)
+	if err != nil {
+		return 0, fmt.Errorf("start cluster operation: %w", err)
+	}
+	return operationID, nil
+}
+
+func (s *Service) updateClusterOperation(operationID int64, status string, step string, progressPercent int, errorSummary string) error {
+	if operationID <= 0 {
+		return nil
+	}
+	status = strings.TrimSpace(status)
+	step = strings.TrimSpace(step)
+	errorSummary = strings.TrimSpace(errorSummary)
+	if status == "" {
+		status = "running"
+	}
+
+	_, err := s.db.Exec(
+		`UPDATE cluster_operations
+		 SET status = $2,
+		     current_step = $3,
+		     progress_percent = $4,
+		     error_summary = NULLIF($5, ''),
+		     finished_at = CASE WHEN $2 IN ('succeeded', 'failed') THEN NOW() ELSE finished_at END,
+		     updated_at = NOW()
+		 WHERE id = $1`,
+		operationID,
+		status,
+		step,
+		progressPercent,
+		errorSummary,
+	)
+	if err != nil {
+		return fmt.Errorf("update cluster operation: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Service) appendOperationEvent(operationID int64, step, level, message string) error {
+	if operationID <= 0 {
+		return nil
+	}
+
+	step = strings.TrimSpace(step)
+	level = strings.TrimSpace(strings.ToLower(level))
+	message = strings.TrimSpace(message)
+	if step == "" {
+		step = "general"
+	}
+	if level == "" {
+		level = "info"
+	}
+	if message == "" {
+		return nil
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO cluster_operation_events (operation_id, step, level, message, created_at)
+		 VALUES ($1, $2, $3, $4, NOW())`,
+		operationID,
+		step,
+		level,
+		message,
+	)
+	if err != nil {
+		return fmt.Errorf("insert operation event: %w", err)
+	}
+
 	return nil
 }
 

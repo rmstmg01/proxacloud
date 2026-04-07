@@ -119,6 +119,28 @@ export interface ProvisionRunRecord {
   finished_at?: string;
 }
 
+export interface ClusterOperation {
+  id: number;
+  cluster_id: number;
+  action: string;
+  status: string;
+  current_step: string;
+  progress_percent: number;
+  error_summary?: string;
+  started_at: string;
+  updated_at: string;
+  finished_at?: string;
+}
+
+export interface ClusterOperationEvent {
+  id: number;
+  operation_id: number;
+  step: string;
+  level: string;
+  message: string;
+  created_at: string;
+}
+
 export interface ProvisionResponse {
   cluster_id: number;
   cluster_name: string;

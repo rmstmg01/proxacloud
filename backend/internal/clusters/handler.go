@@ -120,6 +120,70 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) GetLatestOperation(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.GetLatestOperation(clusterID)
+	if err != nil {
+		if errors.Is(err, ErrOperationNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ListOperationEvents(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	operationID := int64(0)
+	if raw := r.URL.Query().Get("operation_id"); raw != "" {
+		operationID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid operation_id"})
+			return
+		}
+	}
+
+	sinceID := int64(0)
+	if raw := r.URL.Query().Get("since_id"); raw != "" {
+		sinceID, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since_id"})
+			return
+		}
+	}
+
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+
+	resp, err := h.service.ListOperationEvents(clusterID, operationID, sinceID, limit)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {

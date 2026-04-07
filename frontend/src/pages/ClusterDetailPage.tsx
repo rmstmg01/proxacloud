@@ -1,10 +1,12 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
 import {
   getCluster,
   getClusterRuns,
+  getLatestClusterOperation,
+  getClusterOperationEvents,
   bootstrapCluster,
   scaleCluster,
   upgradeCluster,
@@ -106,40 +108,119 @@ function OverviewTab({ id }: { id: number }) {
 }
 
 function RunsTab({ id }: { id: number }) {
+  const { data: operation } = useQuery({
+    queryKey: ['cluster-operation-latest', id],
+    queryFn: async () => {
+      try {
+        return await getLatestClusterOperation(id);
+      } catch (error: any) {
+        if (error?.response?.status === 404) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2500 : false),
+  });
+
+  const { data: events } = useQuery({
+    queryKey: ['cluster-operation-events', id, operation?.id ?? 0],
+    queryFn: () => getClusterOperationEvents(id, operation?.id, 0, 200),
+    enabled: Boolean(operation?.id),
+    refetchInterval: operation?.status === 'running' ? 2500 : false,
+  });
+
   const { data: runs, isLoading } = useQuery({ queryKey: ['cluster-runs', id], queryFn: () => getClusterRuns(id) });
   if (isLoading) return <PageSpinner />;
+
+  const progressPercent = Math.max(0, Math.min(100, Number(operation?.progress_percent ?? 0)));
+
   return (
-    <Card>
-      <CardHeader><CardTitle>Provision Runs</CardTitle></CardHeader>
-      {!runs || runs.length === 0 ? (
-        <CardContent><p className="text-sm text-slate-400">No runs yet.</p></CardContent>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="text-left px-6 py-3 font-medium text-slate-600">Action</th>
-                <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
-                <th className="text-left px-6 py-3 font-medium text-slate-600">Started</th>
-                <th className="text-left px-6 py-3 font-medium text-slate-600">Finished</th>
-                <th className="text-left px-6 py-3 font-medium text-slate-600">Work Dir</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {runs.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-6 py-3 font-medium text-slate-900">{r.action}</td>
-                  <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
-                  <td className="px-6 py-3 text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
-                  <td className="px-6 py-3 text-slate-500">{r.finished_at ? new Date(r.finished_at).toLocaleString() : '—'}</td>
-                  <td className="px-6 py-3 text-slate-500 font-mono text-xs truncate max-w-xs">{r.work_dir}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+    <div className="space-y-6">
+      {operation && (
+        <Card>
+          <CardHeader><CardTitle>Live Operation Status</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-3">
+              <StatusBadge status={operation.status} />
+              <span className="text-sm text-slate-600">Action: {operation.action}</span>
+              <span className="text-sm text-slate-600">Step: {operation.current_step || 'pending'}</span>
+            </div>
+            <div>
+              <div className="h-2 w-full rounded bg-slate-200 overflow-hidden">
+                <div className={`h-full transition-all duration-500 ${operation.status === 'failed' ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${progressPercent}%` }} />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">{progressPercent}% complete</p>
+            </div>
+            {operation.error_summary && (
+              <Alert variant="error" title="Operation failed">
+                <p className="text-sm whitespace-pre-wrap break-words">{operation.error_summary}</p>
+              </Alert>
+            )}
+            <div className="text-xs text-slate-500 flex flex-wrap gap-x-5 gap-y-1">
+              <span>Started: {new Date(operation.started_at).toLocaleString()}</span>
+              <span>Updated: {new Date(operation.updated_at).toLocaleString()}</span>
+              <span>Finished: {operation.finished_at ? new Date(operation.finished_at).toLocaleString() : 'in progress'}</span>
+            </div>
+          </CardContent>
+        </Card>
       )}
-    </Card>
+
+      {operation && events && events.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Operation Timeline</CardTitle></CardHeader>
+          <CardContent>
+            <div className="max-h-80 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100">
+              {events.map((event) => (
+                <div key={event.id} className="px-4 py-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`font-medium ${event.level === 'error' ? 'text-rose-600' : event.level === 'warn' ? 'text-amber-600' : 'text-slate-700'}`}>
+                      [{event.level.toUpperCase()}]
+                    </span>
+                    <span className="text-slate-700">{event.step}</span>
+                    <span className="text-xs text-slate-400">{new Date(event.created_at).toLocaleString()}</span>
+                  </div>
+                  <p className="mt-1 text-slate-600 whitespace-pre-wrap break-words">{event.message}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader><CardTitle>Provision Runs</CardTitle></CardHeader>
+        {!runs || runs.length === 0 ? (
+          <CardContent><p className="text-sm text-slate-400">No runs yet.</p></CardContent>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Action</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Started</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Finished</th>
+                  <th className="text-left px-6 py-3 font-medium text-slate-600">Work Dir</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {runs.map((r) => (
+                  <tr key={r.id}>
+                    <td className="px-6 py-3 font-medium text-slate-900">{r.action}</td>
+                    <td className="px-6 py-3"><StatusBadge status={r.status} /></td>
+                    <td className="px-6 py-3 text-slate-500">{new Date(r.created_at).toLocaleString()}</td>
+                    <td className="px-6 py-3 text-slate-500">{r.finished_at ? new Date(r.finished_at).toLocaleString() : '—'}</td>
+                    <td className="px-6 py-3 text-slate-500 font-mono text-xs truncate max-w-xs">{r.work_dir}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
   );
 }
 
@@ -728,10 +809,12 @@ function EtcdTab({ id }: { id: number }) {
 
 export function ClusterDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const clusterId = Number(id);
   const qc = useQueryClient();
   const { data: cluster, isLoading } = useQuery({ queryKey: ['cluster', clusterId], queryFn: () => getCluster(clusterId) });
-  const [activeTab, setActiveTab] = useState<Tab>('overview');
+  const initialTab = (searchParams.get('tab') as Tab | null) ?? 'overview';
+  const [activeTab, setActiveTab] = useState<Tab>(TABS.some((t) => t.key === initialTab) ? initialTab : 'overview');
 
   if (isLoading) return <Layout><PageSpinner /></Layout>;
   if (!cluster) return <Layout><p className="text-slate-500">Cluster not found.</p></Layout>;
