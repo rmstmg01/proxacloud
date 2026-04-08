@@ -822,9 +822,28 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		return BootstrapResponse{}, err
 	}
 
-	clusterName, kubernetesVersion, err := s.getClusterBase(clusterID)
+	clusterSummary, err := s.getClusterSummary(clusterID)
 	if err != nil {
 		return BootstrapResponse{}, err
+	}
+	clusterName := clusterSummary.Name
+	kubernetesVersion := clusterSummary.KubernetesVersion
+
+	vip := strings.TrimSpace(req.ControlPlaneVIP)
+	if vip != "" && clusterSummary.NetworkProfileID > 0 {
+		reserved, reservedErr := s.networks.GetReservedIPsByNetworkProfileID(clusterSummary.NetworkProfileID)
+		if reservedErr != nil {
+			return BootstrapResponse{}, fmt.Errorf("load reserved ips for control-plane vip validation: %w", reservedErr)
+		}
+		for _, item := range reserved {
+			if strings.TrimSpace(item.IPAddress) == vip {
+				reason := strings.TrimSpace(item.Description)
+				if reason == "" {
+					reason = "no description"
+				}
+				return BootstrapResponse{}, fmt.Errorf("control_plane_vip %s is reserved (hostname=%s, description=%s)", vip, item.Hostname, reason)
+			}
+		}
 	}
 
 	nodes, err := s.getClusterNodes(clusterID)
