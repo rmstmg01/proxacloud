@@ -246,12 +246,26 @@ workers
 ansible_user={{ .SSHUser }}
 ansible_ssh_private_key_file={{ .SSHPrivateKeyPath }}
 ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10'
 `
 
 const playbookTemplate = `---
 - hosts: k8s_cluster
   become: true
-  gather_facts: true
+  gather_facts: false
+  pre_tasks:
+    - name: Wait for SSH connectivity (retry up to 5 times)
+      wait_for_connection:
+        connect_timeout: 5
+        sleep: 2
+        timeout: 20
+      register: ssh_ready
+      retries: 5
+      delay: 10
+      until: ssh_ready is succeeded
+
+    - name: Gather facts after SSH is reachable
+      setup:
   tasks:
     - name: Wait for cloud-init to finish
       shell: |
@@ -481,5 +495,5 @@ const playbookTemplate = `---
         node-role.kubernetes.io/worker=worker
         --overwrite
       loop: "{{ "{{ groups['workers'] }}" }}"
-      when: "{{ "{{ groups['workers'] | length > 0 }}" }}"
+      when: groups['workers'] | length > 0
 `
