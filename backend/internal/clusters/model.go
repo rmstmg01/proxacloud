@@ -2261,6 +2261,8 @@ func isIgnorableDestroyError(err error) bool {
 	return strings.Contains(msg, "hostname lookup") ||
 		strings.Contains(msg, "name or service not known") ||
 		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connect: connection refused") ||
 		strings.Contains(msg, "server misbehaving") ||
 		strings.Contains(msg, "i/o timeout")
 }
