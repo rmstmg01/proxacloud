@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
-import { checkClusterName, provisionCluster } from '../api/clusters';
+import { checkClusterName, provisionAndBootstrapCluster, provisionCluster } from '../api/clusters';
 import { getNetworks, getNodeNetworkTags } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
 import { getSSHKeys } from '../api/sshKeys';
@@ -42,6 +42,13 @@ export function ProvisionClusterPage() {
     node_credential_ids: {} as Record<string, number>,
     node_network_profile_ids: {} as Record<string, number>,
     node_ip_pool_start_by_node: {} as Record<string, string>,
+    bootstrap_after_provision: false,
+    bootstrap_ssh_user: 'ubuntu',
+    bootstrap_deploy_kube_vip: false,
+    bootstrap_control_plane_vip: '',
+    bootstrap_pod_cidr: '10.244.0.0/16',
+    bootstrap_service_cidr: '10.96.0.0/12',
+    bootstrap_cni: 'calico',
     apply: false,
   });
 
@@ -82,6 +89,7 @@ export function ProvisionClusterPage() {
   }, [nodeTags]);
 
   const mutation = useMutation({ mutationFn: provisionCluster });
+  const combinedMutation = useMutation({ mutationFn: provisionAndBootstrapCluster });
 
   useEffect(() => {
     const handle = setTimeout(() => {
@@ -129,7 +137,7 @@ export function ProvisionClusterPage() {
         ? Number(form.proxmox_credential_id)
         : Number(Object.values(nodeCredentialIDs)[0] ?? 0);
 
-    const result = await mutation.mutateAsync({
+    const provisionPayload = {
       ...form,
       network_profile_id: Number(form.network_profile_id),
       proxmox_credential_id: fallbackCredentialID,
@@ -138,7 +146,25 @@ export function ProvisionClusterPage() {
       node_network_profile_ids: nodeNetworkProfileIDs,
       node_ip_pool_start_by_node: nodeIPPoolStartByNode,
       node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
-    });
+      apply: form.bootstrap_after_provision ? true : form.apply,
+    };
+
+    const result = form.bootstrap_after_provision
+      ? await combinedMutation.mutateAsync({
+          provision: provisionPayload,
+          bootstrap: {
+            ssh_user: form.bootstrap_ssh_user.trim(),
+            ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
+            deploy_kube_vip: form.bootstrap_deploy_kube_vip,
+            control_plane_vip: form.bootstrap_control_plane_vip.trim(),
+            pod_cidr: form.bootstrap_pod_cidr.trim(),
+            service_cidr: form.bootstrap_service_cidr.trim(),
+            cni: form.bootstrap_cni.trim(),
+            node_ips: {},
+            apply: true,
+          },
+        })
+      : await mutation.mutateAsync(provisionPayload);
     navigate(`/clusters/${result.cluster_id}?tab=runs`);
   };
 
@@ -347,6 +373,7 @@ export function ProvisionClusterPage() {
                   ...prev,
                   ssh_key_pair_id: selectedID,
                   ssh_public_key: selectedKey ? selectedKey.public_key : prev.ssh_public_key,
+                  bootstrap_ssh_user: selectedKey ? selectedKey.ssh_user : prev.bootstrap_ssh_user,
                 }));
               }}
             >
@@ -452,7 +479,7 @@ export function ProvisionClusterPage() {
         {/* Apply toggle */}
         <Card>
           <CardContent>
-            <label className="flex items-center gap-3 cursor-pointer">
+            <label className="flex items-center gap-3 cursor-pointer mb-3">
               <input
                 type="checkbox"
                 checked={form.apply}
@@ -463,10 +490,69 @@ export function ProvisionClusterPage() {
                 Apply immediately (run <code className="text-xs bg-slate-100 px-1 py-0.5 rounded">terraform apply</code>)
               </span>
             </label>
+
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.bootstrap_after_provision}
+                onChange={(e) => setField('bootstrap_after_provision', e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-slate-700">Run bootstrap automatically after provision apply</span>
+            </label>
+
+            {form.bootstrap_after_provision && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <Input
+                  label="Bootstrap SSH user"
+                  value={form.bootstrap_ssh_user}
+                  onChange={(e) => setField('bootstrap_ssh_user', e.target.value)}
+                  required
+                />
+                <Input
+                  label="Control-plane VIP (optional)"
+                  value={form.bootstrap_control_plane_vip}
+                  onChange={(e) => setField('bootstrap_control_plane_vip', e.target.value)}
+                  placeholder="e.g. 192.168.8.50"
+                />
+                <Input
+                  label="Pod CIDR"
+                  value={form.bootstrap_pod_cidr}
+                  onChange={(e) => setField('bootstrap_pod_cidr', e.target.value)}
+                  placeholder="10.244.0.0/16"
+                />
+                <Input
+                  label="Service CIDR"
+                  value={form.bootstrap_service_cidr}
+                  onChange={(e) => setField('bootstrap_service_cidr', e.target.value)}
+                  placeholder="10.96.0.0/12"
+                />
+                <Select
+                  label="CNI"
+                  value={form.bootstrap_cni}
+                  onChange={(e) => setField('bootstrap_cni', e.target.value)}
+                >
+                  <option value="calico">calico</option>
+                  <option value="flannel">flannel</option>
+                </Select>
+                <label className="flex items-center gap-3 self-end pb-2">
+                  <input
+                    type="checkbox"
+                    checked={form.bootstrap_deploy_kube_vip}
+                    onChange={(e) => setField('bootstrap_deploy_kube_vip', e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  <span className="text-sm text-slate-700">Deploy kube-vip</span>
+                </label>
+                <p className="sm:col-span-2 text-xs text-amber-700">
+                  Auto-bootstrap requires a saved SSH key pair with private key.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {mutation.data && (
+        {mutation.data && !form.bootstrap_after_provision && (
           <Alert variant="success" title="Cluster created!">
             <p>Cluster ID: <strong>{mutation.data.cluster_id}</strong> — Status: <strong>{mutation.data.status}</strong></p>
             {mutation.data.warnings.length > 0 && (
@@ -476,17 +562,28 @@ export function ProvisionClusterPage() {
             )}
           </Alert>
         )}
+        {combinedMutation.data && form.bootstrap_after_provision && (
+          <Alert variant="success" title="Provision + bootstrap started!">
+            <p>Cluster ID: <strong>{combinedMutation.data.cluster_id}</strong> — Status: <strong>{combinedMutation.data.status}</strong></p>
+            {combinedMutation.data.warnings.length > 0 && (
+              <ul className="mt-2 list-disc list-inside text-amber-800">
+                {combinedMutation.data.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+          </Alert>
+        )}
         {mutation.error && <ErrorMessage error={mutation.error} />}
+        {combinedMutation.error && <ErrorMessage error={combinedMutation.error} />}
         {nameCheckQuery.error && <ErrorMessage error={nameCheckQuery.error} />}
 
         <div className="flex gap-3">
           <Button
             type="submit"
-            loading={mutation.isPending}
+            loading={mutation.isPending || combinedMutation.isPending}
             disabled={isNameTaken || nameCheckQuery.isFetching}
             size="lg"
           >
-            Provision Cluster
+            {form.bootstrap_after_provision ? 'Provision + Bootstrap Cluster' : 'Provision Cluster'}
           </Button>
           <Button type="button" variant="secondary" size="lg" onClick={() => navigate('/clusters')}>
             Cancel

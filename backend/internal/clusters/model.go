@@ -105,6 +105,18 @@ type ProvisionResponse struct {
 	Warnings         []string              `json:"warnings"`
 }
 
+type ProvisionAndBootstrapRequest struct {
+	Provision ProvisionRequest `json:"provision"`
+	Bootstrap BootstrapRequest `json:"bootstrap"`
+}
+
+type ProvisionAndBootstrapResponse struct {
+	ClusterID   int64    `json:"cluster_id"`
+	ClusterName string   `json:"cluster_name"`
+	Status      string   `json:"status"`
+	Warnings    []string `json:"warnings"`
+}
+
 type BootstrapRequest struct {
 	SSHUser           string            `json:"ssh_user"`
 	SSHPrivateKey     string            `json:"ssh_private_key,omitempty"`
@@ -621,6 +633,80 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		TerraformOutput:  terraformOutput,
 		Warnings:         warnings,
 	}, nil
+}
+
+func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (ProvisionAndBootstrapResponse, error) {
+	provisionReq := req.Provision
+	provisionReq.Apply = true
+
+	bootstrapReq := req.Bootstrap
+	bootstrapReq.Apply = true
+
+	if strings.TrimSpace(bootstrapReq.SSHUser) == "" {
+		return ProvisionAndBootstrapResponse{}, errors.New("bootstrap.ssh_user is required for provision-and-bootstrap")
+	}
+	if bootstrapReq.SSHKeyPairID <= 0 &&
+		bootstrapReq.SSHKeyID <= 0 &&
+		strings.TrimSpace(bootstrapReq.SSHPrivateKey) == "" &&
+		strings.TrimSpace(bootstrapReq.SSHPrivateKeyPath) == "" &&
+		strings.TrimSpace(bootstrapReq.SSHKeyName) == "" {
+		return ProvisionAndBootstrapResponse{}, errors.New("bootstrap ssh key is required: set bootstrap.ssh_key_pair_id or bootstrap.ssh_private_key")
+	}
+
+	provisionResp, err := s.Provision(provisionReq)
+	if err != nil {
+		return ProvisionAndBootstrapResponse{}, err
+	}
+
+	go s.runBootstrapAfterProvision(provisionResp.ClusterID, bootstrapReq)
+
+	warnings := append([]string{}, provisionResp.Warnings...)
+	warnings = append(warnings, "bootstrap will start automatically after terraform apply succeeds")
+
+	return ProvisionAndBootstrapResponse{
+		ClusterID:   provisionResp.ClusterID,
+		ClusterName: provisionResp.ClusterName,
+		Status:      "provisioning-then-bootstrap",
+		Warnings:    warnings,
+	}, nil
+}
+
+func (s *Service) runBootstrapAfterProvision(clusterID int64, req BootstrapRequest) {
+	if clusterID <= 0 {
+		return
+	}
+
+	const maxWait = 30 * time.Minute
+	const interval = 3 * time.Second
+	deadline := time.Now().Add(maxWait)
+
+	for {
+		summary, err := s.getClusterSummary(clusterID)
+		if err != nil {
+			log.Printf("ERROR waiting for provision completion for cluster %d: %v", clusterID, err)
+			return
+		}
+
+		status := strings.TrimSpace(strings.ToLower(summary.Status))
+		switch status {
+		case "applied":
+			_, bootErr := s.Bootstrap(clusterID, req)
+			if bootErr != nil {
+				log.Printf("ERROR auto-bootstrap for cluster %d: %v", clusterID, bootErr)
+			}
+			return
+		case "failed", "destroy-failed":
+			log.Printf("INFO skip auto-bootstrap for cluster %d due to status %s", clusterID, status)
+			return
+		}
+
+		if time.Now().After(deadline) {
+			log.Printf("ERROR timeout waiting for provision apply before bootstrap for cluster %d", clusterID)
+			return
+		}
+
+		time.Sleep(interval)
+	}
 }
 
 func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionApplyWork, primaryWorkspace string, operationID int64) {

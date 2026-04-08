@@ -41,6 +41,26 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
+func (h *Handler) ProvisionAndBootstrap(w http.ResponseWriter, r *http.Request) {
+	var req ProvisionAndBootstrapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	resp, err := h.service.ProvisionAndBootstrap(req)
+	if err != nil {
+		if errors.Is(err, ErrClusterExists) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
 func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {

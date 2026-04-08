@@ -91,6 +91,52 @@ export const provisionCluster = (body: {
   apply: boolean;
 }) => client.post<ProvisionResponse>('/clusters/provision', body).then((r) => r.data);
 
+export const provisionAndBootstrapCluster = (body: {
+  provision: {
+    name: string;
+    topology_type: string;
+    control_plane_count: number;
+    worker_count: number;
+    network_profile_id: number;
+    proxmox_credential_id: number;
+    ssh_key_pair_id?: number;
+    node_credential_ids?: Record<string, number>;
+    node_network_profile_ids?: Record<string, number>;
+    node_ip_pool_start_by_node?: Record<string, string>;
+    node_ip_pool_start: string;
+    kubernetes_version: string;
+    ubuntu_image: string;
+    ssh_public_key: string;
+    control_plane_cpu: number;
+    control_plane_ram_mb: number;
+    control_plane_disk_gb: number;
+    worker_cpu: number;
+    worker_ram_mb: number;
+    worker_disk_gb: number;
+    apply: boolean;
+  };
+  bootstrap: {
+    ssh_user: string;
+    ssh_key_pair_id?: number;
+    ssh_private_key?: string;
+    ssh_key_id?: number;
+    ssh_key_name?: string;
+    deploy_kube_vip?: boolean;
+    control_plane_vip: string;
+    pod_cidr: string;
+    service_cidr: string;
+    cni: string;
+    node_ips: Record<string, string>;
+    apply: boolean;
+  };
+}) =>
+  client
+    .post<{ cluster_id: number; cluster_name: string; status: string; warnings: string[] }>(
+      '/clusters/provision-and-bootstrap',
+      body,
+    )
+    .then((r) => r.data);
+
 export const bootstrapCluster = (
   id: number,
   body: {
