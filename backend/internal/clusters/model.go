@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -451,6 +452,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	vms := make([]terraform.VMNode, 0, len(plan.Placements))
 	iteratorsByNode := make(map[string]*ipIterator)
 	assignedIPs := make(map[string]struct{})
+	poolWarnings := make([]string, 0)
 	for _, placement := range plan.Placements {
 		vmName := buildVMName(req.Name, placement.Role, placement.Index)
 		nodeName := strings.TrimSpace(placement.ProxmoxNodeName)
@@ -467,7 +469,14 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			if poolStart == "" {
 				poolStart = req.NodeIPPoolStart
 			}
-			it, iterErr := newIPIterator(poolStart, networkCfg.CIDR, networkCfg.Gateway, assignedIPs)
+			adjustedPoolStart, adjustErr := alignIPToCIDR(poolStart, networkCfg.CIDR)
+			if adjustErr != nil {
+				return ProvisionResponse{}, fmt.Errorf("invalid IP pool for proxmox node %s: %w", nodeName, adjustErr)
+			}
+			if adjustedPoolStart != strings.TrimSpace(poolStart) {
+				poolWarnings = append(poolWarnings, fmt.Sprintf("Adjusted IP pool start for %s from %s to %s to match %s", nodeName, strings.TrimSpace(poolStart), adjustedPoolStart, networkCfg.CIDR))
+			}
+			it, iterErr := newIPIterator(adjustedPoolStart, networkCfg.CIDR, networkCfg.Gateway, assignedIPs)
 			if iterErr != nil {
 				return ProvisionResponse{}, fmt.Errorf("invalid IP pool for proxmox node %s: %w", nodeName, iterErr)
 			}
@@ -502,7 +511,8 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 
 	status := "prepared"
 	terraformOutput := ""
-	warnings := append([]string{}, plan.Warnings...)
+	warnings := append([]string{}, poolWarnings...)
+	warnings = append(warnings, plan.Warnings...)
 	workspace := ""
 
 	vmGroups, err := groupVMsByCredential(vms, nodeCredentialIDs)
@@ -1984,6 +1994,45 @@ func newIPIterator(start string, cidr string, gateway string, assigned map[strin
 	}
 
 	return &ipIterator{current: clone, cidr: cidrNet, gateway: strings.TrimSpace(gateway), assignedIP: assigned}, nil
+}
+
+func alignIPToCIDR(start string, cidr string) (string, error) {
+	start = strings.TrimSpace(start)
+	ip := net.ParseIP(start).To4()
+	if ip == nil {
+		return "", fmt.Errorf("invalid node_ip_pool_start %q", start)
+	}
+	_, cidrNet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil {
+		return "", fmt.Errorf("invalid cidr %q", cidr)
+	}
+	if cidrNet.Contains(ip) {
+		return ip.String(), nil
+	}
+
+	mask := binary.BigEndian.Uint32(cidrNet.Mask)
+	networkBase := binary.BigEndian.Uint32(cidrNet.IP.To4()) & mask
+	hostBits := binary.BigEndian.Uint32(ip) & ^mask
+	candidateRaw := networkBase | hostBits
+
+	candidate := make(net.IP, 4)
+	binary.BigEndian.PutUint32(candidate, candidateRaw)
+	if !cidrNet.Contains(candidate) {
+		return "", fmt.Errorf("ip %s is outside cidr %s", ip.String(), cidrNet.String())
+	}
+
+	for tries := 0; tries < 8; tries++ {
+		if !isNetworkOrBroadcast(cidrNet, candidate) {
+			return candidate.String(), nil
+		}
+		candidateRaw++
+		binary.BigEndian.PutUint32(candidate, candidateRaw)
+		if !cidrNet.Contains(candidate) {
+			break
+		}
+	}
+
+	return "", fmt.Errorf("ip %s cannot be aligned to usable host in cidr %s", ip.String(), cidrNet.String())
 }
 
 // nextAvailable advances until it finds an IP that does not respond to ping,
