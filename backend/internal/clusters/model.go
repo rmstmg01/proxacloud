@@ -416,11 +416,6 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 
-	networkProfile, err := s.networks.GetByID(req.NetworkProfileID)
-	if err != nil {
-		return ProvisionResponse{}, fmt.Errorf("load network profile: %w", err)
-	}
-
 	plan, err := s.planner.Plan(topology.PlanRequest{
 		TopologyType:      req.TopologyType,
 		ControlPlaneCount: req.ControlPlaneCount,
@@ -443,6 +438,24 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	nodeNetworkProfileIDs, err := resolveProvisionNodeNetworkProfiles(req, plan, nodeTagMap)
 	if err != nil {
 		return ProvisionResponse{}, err
+	}
+
+	primaryNetworkProfileID := req.NetworkProfileID
+	if primaryNetworkProfileID <= 0 {
+		for _, profileID := range nodeNetworkProfileIDs {
+			if primaryNetworkProfileID <= 0 || profileID < primaryNetworkProfileID {
+				primaryNetworkProfileID = profileID
+			}
+		}
+	}
+	if primaryNetworkProfileID <= 0 {
+		return ProvisionResponse{}, errors.New("unable to resolve effective network profile")
+	}
+	req.NetworkProfileID = primaryNetworkProfileID
+
+	networkProfile, err := s.networks.GetByID(primaryNetworkProfileID)
+	if err != nil {
+		return ProvisionResponse{}, fmt.Errorf("load network profile: %w", err)
 	}
 
 	networkProfilesByID := map[int64]networks.Profile{networkProfile.ID: networkProfile}
@@ -1883,9 +1896,6 @@ func validateProvisionRequest(req ProvisionRequest) error {
 
 	if req.Name == "" {
 		return errors.New("name is required")
-	}
-	if req.NetworkProfileID <= 0 {
-		return errors.New("network_profile_id is required")
 	}
 	if req.KubernetesVersion == "" {
 		return errors.New("kubernetes_version is required")
