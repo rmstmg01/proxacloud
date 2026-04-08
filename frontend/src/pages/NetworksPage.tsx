@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Star } from 'lucide-react';
-import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag } from '../api/networks';
+import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP } from '../api/networks';
 import { getNodes } from '../api/proxmox';
 import type { NetworkProfile } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
@@ -84,6 +84,14 @@ export function NetworksPage() {
   const { data: nodeTags, error: nodeTagsError } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
   const [createOpen, setCreateOpen] = useState(false);
   const [editNetwork, setEditNetwork] = useState<NetworkProfile | null>(null);
+  const [reservedOpenFor, setReservedOpenFor] = useState<NetworkProfile | null>(null);
+  const [reservedForm, setReservedForm] = useState({ hostname: '', ip_address: '', description: '' });
+
+  const { data: reservedIPs, error: reservedError } = useQuery({
+    queryKey: ['network-reserved-ips', reservedOpenFor?.id],
+    queryFn: () => getReservedIPs(Number(reservedOpenFor?.id)),
+    enabled: !!reservedOpenFor,
+  });
 
   const createMut = useMutation({
     mutationFn: (d: NetworkFormData) =>
@@ -111,6 +119,25 @@ export function NetworksPage() {
   const deleteNodeTagMut = useMutation({
     mutationFn: deleteNodeNetworkTag,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-node-tags'] }),
+  });
+
+  const createReservedMut = useMutation({
+    mutationFn: (payload: { networkID: number; hostname: string; ip_address: string; description: string }) =>
+      createReservedIP(payload.networkID, {
+        hostname: payload.hostname,
+        ip_address: payload.ip_address,
+        description: payload.description,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['network-reserved-ips', reservedOpenFor?.id] });
+      setReservedForm({ hostname: '', ip_address: '', description: '' });
+    },
+  });
+
+  const deleteReservedMut = useMutation({
+    mutationFn: ({ networkID, reservedID }: { networkID: number; reservedID: number }) =>
+      deleteReservedIP(networkID, reservedID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-reserved-ips', reservedOpenFor?.id] }),
   });
 
   const enabledNodesByName = Array.from(
@@ -185,6 +212,13 @@ export function NetworksPage() {
                             }
                           >
                             <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setReservedOpenFor(n)}
+                          >
+                            Reserved IPs
                           </Button>
                         </div>
                       </td>
@@ -276,6 +310,87 @@ export function NetworksPage() {
             isEdit
           />
         )}
+      </Modal>
+
+      <Modal open={!!reservedOpenFor} onClose={() => setReservedOpenFor(null)} title={`Reserved IPs - ${reservedOpenFor?.name ?? ''}`}>
+        <div className="space-y-4">
+          <form
+            className="space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!reservedOpenFor) return;
+              createReservedMut.mutate({
+                networkID: reservedOpenFor.id,
+                hostname: reservedForm.hostname,
+                ip_address: reservedForm.ip_address,
+                description: reservedForm.description,
+              });
+            }}
+          >
+            <Input
+              label="Hostname"
+              value={reservedForm.hostname}
+              onChange={(e) => setReservedForm((f) => ({ ...f, hostname: e.target.value }))}
+              placeholder="nas01"
+              required
+            />
+            <Input
+              label="IP Address"
+              value={reservedForm.ip_address}
+              onChange={(e) => setReservedForm((f) => ({ ...f, ip_address: e.target.value }))}
+              placeholder="192.168.8.20"
+              required
+            />
+            <Input
+              label="Description"
+              value={reservedForm.description}
+              onChange={(e) => setReservedForm((f) => ({ ...f, description: e.target.value }))}
+              placeholder="NAS static IP"
+            />
+            {createReservedMut.error && <ErrorMessage error={createReservedMut.error} />}
+            <Button type="submit" loading={createReservedMut.isPending}>Add Reserved IP</Button>
+          </form>
+
+          {reservedError && <ErrorMessage error={reservedError} />}
+
+          <div className="overflow-x-auto border border-slate-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="text-left px-4 py-2 font-medium text-slate-600">Hostname</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600">IP</th>
+                  <th className="text-left px-4 py-2 font-medium text-slate-600">Description</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {(reservedIPs ?? []).map((r) => (
+                  <tr key={r.id}>
+                    <td className="px-4 py-2 text-slate-900">{r.hostname}</td>
+                    <td className="px-4 py-2 text-slate-600 font-mono">{r.ip_address}</td>
+                    <td className="px-4 py-2 text-slate-600">{r.description || '—'}</td>
+                    <td className="px-4 py-2 text-right">
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => {
+                          if (!reservedOpenFor) return;
+                          deleteReservedMut.mutate({ networkID: reservedOpenFor.id, reservedID: r.id });
+                        }}
+                        loading={deleteReservedMut.isPending}
+                      >
+                        Remove
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {(reservedIPs ?? []).length === 0 && (
+              <p className="px-4 py-3 text-sm text-slate-500">No reserved IPs for this network.</p>
+            )}
+          </div>
+        </div>
       </Modal>
     </Layout>
   );

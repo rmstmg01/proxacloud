@@ -167,6 +167,80 @@ func (h *Handler) DeleteNodeTag(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"proxmox_node_name": nodeName, "deleted": true})
 }
 
+func (h *Handler) ListReservedIPs(w http.ResponseWriter, r *http.Request) {
+	networkID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+
+	reserved, err := h.service.GetReservedIPsByNetworkProfileID(networkID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, reserved)
+}
+
+func (h *Handler) CreateReservedIP(w http.ResponseWriter, r *http.Request) {
+	networkID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+
+	var req struct {
+		Hostname    string `json:"hostname"`
+		IPAddress   string `json:"ip_address"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	reserved, err := h.service.CreateReservedIP(networkID, req.Hostname, req.IPAddress, req.Description)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNetworkNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, reserved)
+}
+
+func (h *Handler) DeleteReservedIP(w http.ResponseWriter, r *http.Request) {
+	networkID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+
+	reservedIDRaw := chi.URLParam(r, "reservedId")
+	reservedID, err := strconv.ParseInt(reservedIDRaw, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid reserved ip id"})
+		return
+	}
+
+	if err := h.service.DeleteReservedIP(networkID, reservedID); err != nil {
+		switch {
+		case errors.Is(err, ErrReservedIPNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"id": reservedID, "deleted": true})
+}
+
 func parseIDParam(r *http.Request) (int64, error) {
 	raw := chi.URLParam(r, "id")
 	return strconv.ParseInt(raw, 10, 64)

@@ -33,6 +33,7 @@ type TopologyPlanner interface {
 type NetworkStore interface {
 	GetByID(id int64) (networks.Profile, error)
 	ListNodeTagMap() (map[string]int64, error)
+	GetReservedIPsByNetworkProfileID(networkProfileID int64) ([]networks.ReservedIP, error)
 }
 
 // ProxmoxCredentialStore is satisfied by *proxmox.Service and is used to look
@@ -465,6 +466,18 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	iteratorsByNode := make(map[string]*ipIterator)
 	assignedIPs := make(map[string]struct{})
 	poolWarnings := make([]string, 0)
+	for profileID := range networkProfilesByID {
+		reserved, reservedErr := s.networks.GetReservedIPsByNetworkProfileID(profileID)
+		if reservedErr != nil {
+			return ProvisionResponse{}, fmt.Errorf("load reserved ips for network profile %d: %w", profileID, reservedErr)
+		}
+		for _, item := range reserved {
+			trimmed := strings.TrimSpace(item.IPAddress)
+			if trimmed != "" {
+				assignedIPs[trimmed] = struct{}{}
+			}
+		}
+	}
 	for _, placement := range plan.Placements {
 		vmName := buildVMName(req.Name, placement.Role, placement.Index)
 		nodeName := strings.TrimSpace(placement.ProxmoxNodeName)

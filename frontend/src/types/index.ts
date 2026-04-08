@@ -41,6 +41,17 @@ export interface NodeNetworkTag {
   updated_at: string;
 }
 
+export interface NetworkReservedIP {
+  id: number;
+  network_profile_id: number;
+  network_name: string;
+  hostname: string;
+  ip_address: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Proxmox ──────────────────────────────────────────────────────────────────
 
 export interface ProxmoxCredential {

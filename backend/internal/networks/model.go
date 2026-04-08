@@ -12,7 +12,8 @@ import (
 )
 
 var (
-	ErrNetworkNotFound = errors.New("network profile not found")
+	ErrNetworkNotFound    = errors.New("network profile not found")
+	ErrReservedIPNotFound = errors.New("reserved ip not found")
 )
 
 type Profile struct {
@@ -36,6 +37,17 @@ type NodeNetworkTag struct {
 	Gateway          string    `json:"gateway"`
 	Bridge           string    `json:"bridge"`
 	VLAN             int       `json:"vlan"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type ReservedIP struct {
+	ID               int64     `json:"id"`
+	NetworkProfileID int64     `json:"network_profile_id"`
+	NetworkName      string    `json:"network_name"`
+	Hostname         string    `json:"hostname"`
+	IPAddress        string    `json:"ip_address"`
+	Description      string    `json:"description"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -379,6 +391,148 @@ func (s *Service) DeleteNodeTag(nodeName string) error {
 	}
 
 	return nil
+}
+
+func (s *Service) GetReservedIPsByNetworkProfileID(networkProfileID int64) ([]ReservedIP, error) {
+	if networkProfileID <= 0 {
+		return nil, errors.New("network profile id is required")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT r.id, r.network_profile_id, p.name, r.hostname, r.ip_address, r.description, r.created_at, r.updated_at
+		 FROM network_reserved_ips r
+		 JOIN network_profiles p ON p.id = r.network_profile_id
+		 WHERE r.network_profile_id = $1
+		 ORDER BY r.hostname ASC, r.ip_address ASC`,
+		networkProfileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list reserved ips: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ReservedIP, 0)
+	for rows.Next() {
+		var r ReservedIP
+		if scanErr := rows.Scan(
+			&r.ID,
+			&r.NetworkProfileID,
+			&r.NetworkName,
+			&r.Hostname,
+			&r.IPAddress,
+			&r.Description,
+			&r.CreatedAt,
+			&r.UpdatedAt,
+		); scanErr != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+
+	return out, nil
+}
+
+func (s *Service) CreateReservedIP(networkProfileID int64, hostname, ipAddress, description string) (ReservedIP, error) {
+	profile, err := s.GetByID(networkProfileID)
+	if err != nil {
+		return ReservedIP{}, err
+	}
+
+	hostname = strings.TrimSpace(hostname)
+	ipAddress = strings.TrimSpace(ipAddress)
+	description = strings.TrimSpace(description)
+
+	if hostname == "" {
+		return ReservedIP{}, errors.New("hostname is required")
+	}
+	if ipAddress == "" {
+		return ReservedIP{}, errors.New("ip_address is required")
+	}
+
+	ip := net.ParseIP(ipAddress).To4()
+	if ip == nil {
+		return ReservedIP{}, errors.New("ip_address is invalid")
+	}
+
+	_, cidrNet, parseErr := net.ParseCIDR(strings.TrimSpace(profile.CIDR))
+	if parseErr != nil {
+		return ReservedIP{}, errors.New("network profile cidr is invalid")
+	}
+	if !cidrNet.Contains(ip) {
+		return ReservedIP{}, fmt.Errorf("ip_address must be inside network cidr %s", profile.CIDR)
+	}
+
+	if ip.Equal(net.ParseIP(profile.Gateway).To4()) {
+		return ReservedIP{}, errors.New("ip_address cannot be the network gateway")
+	}
+	if isNetworkOrBroadcastAddress(cidrNet, ip) {
+		return ReservedIP{}, errors.New("ip_address cannot be network or broadcast address")
+	}
+
+	var out ReservedIP
+	err = s.db.QueryRow(
+		`INSERT INTO network_reserved_ips (network_profile_id, hostname, ip_address, description)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, network_profile_id, hostname, ip_address, description, created_at, updated_at`,
+		networkProfileID,
+		hostname,
+		ip.String(),
+		description,
+	).Scan(
+		&out.ID,
+		&out.NetworkProfileID,
+		&out.Hostname,
+		&out.IPAddress,
+		&out.Description,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return ReservedIP{}, errors.New("reserved ip already exists for this network profile")
+		}
+		return ReservedIP{}, fmt.Errorf("create reserved ip: %w", err)
+	}
+	out.NetworkName = profile.Name
+
+	return out, nil
+}
+
+func (s *Service) DeleteReservedIP(networkProfileID int64, reservedIPID int64) error {
+	if networkProfileID <= 0 {
+		return errors.New("network profile id is required")
+	}
+	if reservedIPID <= 0 {
+		return errors.New("reserved ip id is required")
+	}
+
+	res, err := s.db.Exec(`DELETE FROM network_reserved_ips WHERE id = $1 AND network_profile_id = $2`, reservedIPID, networkProfileID)
+	if err != nil {
+		return fmt.Errorf("delete reserved ip: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrReservedIPNotFound
+	}
+
+	return nil
+}
+
+func isNetworkOrBroadcastAddress(cidr *net.IPNet, ip net.IP) bool {
+	networkIP := cidr.IP.To4()
+	ipv4 := ip.To4()
+	if networkIP == nil || ipv4 == nil {
+		return false
+	}
+	if networkIP.Equal(ipv4) {
+		return true
+	}
+	broadcast := make(net.IP, 4)
+	for i := 0; i < 4; i++ {
+		broadcast[i] = networkIP[i] | ^cidr.Mask[i]
+	}
+	return broadcast.Equal(ipv4)
 }
 
 func validateProfile(p Profile) error {
