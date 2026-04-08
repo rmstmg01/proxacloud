@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Star } from 'lucide-react';
-import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork } from '../api/networks';
+import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag } from '../api/networks';
+import { getNodes } from '../api/proxmox';
 import type { NetworkProfile } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
@@ -79,6 +80,8 @@ function NetworkForm({
 export function NetworksPage() {
   const qc = useQueryClient();
   const { data: networks, isLoading, error: networksError } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
+  const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
+  const { data: nodeTags, error: nodeTagsError } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
   const [createOpen, setCreateOpen] = useState(false);
   const [editNetwork, setEditNetwork] = useState<NetworkProfile | null>(null);
 
@@ -98,6 +101,23 @@ export function NetworksPage() {
     mutationFn: setDefaultNetwork,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['networks'] }),
   });
+
+  const upsertNodeTagMut = useMutation({
+    mutationFn: ({ nodeName, networkProfileID }: { nodeName: string; networkProfileID: number }) =>
+      upsertNodeNetworkTag(nodeName, networkProfileID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-node-tags'] }),
+  });
+
+  const deleteNodeTagMut = useMutation({
+    mutationFn: deleteNodeNetworkTag,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['network-node-tags'] }),
+  });
+
+  const enabledNodesByName = Array.from(
+    new Map((proxmoxNodes ?? []).filter((n) => n.enabled).map((n) => [n.node_name, n])).values(),
+  );
+
+  const tagMap = new Map((nodeTags ?? []).map((tag) => [tag.proxmox_node_name, tag]));
 
   return (
     <Layout>
@@ -176,6 +196,55 @@ export function NetworksPage() {
           )}
         </Card>
       )}
+
+      <div className="mt-6">
+        <Card>
+          <div className="px-6 py-4 border-b border-slate-200 bg-slate-50">
+            <h3 className="text-base font-semibold text-slate-800">Per-Proxmox Node Network Assignment</h3>
+            <p className="text-xs text-slate-600 mt-1">Assign a network profile (CIDR/gateway/bridge) per Proxmox node for cluster provisioning.</p>
+          </div>
+          <div className="p-6">
+            {nodeTagsError && <ErrorMessage error={nodeTagsError} />}
+            {enabledNodesByName.length === 0 ? (
+              <p className="text-sm text-slate-500">No enabled Proxmox nodes found. Discover and enable nodes on the Proxmox page first.</p>
+            ) : (
+              <div className="space-y-3">
+                {enabledNodesByName.map((node) => {
+                  const tag = tagMap.get(node.node_name);
+                  return (
+                    <div key={node.node_name} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end border border-slate-200 rounded-lg p-3">
+                      <Input label="Proxmox node" value={node.node_name} readOnly />
+                      <div className="sm:col-span-2">
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Network profile</label>
+                        <select
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                          value={tag?.network_profile_id ?? 0}
+                          onChange={(e) => {
+                            const profileID = Number(e.target.value);
+                            if (profileID <= 0) {
+                              deleteNodeTagMut.mutate(node.node_name);
+                              return;
+                            }
+                            upsertNodeTagMut.mutate({ nodeName: node.node_name, networkProfileID: profileID });
+                          }}
+                        >
+                          <option value={0}>Use cluster-selected network profile</option>
+                          {networks?.map((n) => (
+                            <option key={n.id} value={n.id}>{n.name} ({n.cidr})</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {tag ? `Assigned: ${tag.network_name} (${tag.cidr})` : 'No explicit assignment'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
+      </div>
 
       {/* Create modal */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Network Profile">

@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { checkClusterName, provisionCluster } from '../api/clusters';
-import { getNetworks } from '../api/networks';
+import { getNetworks, getNodeNetworkTags } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
 import { getSSHKeys } from '../api/sshKeys';
 import { Layout, PageHeader } from '../components/Layout';
@@ -15,6 +15,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
+  const { data: nodeTags } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
   const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
@@ -39,6 +40,8 @@ export function ProvisionClusterPage() {
     worker_disk_gb: 120,
     ssh_key_pair_id: 0,
     node_credential_ids: {} as Record<string, number>,
+    node_network_profile_ids: {} as Record<string, number>,
+    node_ip_pool_start_by_node: {} as Record<string, string>,
     apply: false,
   });
 
@@ -61,6 +64,22 @@ export function ProvisionClusterPage() {
       return { ...prev, node_credential_ids: nextMap };
     });
   }, [enabledNodesByName]);
+
+  useEffect(() => {
+    if (!nodeTags || nodeTags.length === 0) return;
+    setForm((prev) => {
+      const nextMap = { ...prev.node_network_profile_ids };
+      let changed = false;
+      for (const tag of nodeTags) {
+        if (!nextMap[tag.proxmox_node_name] && tag.network_profile_id > 0) {
+          nextMap[tag.proxmox_node_name] = tag.network_profile_id;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      return { ...prev, node_network_profile_ids: nextMap };
+    });
+  }, [nodeTags]);
 
   const mutation = useMutation({ mutationFn: provisionCluster });
 
@@ -93,6 +112,18 @@ export function ProvisionClusterPage() {
         .map(([nodeName, credentialId]) => [nodeName, Number(credentialId)]),
     );
 
+    const nodeNetworkProfileIDs = Object.fromEntries(
+      Object.entries(form.node_network_profile_ids)
+        .filter(([nodeName, profileId]) => nodeName.trim() !== '' && Number(profileId) > 0)
+        .map(([nodeName, profileId]) => [nodeName, Number(profileId)]),
+    );
+
+    const nodeIPPoolStartByNode = Object.fromEntries(
+      Object.entries(form.node_ip_pool_start_by_node)
+        .filter(([nodeName, ip]) => nodeName.trim() !== '' && ip.trim() !== '')
+        .map(([nodeName, ip]) => [nodeName, ip.trim()]),
+    );
+
     const fallbackCredentialID =
       Number(form.proxmox_credential_id) > 0
         ? Number(form.proxmox_credential_id)
@@ -104,6 +135,8 @@ export function ProvisionClusterPage() {
       proxmox_credential_id: fallbackCredentialID,
       ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
       node_credential_ids: nodeCredentialIDs,
+      node_network_profile_ids: nodeNetworkProfileIDs,
+      node_ip_pool_start_by_node: nodeIPPoolStartByNode,
       node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
     });
     navigate(`/clusters/${result.cluster_id}?tab=runs`);
@@ -239,6 +272,64 @@ export function ProvisionClusterPage() {
                 )}
               </div>
             )}
+
+            <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+              <p className="text-sm font-medium text-slate-800">Per-node network profile mapping</p>
+              <p className="text-xs text-slate-600">
+                Assign CIDR source per Proxmox node. If not set, cluster Network profile is used.
+              </p>
+              {enabledNodesByName.length === 0 ? (
+                <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>
+              ) : (
+                <div className="space-y-2">
+                  {enabledNodesByName.map((node) => (
+                    <div key={node.node_name} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                      <Input
+                        label="Proxmox node"
+                        value={node.node_name}
+                        readOnly
+                      />
+                      <Select
+                        label="Network profile"
+                        value={form.node_network_profile_ids[node.node_name] ?? 0}
+                        onChange={(e) => {
+                          const selected = Number(e.target.value);
+                          setForm((prev) => ({
+                            ...prev,
+                            node_network_profile_ids: {
+                              ...prev.node_network_profile_ids,
+                              [node.node_name]: selected,
+                            },
+                          }));
+                        }}
+                      >
+                        <option value={0}>Use selected cluster network profile</option>
+                        {networks?.map((n) => (
+                          <option key={n.id} value={n.id}>
+                            {n.name} ({n.cidr})
+                          </option>
+                        ))}
+                      </Select>
+                      <Input
+                        label="IP pool start override (optional)"
+                        value={form.node_ip_pool_start_by_node[node.node_name] ?? ''}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setForm((prev) => ({
+                            ...prev,
+                            node_ip_pool_start_by_node: {
+                              ...prev.node_ip_pool_start_by_node,
+                              [node.node_name]: value,
+                            },
+                          }));
+                        }}
+                        placeholder="e.g. 10.10.20.100"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <Input
               label="Kubernetes version"
               value={form.kubernetes_version}

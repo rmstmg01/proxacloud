@@ -31,6 +31,7 @@ type TopologyPlanner interface {
 
 type NetworkStore interface {
 	GetByID(id int64) (networks.Profile, error)
+	ListNodeTagMap() (map[string]int64, error)
 }
 
 // ProxmoxCredentialStore is satisfied by *proxmox.Service and is used to look
@@ -82,9 +83,15 @@ type ProvisionRequest struct {
 	NodeCredentialIDs map[string]int64 `json:"node_credential_ids"`
 	// NodeIPPoolStart is the first IP in the sequential pool to assign to VMs.
 	// For example "192.168.8.100" assigns .100, .101, .102 … to each VM.
-	// The subnet mask is derived from the selected network profile CIDR.
+	// For per-node network profiles, set node_ip_pool_start_by_node overrides.
 	NodeIPPoolStart string `json:"node_ip_pool_start"`
-	Apply           bool   `json:"apply"`
+	// NodeNetworkProfileIDs optionally overrides network profile per Proxmox node.
+	// Key: proxmox node name, Value: network profile id.
+	NodeNetworkProfileIDs map[string]int64 `json:"node_network_profile_ids"`
+	// NodeIPPoolStartByNode optionally overrides per-node IP pool start.
+	// Key: proxmox node name, Value: first node IP in that node's CIDR.
+	NodeIPPoolStartByNode map[string]string `json:"node_ip_pool_start_by_node"`
+	Apply                 bool              `json:"apply"`
 }
 
 type ProvisionResponse struct {
@@ -415,29 +422,64 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	}
 	req.ProxmoxCredentialID = clusterCredentialID
 
+	nodeTagMap, err := s.networks.ListNodeTagMap()
+	if err != nil {
+		return ProvisionResponse{}, fmt.Errorf("load node network tags: %w", err)
+	}
+	nodeNetworkProfileIDs, err := resolveProvisionNodeNetworkProfiles(req, plan, nodeTagMap)
+	if err != nil {
+		return ProvisionResponse{}, err
+	}
+
+	networkProfilesByID := map[int64]networks.Profile{networkProfile.ID: networkProfile}
+	for _, profileID := range nodeNetworkProfileIDs {
+		if _, exists := networkProfilesByID[profileID]; exists {
+			continue
+		}
+		p, loadErr := s.networks.GetByID(profileID)
+		if loadErr != nil {
+			return ProvisionResponse{}, fmt.Errorf("load node network profile %d: %w", profileID, loadErr)
+		}
+		networkProfilesByID[profileID] = p
+	}
+
 	clusterID, err := s.insertCluster(req, plan)
 	if err != nil {
 		return ProvisionResponse{}, err
 	}
 
-	// Build the IP iterator if a pool start was given.
-	ipIter, iterErr := newIPIterator(req.NodeIPPoolStart)
-	if iterErr != nil {
-		return ProvisionResponse{}, iterErr
-	}
-
 	vms := make([]terraform.VMNode, 0, len(plan.Placements))
+	iteratorsByNode := make(map[string]*ipIterator)
+	assignedIPs := make(map[string]struct{})
 	for _, placement := range plan.Placements {
 		vmName := buildVMName(req.Name, placement.Role, placement.Index)
-		credentialID := nodeCredentialIDs[placement.ProxmoxNodeName]
-		assignedIP := ""
-		if ipIter != nil {
-			ip, err := ipIter.nextAvailable()
-			if err != nil {
-				return ProvisionResponse{}, fmt.Errorf("ip pool exhausted for %s: %w", vmName, err)
-			}
-			assignedIP = ip
+		nodeName := strings.TrimSpace(placement.ProxmoxNodeName)
+		credentialID := nodeCredentialIDs[nodeName]
+		networkProfileID := nodeNetworkProfileIDs[nodeName]
+		networkCfg, exists := networkProfilesByID[networkProfileID]
+		if !exists {
+			return ProvisionResponse{}, fmt.Errorf("missing network profile %d for proxmox node %s", networkProfileID, nodeName)
 		}
+
+		iter := iteratorsByNode[nodeName]
+		if iter == nil {
+			poolStart := strings.TrimSpace(req.NodeIPPoolStartByNode[nodeName])
+			if poolStart == "" {
+				poolStart = req.NodeIPPoolStart
+			}
+			it, iterErr := newIPIterator(poolStart, networkCfg.CIDR, networkCfg.Gateway, assignedIPs)
+			if iterErr != nil {
+				return ProvisionResponse{}, fmt.Errorf("invalid IP pool for proxmox node %s: %w", nodeName, iterErr)
+			}
+			iteratorsByNode[nodeName] = it
+			iter = it
+		}
+
+		assignedIP, err := iter.nextAvailable()
+		if err != nil {
+			return ProvisionResponse{}, fmt.Errorf("ip pool exhausted for %s: %w", vmName, err)
+		}
+
 		vms = append(vms, terraform.VMNode{
 			VMName:          vmName,
 			Role:            placement.Role,
@@ -447,6 +489,10 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			MemoryMB:        pickMemory(req, placement.Role),
 			DiskGB:          pickDisk(req, placement.Role),
 			IPAddress:       assignedIP,
+			NetworkCIDR:     networkCfg.CIDR,
+			Gateway:         networkCfg.Gateway,
+			Bridge:          networkCfg.Bridge,
+			VLAN:            networkCfg.VLAN,
 		})
 
 		if err := s.insertClusterNode(clusterID, placement, vmName, assignedIP, credentialID); err != nil {
@@ -1752,11 +1798,27 @@ func validateProvisionRequest(req ProvisionRequest) error {
 			return fmt.Errorf("node_credential_ids[%s] must be a valid credential id", nodeName)
 		}
 	}
+	for nodeName, profileID := range req.NodeNetworkProfileIDs {
+		if strings.TrimSpace(nodeName) == "" {
+			return errors.New("node_network_profile_ids keys must be non-empty proxmox node names")
+		}
+		if profileID <= 0 {
+			return fmt.Errorf("node_network_profile_ids[%s] must be a valid network profile id", nodeName)
+		}
+	}
 	if strings.TrimSpace(req.NodeIPPoolStart) == "" {
 		return errors.New("node_ip_pool_start is required (e.g. 192.168.8.100)")
 	}
 	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)) == nil {
 		return errors.New("node_ip_pool_start is not a valid IP address")
+	}
+	for nodeName, poolStart := range req.NodeIPPoolStartByNode {
+		if strings.TrimSpace(nodeName) == "" {
+			return errors.New("node_ip_pool_start_by_node keys must be non-empty proxmox node names")
+		}
+		if net.ParseIP(strings.TrimSpace(poolStart)) == nil {
+			return fmt.Errorf("node_ip_pool_start_by_node[%s] is not a valid IP address", nodeName)
+		}
 	}
 	if req.ControlPlaneRAMMB > 0 && req.ControlPlaneRAMMB < 2048 {
 		return errors.New("control_plane_ram_mb must be at least 2048")
@@ -1799,6 +1861,34 @@ func resolveProvisionNodeCredentials(req ProvisionRequest, plan topology.PlanRes
 	}
 
 	return nodeCredentialIDs, defaultCredentialID, nil
+}
+
+func resolveProvisionNodeNetworkProfiles(req ProvisionRequest, plan topology.PlanResponse, nodeTagMap map[string]int64) (map[string]int64, error) {
+	resolved := make(map[string]int64, len(plan.SelectedProxmoxNode)+len(req.NodeNetworkProfileIDs))
+	for nodeName, profileID := range req.NodeNetworkProfileIDs {
+		trimmed := strings.TrimSpace(nodeName)
+		if trimmed == "" || profileID <= 0 {
+			continue
+		}
+		resolved[trimmed] = profileID
+	}
+
+	for _, placement := range plan.Placements {
+		nodeName := strings.TrimSpace(placement.ProxmoxNodeName)
+		profileID := resolved[nodeName]
+		if profileID <= 0 {
+			profileID = nodeTagMap[nodeName]
+		}
+		if profileID <= 0 {
+			profileID = req.NetworkProfileID
+		}
+		if profileID <= 0 {
+			return nil, fmt.Errorf("missing network profile for proxmox node %q; provide node_network_profile_ids, saved node tags, or network_profile_id", nodeName)
+		}
+		resolved[nodeName] = profileID
+	}
+
+	return resolved, nil
 }
 
 func distinctPlacementCredentialIDs(plan topology.PlanResponse, nodeCredentialIDs map[string]int64) []int64 {
@@ -1867,34 +1957,60 @@ func distinctCredentialIDsFromClusterNodes(nodes []ClusterNodeRecord) []int64 {
 // ipIterator hands out sequential IPs starting from a base address,
 // skipping any that are already responding on the network.
 type ipIterator struct {
-	current net.IP
+	current    net.IP
+	cidr       *net.IPNet
+	gateway    string
+	assignedIP map[string]struct{}
 }
 
-func newIPIterator(start string) (*ipIterator, error) {
+func newIPIterator(start string, cidr string, gateway string, assigned map[string]struct{}) (*ipIterator, error) {
 	start = strings.TrimSpace(start)
-	if start == "" {
-		return nil, nil
-	}
 	ip := net.ParseIP(start).To4()
 	if ip == nil {
 		return nil, fmt.Errorf("invalid node_ip_pool_start %q", start)
 	}
+	_, cidrNet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+	if err != nil {
+		return nil, fmt.Errorf("invalid cidr %q", cidr)
+	}
+	if !cidrNet.Contains(ip) {
+		return nil, fmt.Errorf("ip %s is outside cidr %s", ip.String(), cidrNet.String())
+	}
+
 	clone := make(net.IP, 4)
 	copy(clone, ip)
-	return &ipIterator{current: clone}, nil
+	if assigned == nil {
+		assigned = make(map[string]struct{})
+	}
+
+	return &ipIterator{current: clone, cidr: cidrNet, gateway: strings.TrimSpace(gateway), assignedIP: assigned}, nil
 }
 
 // nextAvailable advances until it finds an IP that does not respond to ping,
 // then returns that IP. It tries up to 64 addresses before giving up.
 func (it *ipIterator) nextAvailable() (string, error) {
-	const maxSkip = 64
+	const maxSkip = 512
 	for i := 0; i < maxSkip; i++ {
 		ip := it.advance()
+		parsed := net.ParseIP(ip).To4()
+		if parsed == nil {
+			continue
+		}
+		if !it.cidr.Contains(parsed) {
+			return "", fmt.Errorf("no free IP found in cidr %s", it.cidr.String())
+		}
+		if ip == it.gateway || isNetworkOrBroadcast(it.cidr, parsed) {
+			continue
+		}
+		if _, exists := it.assignedIP[ip]; exists {
+			continue
+		}
 		if !isIPInUse(ip) {
+			it.assignedIP[ip] = struct{}{}
 			return ip, nil
 		}
 	}
-	return "", errors.New("no free IP found in the next 64 addresses of the pool")
+	return "", errors.New("no free IP found in the next 512 addresses of the pool")
 }
 
 // advance returns the current IP and increments to the next one.
@@ -1909,6 +2025,22 @@ func (it *ipIterator) advance() string {
 		}
 	}
 	return result
+}
+
+func isNetworkOrBroadcast(cidr *net.IPNet, ip net.IP) bool {
+	networkIP := cidr.IP.To4()
+	ipv4 := ip.To4()
+	if networkIP == nil || ipv4 == nil {
+		return false
+	}
+	if networkIP.Equal(ipv4) {
+		return true
+	}
+	broadcast := make(net.IP, 4)
+	for i := 0; i < 4; i++ {
+		broadcast[i] = networkIP[i] | ^cidr.Mask[i]
+	}
+	return broadcast.Equal(ipv4)
 }
 
 // isIPInUse probes the given IP address with a single ICMP ping (1 s timeout).

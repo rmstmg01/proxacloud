@@ -114,6 +114,59 @@ func (h *Handler) SetDefault(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (h *Handler) ListNodeTags(w http.ResponseWriter, _ *http.Request) {
+	tags, err := h.service.ListNodeTags()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, tags)
+}
+
+func (h *Handler) UpsertNodeTag(w http.ResponseWriter, r *http.Request) {
+	nodeName := chi.URLParam(r, "nodeName")
+	if nodeName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid proxmox node name"})
+		return
+	}
+
+	var req struct {
+		NetworkProfileID int64 `json:"network_profile_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	tag, err := h.service.UpsertNodeTag(nodeName, req.NetworkProfileID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNetworkNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tag)
+}
+
+func (h *Handler) DeleteNodeTag(w http.ResponseWriter, r *http.Request) {
+	nodeName := chi.URLParam(r, "nodeName")
+	if nodeName == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid proxmox node name"})
+		return
+	}
+
+	if err := h.service.DeleteNodeTag(nodeName); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"proxmox_node_name": nodeName, "deleted": true})
+}
+
 func parseIDParam(r *http.Request) (int64, error) {
 	raw := chi.URLParam(r, "id")
 	return strconv.ParseInt(raw, 10, 64)

@@ -23,6 +23,10 @@ type VMNode struct {
 	MemoryMB        int    `json:"memory_mb"`
 	DiskGB          int    `json:"disk_gb"`
 	IPAddress       string `json:"ip_address,omitempty"`
+	NetworkCIDR     string `json:"network_cidr"`
+	Gateway         string `json:"gateway"`
+	Bridge          string `json:"bridge"`
+	VLAN            int    `json:"vlan"`
 }
 
 type WorkspaceSpec struct {
@@ -307,6 +311,10 @@ variable "nodes" {
     memory_mb         = number
     disk_gb           = number
     ip_address        = optional(string)
+		network_cidr      = string
+		gateway           = string
+		bridge            = string
+		vlan              = number
   }))
 }
 
@@ -314,7 +322,6 @@ locals {
   node_map = {
     for n in var.nodes : n.vm_name => n
   }
-	network_prefix = tonumber(split("/", var.network_cidr)[1])
 }
 
 # Upload cloud-init snippets to each Proxmox node via SSH before the VMs start.
@@ -344,8 +351,8 @@ resource "proxmox_virtual_environment_vm" "k8s" {
 
 		ip_config {
 			ipv4 {
-				address = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? "${each.value.ip_address}/${local.network_prefix}" : "dhcp"
-				gateway = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? var.gateway : null
+				address = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? "${each.value.ip_address}/${tonumber(split("/", each.value.network_cidr)[1])}" : "dhcp"
+				gateway = each.value.ip_address != null && trimspace(each.value.ip_address) != "" ? each.value.gateway : null
 			}
 		}
   }
@@ -359,8 +366,8 @@ resource "proxmox_virtual_environment_vm" "k8s" {
   }
 
   network_device {
-    bridge  = var.bridge
-    vlan_id = var.vlan
+	bridge  = each.value.bridge
+	vlan_id = each.value.vlan
   }
 
   disk {

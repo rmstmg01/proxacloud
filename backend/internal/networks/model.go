@@ -28,6 +28,18 @@ type Profile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type NodeNetworkTag struct {
+	ProxmoxNodeName  string    `json:"proxmox_node_name"`
+	NetworkProfileID int64     `json:"network_profile_id"`
+	NetworkName      string    `json:"network_name"`
+	CIDR             string    `json:"cidr"`
+	Gateway          string    `json:"gateway"`
+	Bridge           string    `json:"bridge"`
+	VLAN             int       `json:"vlan"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 type Service struct {
 	db *sql.DB
 }
@@ -235,6 +247,138 @@ func (s *Service) SetDefault(id int64) (Profile, error) {
 	}
 
 	return updated, nil
+}
+
+func (s *Service) ListNodeTags() ([]NodeNetworkTag, error) {
+	rows, err := s.db.Query(
+		`SELECT t.proxmox_node_name, t.network_profile_id,
+		        p.name, p.cidr, p.gateway, p.bridge, p.vlan,
+		        t.created_at, t.updated_at
+		 FROM proxmox_node_network_tags t
+		 JOIN network_profiles p ON p.id = t.network_profile_id
+		 ORDER BY t.proxmox_node_name ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list node network tags: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]NodeNetworkTag, 0)
+	for rows.Next() {
+		var t NodeNetworkTag
+		if scanErr := rows.Scan(
+			&t.ProxmoxNodeName,
+			&t.NetworkProfileID,
+			&t.NetworkName,
+			&t.CIDR,
+			&t.Gateway,
+			&t.Bridge,
+			&t.VLAN,
+			&t.CreatedAt,
+			&t.UpdatedAt,
+		); scanErr != nil {
+			continue
+		}
+		out = append(out, t)
+	}
+
+	return out, nil
+}
+
+func (s *Service) ListNodeTagMap() (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT proxmox_node_name, network_profile_id FROM proxmox_node_network_tags`)
+	if err != nil {
+		return nil, fmt.Errorf("list node network tag map: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var nodeName string
+		var profileID int64
+		if scanErr := rows.Scan(&nodeName, &profileID); scanErr != nil {
+			continue
+		}
+		nodeName = strings.TrimSpace(nodeName)
+		if nodeName != "" && profileID > 0 {
+			out[nodeName] = profileID
+		}
+	}
+
+	return out, nil
+}
+
+func (s *Service) UpsertNodeTag(nodeName string, networkProfileID int64) (NodeNetworkTag, error) {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return NodeNetworkTag{}, errors.New("proxmox_node_name is required")
+	}
+	if networkProfileID <= 0 {
+		return NodeNetworkTag{}, errors.New("network_profile_id is required")
+	}
+
+	if _, err := s.GetByID(networkProfileID); err != nil {
+		if errors.Is(err, ErrNetworkNotFound) {
+			return NodeNetworkTag{}, err
+		}
+		return NodeNetworkTag{}, fmt.Errorf("validate network profile: %w", err)
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO proxmox_node_network_tags (proxmox_node_name, network_profile_id)
+		 VALUES ($1, $2)
+		 ON CONFLICT (proxmox_node_name)
+		 DO UPDATE SET network_profile_id = EXCLUDED.network_profile_id, updated_at = NOW()`,
+		nodeName,
+		networkProfileID,
+	)
+	if err != nil {
+		return NodeNetworkTag{}, fmt.Errorf("upsert node network tag: %w", err)
+	}
+
+	var out NodeNetworkTag
+	err = s.db.QueryRow(
+		`SELECT t.proxmox_node_name, t.network_profile_id,
+		        p.name, p.cidr, p.gateway, p.bridge, p.vlan,
+		        t.created_at, t.updated_at
+		 FROM proxmox_node_network_tags t
+		 JOIN network_profiles p ON p.id = t.network_profile_id
+		 WHERE t.proxmox_node_name = $1`,
+		nodeName,
+	).Scan(
+		&out.ProxmoxNodeName,
+		&out.NetworkProfileID,
+		&out.NetworkName,
+		&out.CIDR,
+		&out.Gateway,
+		&out.Bridge,
+		&out.VLAN,
+		&out.CreatedAt,
+		&out.UpdatedAt,
+	)
+	if err != nil {
+		return NodeNetworkTag{}, fmt.Errorf("load node network tag: %w", err)
+	}
+
+	return out, nil
+}
+
+func (s *Service) DeleteNodeTag(nodeName string) error {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return errors.New("proxmox_node_name is required")
+	}
+
+	res, err := s.db.Exec(`DELETE FROM proxmox_node_network_tags WHERE proxmox_node_name = $1`, nodeName)
+	if err != nil {
+		return fmt.Errorf("delete node network tag: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return errors.New("node network tag not found")
+	}
+
+	return nil
 }
 
 func validateProfile(p Profile) error {

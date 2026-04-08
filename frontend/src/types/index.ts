@@ -29,6 +29,18 @@ export interface NetworkProfile {
   updated_at: string;
 }
 
+export interface NodeNetworkTag {
+  proxmox_node_name: string;
+  network_profile_id: number;
+  network_name: string;
+  cidr: string;
+  gateway: string;
+  bridge: string;
+  vlan: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Proxmox ──────────────────────────────────────────────────────────────────
 
 export interface ProxmoxCredential {
