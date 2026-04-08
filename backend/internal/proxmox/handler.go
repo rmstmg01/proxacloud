@@ -53,6 +53,49 @@ func (h *Handler) ListCredentials(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.ListCredentials())
 }
 
+func (h *Handler) UpdateCredential(w http.ResponseWriter, r *http.Request) {
+	credentialID, err := parseIDParam(r, "id")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credential id"})
+		return
+	}
+
+	var req struct {
+		Name           string `json:"name"`
+		Endpoint       string `json:"endpoint"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		APITokenID     string `json:"api_token_id"`
+		APITokenSecret string `json:"api_token_secret"`
+		InsecureTLS    bool   `json:"insecure_tls"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	updated, err := h.service.UpdateCredential(credentialID, Credential{
+		Name:           req.Name,
+		Endpoint:       req.Endpoint,
+		Username:       req.Username,
+		Password:       req.Password,
+		APITokenID:     req.APITokenID,
+		APITokenSecret: req.APITokenSecret,
+		InsecureTLS:    req.InsecureTLS,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrCredentialNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, updated)
+}
+
 func (h *Handler) DeleteCredential(w http.ResponseWriter, r *http.Request) {
 	credentialID, err := parseIDParam(r, "id")
 	if err != nil {

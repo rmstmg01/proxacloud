@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
-import { getCredentials, createCredential, deleteCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
+import { Pencil, Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
+import { getCredentials, createCredential, updateCredential, deleteCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent } from '../components/ui/Card';
@@ -11,6 +11,7 @@ import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
+import type { ProxmoxCredential } from '../types';
 
 type AuthMethod = 'token' | 'password';
 
@@ -67,11 +68,66 @@ function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+function EditCredentialForm({ credential, onSuccess }: { credential: ProxmoxCredential; onSuccess: () => void }) {
+  const [authMethod, setAuthMethod] = useState<AuthMethod>(credential.api_token_id ? 'token' : 'password');
+  const [form, setForm] = useState({
+    name: credential.name,
+    endpoint: credential.endpoint,
+    insecure_tls: credential.insecure_tls,
+    api_token_id: credential.api_token_id ?? '',
+    api_token_secret: '',
+    username: credential.username ?? '',
+    password: '',
+  });
+  const mutation = useMutation({ mutationFn: (body: Parameters<typeof updateCredential>[1]) => updateCredential(credential.id, body), onSuccess });
+  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    const payload =
+      authMethod === 'token'
+        ? { name: form.name, endpoint: form.endpoint, insecure_tls: form.insecure_tls, api_token_id: form.api_token_id, api_token_secret: form.api_token_secret }
+        : { name: form.name, endpoint: form.endpoint, insecure_tls: form.insecure_tls, username: form.username, password: form.password };
+    mutation.mutate(payload);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <Input label="Name" value={form.name} onChange={(e) => set('name', e.target.value)} required placeholder="pve-cluster" />
+      <Input label="Endpoint" value={form.endpoint} onChange={(e) => set('endpoint', e.target.value)} required placeholder="https://pve.local:8006" />
+      <Select label="Auth method" value={authMethod} onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}>
+        <option value="token">API Token (recommended)</option>
+        <option value="password">Username / Password</option>
+      </Select>
+      {authMethod === 'token' ? (
+        <>
+          <Input label="Token ID" value={form.api_token_id} onChange={(e) => set('api_token_id', e.target.value)} placeholder="root@pam!mytoken" required />
+          <Input label="Token secret" type="password" value={form.api_token_secret} onChange={(e) => set('api_token_secret', e.target.value)} required />
+        </>
+      ) : (
+        <>
+          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="root@pam" required />
+          <Input label="Password" type="password" value={form.password} onChange={(e) => set('password', e.target.value)} required />
+        </>
+      )}
+      <label className="flex items-center gap-3">
+        <input type="checkbox" checked={form.insecure_tls} onChange={(e) => set('insecure_tls', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+        <span className="text-sm text-slate-700">Skip TLS verification</span>
+      </label>
+      <p className="text-xs text-slate-500">For security, enter password/token secret again when editing credentials.</p>
+      {mutation.error && <ErrorMessage error={mutation.error} />}
+      <Button type="submit" loading={mutation.isPending}>Save Changes</Button>
+    </form>
+  );
+}
+
 export function ProxmoxPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'super_admin';
   const qc = useQueryClient();
   const [addCredOpen, setAddCredOpen] = useState(false);
+  const [editCred, setEditCred] = useState<ProxmoxCredential | null>(null);
 
   const { data: credentials, isLoading: loadingCreds } = useQuery({
     queryKey: ['proxmox-credentials'],
@@ -154,6 +210,13 @@ export function ProxmoxPage() {
                           </td>
                           <td className="px-6 py-3">
                             <div className="flex items-center gap-2 justify-end">
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => setEditCred(c)}
+                              >
+                                <Pencil className="h-3.5 w-3.5" /> Edit
+                              </Button>
                               <Button
                                 variant="secondary"
                                 size="sm"
@@ -267,6 +330,19 @@ export function ProxmoxPage() {
 
       <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Proxmox Credential">
         <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); }} />
+      </Modal>
+
+      <Modal open={!!editCred} onClose={() => setEditCred(null)} title="Edit Proxmox Credential">
+        {editCred && (
+          <EditCredentialForm
+            credential={editCred}
+            onSuccess={() => {
+              setEditCred(null);
+              qc.invalidateQueries({ queryKey: ['proxmox-credentials'] });
+              qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+            }}
+          />
+        )}
       </Modal>
     </Layout>
   );

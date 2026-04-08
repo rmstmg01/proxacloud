@@ -89,6 +89,64 @@ func (s *Service) CreateCredential(in Credential) (Credential, error) {
 	return out, nil
 }
 
+func (s *Service) UpdateCredential(id int64, in Credential) (Credential, error) {
+	in.Name = strings.TrimSpace(in.Name)
+	in.Endpoint = strings.TrimSpace(in.Endpoint)
+	in.Username = strings.TrimSpace(in.Username)
+	in.APITokenID = strings.TrimSpace(in.APITokenID)
+
+	if in.Name == "" {
+		return Credential{}, errors.New("name is required")
+	}
+	if in.Endpoint == "" {
+		return Credential{}, errors.New("endpoint is required")
+	}
+
+	usesUserPass := in.Username != "" && in.Password != ""
+	usesToken := in.APITokenID != "" && in.APITokenSecret != ""
+	if !usesUserPass && !usesToken {
+		return Credential{}, errors.New("provide either username/password or api_token_id/api_token_secret")
+	}
+
+	if usesToken {
+		in.Username = ""
+		in.Password = ""
+	} else {
+		in.APITokenID = ""
+		in.APITokenSecret = ""
+	}
+
+	var out Credential
+	err := s.db.QueryRow(
+		`UPDATE proxmox_credentials
+		 SET name = $2,
+		     endpoint = $3,
+		     username = NULLIF($4, ''),
+		     password = NULLIF($5, ''),
+		     api_token_id = NULLIF($6, ''),
+		     api_token_secret = NULLIF($7, ''),
+		     insecure_tls = $8
+		 WHERE id = $1
+		 RETURNING id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at`,
+		id,
+		in.Name,
+		in.Endpoint,
+		in.Username,
+		in.Password,
+		in.APITokenID,
+		in.APITokenSecret,
+		in.InsecureTLS,
+	).Scan(&out.ID, &out.Name, &out.Endpoint, &out.Username, &out.APITokenID, &out.InsecureTLS, &out.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Credential{}, ErrCredentialNotFound
+	}
+	if err != nil {
+		return Credential{}, fmt.Errorf("update proxmox credential: %w", err)
+	}
+
+	return out, nil
+}
+
 func (s *Service) DeleteCredential(id int64) error {
 	var inUseCount int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM clusters WHERE proxmox_credential_id = $1`, id).Scan(&inUseCount)
