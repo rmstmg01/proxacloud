@@ -2,8 +2,10 @@ package server
 
 import (
 	"database/sql"
+	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -92,6 +94,21 @@ func NewApp() (*App, error) {
 	sshKeyHandler := sshkeys.NewHandler(sshKeyService)
 	topologyHandler := topology.NewHandler(topologyService)
 	clusterHandler := clusters.NewHandler(clusterService)
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			successful, failed := proxmoxService.RefreshAllNodes()
+			if successful+failed == 0 {
+				continue
+			}
+			if failed > 0 {
+				log.Printf("proxmox auto-discovery completed: %d successful, %d failed", successful, failed)
+			}
+		}
+	}()
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)

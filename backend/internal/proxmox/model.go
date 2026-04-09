@@ -300,6 +300,21 @@ func (s *Service) SetNodeEnabled(nodeID int64, enabled bool) error {
 	return nil
 }
 
+// RefreshAllNodes discovers and syncs nodes for all configured credentials.
+// It continues on individual credential failures and returns aggregate counts.
+func (s *Service) RefreshAllNodes() (successful int, failed int) {
+	credentials := s.ListCredentials()
+	for _, credential := range credentials {
+		if _, err := s.DiscoverAndSyncNodes(credential.ID); err != nil {
+			failed++
+			continue
+		}
+		successful++
+	}
+
+	return successful, failed
+}
+
 func (s *Service) DiscoverAndSyncNodes(credentialID int64) ([]Node, error) {
 	credential, err := s.getCredentialForDiscovery(credentialID)
 	if err != nil {

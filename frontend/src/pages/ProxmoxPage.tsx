@@ -138,6 +138,8 @@ export function ProxmoxPage() {
   const { data: nodes, isLoading: loadingNodes } = useQuery({
     queryKey: ['proxmox-nodes'],
     queryFn: getNodes,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
   });
 
   const discoverMut = useMutation({
