@@ -30,7 +30,7 @@ export function StatusBadge({ status }: { status: string }) {
     variant = 'success';
   else if (s === 'pending' || s === 'provisioning' || s === 'bootstrapping' || s === 'upgrading' || s === 'scaling')
     variant = 'warning';
-  else if (s === 'failed' || s === 'error')
+  else if (s === 'failed' || s === 'error' || s === 'offline' || s === 'unreachable')
     variant = 'danger';
   else if (s === 'planned' || s === 'generated')
     variant = 'info';

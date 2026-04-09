@@ -308,6 +308,9 @@ func (s *Service) DiscoverAndSyncNodes(credentialID int64) ([]Node, error) {
 
 	discovered, err := s.client.DiscoverNodes(credential)
 	if err != nil {
+		if markErr := s.markCredentialNodesOffline(credentialID); markErr != nil {
+			return nil, fmt.Errorf("%w (also failed to mark nodes offline: %v)", err, markErr)
+		}
 		return nil, err
 	}
 
@@ -335,6 +338,19 @@ func (s *Service) DiscoverAndSyncNodes(credentialID int64) ([]Node, error) {
 	}
 
 	return s.listNodesByCredential(credentialID)
+}
+
+func (s *Service) markCredentialNodesOffline(credentialID int64) error {
+	_, err := s.db.Exec(
+		`UPDATE proxmox_nodes
+		 SET status = 'offline'
+		 WHERE credential_id = $1`,
+		credentialID,
+	)
+	if err != nil {
+		return fmt.Errorf("mark credential nodes offline: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) getCredentialForDiscovery(id int64) (Credential, error) {
