@@ -156,7 +156,7 @@ export function ProvisionClusterPage() {
             ssh_user: form.bootstrap_ssh_user.trim(),
             ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
             deploy_kube_vip: form.bootstrap_deploy_kube_vip,
-            control_plane_vip: form.bootstrap_control_plane_vip.trim(),
+            control_plane_vip: form.bootstrap_deploy_kube_vip ? form.bootstrap_control_plane_vip.trim() : '',
             pod_cidr: form.bootstrap_pod_cidr.trim(),
             service_cidr: form.bootstrap_service_cidr.trim(),
             cni: form.bootstrap_cni.trim(),
@@ -510,10 +510,11 @@ export function ProvisionClusterPage() {
                   required
                 />
                 <Input
-                  label="Control-plane VIP (optional)"
+                  label="Control-plane VIP"
                   value={form.bootstrap_control_plane_vip}
                   onChange={(e) => setField('bootstrap_control_plane_vip', e.target.value)}
                   placeholder="e.g. 192.168.8.50"
+                  helperText={form.bootstrap_deploy_kube_vip ? 'Required when Deploy kube-vip is enabled for an HA endpoint.' : 'Optional. If kube-vip is off, bootstrap will use the first control-plane node directly.'}
                 />
                 <Input
                   label="Pod CIDR"

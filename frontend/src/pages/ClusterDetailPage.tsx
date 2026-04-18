@@ -312,7 +312,7 @@ function BootstrapTab({ id }: { id: number }) {
       ssh_key_id: form.ssh_private_key.trim() || form.ssh_key_pair_id ? undefined : (form.ssh_key_id || undefined),
       ssh_key_name: form.ssh_private_key.trim() ? form.ssh_key_name.trim() || 'default' : undefined,
       deploy_kube_vip: form.deploy_kube_vip,
-      control_plane_vip: form.control_plane_vip,
+      control_plane_vip: form.deploy_kube_vip ? form.control_plane_vip.trim() : '',
       pod_cidr: form.pod_cidr,
       service_cidr: form.service_cidr,
       cni: form.cni,
@@ -392,7 +392,14 @@ function BootstrapTab({ id }: { id: number }) {
               Node names and IPs were detected from the last provisioning run. Review and correct if needed before bootstrapping.
             </Alert>
           )}
-          <Input label="Control plane VIP" value={form.control_plane_vip} onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })} placeholder="192.168.8.20" required />
+          <Input
+            label="Control plane VIP"
+            value={form.control_plane_vip}
+            onChange={(e) => setForm({ ...form, control_plane_vip: e.target.value })}
+            placeholder="192.168.8.20"
+            required={form.deploy_kube_vip}
+            helperText={form.deploy_kube_vip ? 'Required when deploying kube-vip for a highly available API endpoint.' : 'Optional. Leave empty or disable kube-vip to bootstrap against the first control-plane node directly.'}
+          />
           <Input label="Pod CIDR" value={form.pod_cidr} onChange={(e) => setForm({ ...form, pod_cidr: e.target.value })} required />
           <Input label="Service CIDR" value={form.service_cidr} onChange={(e) => setForm({ ...form, service_cidr: e.target.value })} required />
           <Select label="CNI" value={form.cni} onChange={(e) => setForm({ ...form, cni: e.target.value })}>

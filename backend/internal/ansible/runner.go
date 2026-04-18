@@ -182,7 +182,7 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		"PodCIDR":              nonEmpty(spec.PodCIDR, "10.244.0.0/16"),
 		"ServiceCIDR":          nonEmpty(spec.ServiceCIDR, "10.96.0.0/12"),
 		"CNI":                  cni,
-		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, controlPlaneCount),
+		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, controlPlaneCount, spec.DeployKubeVIP),
 	}
 
 	var out bytes.Buffer
@@ -205,8 +205,8 @@ func sanitizeName(name string) string {
 	return strings.ToLower(replacer.Replace(strings.TrimSpace(name)))
 }
 
-func initEndpointArg(vip string, controlPlaneCount int) string {
-	if controlPlaneCount <= 1 {
+func initEndpointArg(vip string, controlPlaneCount int, deployKubeVIP bool) string {
+	if controlPlaneCount <= 1 || !deployKubeVIP {
 		return ""
 	}
 	trimmed := strings.TrimSpace(vip)
@@ -399,6 +399,7 @@ const playbookTemplate = `---
     - name: Initialize first control plane
       command: >
         kubeadm init
+        --cri-socket=unix:///run/containerd/containerd.sock
         --pod-network-cidr={{ .PodCIDR }}
         --service-cidr={{ .ServiceCIDR }}
         {{ .InitEndpointArg }}

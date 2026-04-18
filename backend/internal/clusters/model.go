@@ -887,6 +887,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		return BootstrapResponse{}, errors.New("control_plane_vip is required when deploy_kube_vip is enabled for multi-control-plane bootstrap")
 	}
 
+	if controlPlaneCount > 1 && strings.TrimSpace(req.ControlPlaneVIP) != "" && !req.DeployKubeVIP {
+		warnings = append(warnings, "control_plane_vip was provided while deploy_kube_vip is disabled; bootstrap will use the first control-plane node directly. Enable deploy_kube_vip to advertise the VIP before kubeadm init")
+	}
 	if strings.TrimSpace(req.ControlPlaneVIP) == "" {
 		warnings = append(warnings, "control_plane_vip is empty; kubeadm init will use primary control-plane endpoint")
 	}
