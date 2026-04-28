@@ -17,6 +17,12 @@ RUN cd backend && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/api-ser
 
 FROM hashicorp/terraform:1.9 AS terraform-bin
 
+# Pre-download the bpg/proxmox provider into a local filesystem mirror so that
+# terraform init can run without internet access at runtime.
+WORKDIR /provider-mirror-src
+RUN printf 'terraform {\n  required_providers {\n    proxmox = {\n      source  = "bpg/proxmox"\n      version = ">= 0.66.0"\n    }\n  }\n}\n' > main.tf \
+    && terraform providers mirror /terraform-providers
+
 FROM alpine:3.20
 
 RUN apk add --no-cache ansible-core openssh-client
@@ -28,6 +34,7 @@ WORKDIR /app/backend
 COPY --from=builder /out/api-server /app/backend/api-server
 COPY --from=builder /src/backend/migrations /app/backend/migrations
 COPY --from=terraform-bin /bin/terraform /usr/local/bin/terraform
+COPY --from=terraform-bin /terraform-providers /terraform-providers
 
 RUN mkdir -p /app/backend/data/terraform/runs /app/backend/data/ansible/runs /app/backend/data/operations/runs
 RUN chown -R appuser:appuser /app

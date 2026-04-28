@@ -86,18 +86,19 @@ func (a ProxmoxAuth) toEnv() []string {
 }
 
 type Runner struct {
-	binary  string
-	baseDir string
+	binary    string
+	baseDir   string
+	pluginDir string
 }
 
-func NewRunner(binary, baseDir string) *Runner {
+func NewRunner(binary, baseDir, pluginDir string) *Runner {
 	if strings.TrimSpace(binary) == "" {
 		binary = "terraform"
 	}
 	if strings.TrimSpace(baseDir) == "" {
 		baseDir = filepath.Join("infra", "terraform", "runs")
 	}
-	return &Runner{binary: binary, baseDir: baseDir}
+	return &Runner{binary: binary, baseDir: baseDir, pluginDir: strings.TrimSpace(pluginDir)}
 }
 
 func (r *Runner) WorkspaceDir(clusterName string) string {
@@ -160,6 +161,16 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 	return workDir, nil
 }
 
+// initArgs returns the terraform init command arguments, using a local plugin
+// directory when one is configured to avoid calls to registry.terraform.io.
+func (r *Runner) initArgs() []string {
+	args := []string{"init", "-input=false"}
+	if r.pluginDir != "" {
+		args = append(args, "-plugin-dir="+r.pluginDir)
+	}
+	return args
+}
+
 // buildEnv merges the current process environment with auth vars, stripping
 // any pre-existing PROXMOX_VE_* variables so DB credentials always win.
 func buildEnv(authEnv []string) []string {
@@ -175,8 +186,9 @@ func buildEnv(authEnv []string) []string {
 func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
+	initArgs := r.initArgs()
 	steps := [][]string{
-		{"init", "-input=false"},
+		initArgs,
 		{"validate"},
 		{"plan", "-input=false", "-out=tfplan"},
 		{"apply", "-input=false", "-auto-approve", "tfplan"},
@@ -201,8 +213,9 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
+	initArgs := r.initArgs()
 	steps := [][]string{
-		{"init", "-input=false"},
+		initArgs,
 		{"destroy", "-input=false", "-auto-approve"},
 	}
 

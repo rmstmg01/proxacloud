@@ -56,7 +56,7 @@ func NewApp() (*App, error) {
 	proxmoxService := proxmox.NewService(database)
 	sshKeyService := sshkeys.NewService(database)
 	topologyService := topology.NewService(proxmoxService)
-	terraformRunner := terraform.NewRunner(cfg.TerraformBinary, cfg.TerraformWorkDir)
+	terraformRunner := terraform.NewRunner(cfg.TerraformBinary, cfg.TerraformWorkDir, cfg.TerraformPluginDir)
 	ansibleRunner := ansible.NewRunner(cfg.AnsibleBinary, cfg.AnsibleWorkDir)
 	clusterService := clusters.NewService(
 		database,

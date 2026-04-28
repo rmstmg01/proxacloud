@@ -13,6 +13,7 @@ type Config struct {
 	AutoMigrate        bool
 	TerraformBinary    string
 	TerraformWorkDir   string
+	TerraformPluginDir string
 	TerraformAutoApply bool
 	AnsibleBinary      string
 	AnsibleWorkDir     string
@@ -38,6 +39,7 @@ func Load() Config {
 		AutoMigrate:           getenvBool("AUTO_MIGRATE", true),
 		TerraformBinary:       getenv("TERRAFORM_BINARY", "terraform"),
 		TerraformWorkDir:      getenv("TERRAFORM_WORKDIR", "infra/terraform/runs"),
+		TerraformPluginDir:    getenv("TERRAFORM_PLUGIN_DIR", "/terraform-providers"),
 		TerraformAutoApply:    getenvBool("TERRAFORM_AUTO_APPLY", false),
 		AnsibleBinary:         getenv("ANSIBLE_BINARY", "ansible-playbook"),
 		AnsibleWorkDir:        getenv("ANSIBLE_WORKDIR", "infra/ansible/runs"),
