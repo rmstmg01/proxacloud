@@ -48,6 +48,9 @@ services:
       OPERATIONS_WORKDIR: /app/backend/data/operations/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
+    dns:
+      - 192.168.8.1
+      - 8.8.8.8
     ports:
       - "8080:8080"
     volumes:
