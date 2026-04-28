@@ -182,7 +182,7 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		"PodCIDR":              nonEmpty(spec.PodCIDR, "10.244.0.0/16"),
 		"ServiceCIDR":          nonEmpty(spec.ServiceCIDR, "10.96.0.0/12"),
 		"CNI":                  cni,
-		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, controlPlaneCount, spec.DeployKubeVIP),
+		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, primaryControlPlaneIP(spec.Nodes), controlPlaneCount, spec.DeployKubeVIP),
 	}
 
 	var out bytes.Buffer
@@ -205,15 +205,32 @@ func sanitizeName(name string) string {
 	return strings.ToLower(replacer.Replace(strings.TrimSpace(name)))
 }
 
-func initEndpointArg(vip string, controlPlaneCount int, deployKubeVIP bool) string {
-	if controlPlaneCount <= 1 || !deployKubeVIP {
+func initEndpointArg(vip, primaryControlPlaneIP string, controlPlaneCount int, deployKubeVIP bool) string {
+	if controlPlaneCount <= 1 {
 		return ""
 	}
-	trimmed := strings.TrimSpace(vip)
-	if trimmed == "" {
+
+	endpoint := strings.TrimSpace(primaryControlPlaneIP)
+	if deployKubeVIP {
+		trimmedVIP := strings.TrimSpace(vip)
+		if trimmedVIP != "" {
+			endpoint = trimmedVIP
+		}
+	}
+	if endpoint == "" {
 		return ""
 	}
-	return " --control-plane-endpoint=" + trimmed + ":6443"
+
+	return " --control-plane-endpoint=" + endpoint + ":6443"
+}
+
+func primaryControlPlaneIP(nodes []Node) string {
+	for _, n := range nodes {
+		if n.Role == "control-plane" {
+			return strings.TrimSpace(n.IP)
+		}
+	}
+	return ""
 }
 
 func kubernetesAptChannel(version string) string {
