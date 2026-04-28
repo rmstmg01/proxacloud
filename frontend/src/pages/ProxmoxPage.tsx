@@ -55,9 +55,7 @@ function SummaryCards({ nodes }: { nodes: ProxmoxNode[] }) {
   const onlineNodes = nodes.filter((n) => n.status === 'online');
 
   const totalCPU = onlineNodes.reduce((s, n) => s + n.cpu_count, 0);
-  // weighted avg CPU usage across cores
   const usedCPUCores = onlineNodes.reduce((s, n) => s + n.cpu_usage * n.cpu_count, 0);
-  const cpuPct = totalCPU > 0 ? Math.round((usedCPUCores / totalCPU) * 100) : 0;
 
   const totalMem = onlineNodes.reduce((s, n) => s + n.memory_total_bytes, 0);
   const usedMem = onlineNodes.reduce((s, n) => s + n.memory_used_bytes, 0);
