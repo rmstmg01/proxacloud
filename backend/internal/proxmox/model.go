@@ -34,8 +34,11 @@ type Node struct {
 	NodeName         string    `json:"node_name"`
 	Status           string    `json:"status"`
 	CPUCount         int       `json:"cpu_count"`
+	CPUUsage         float64   `json:"cpu_usage"`
 	MemoryTotalBytes int64     `json:"memory_total_bytes"`
 	MemoryUsedBytes  int64     `json:"memory_used_bytes"`
+	DiskTotalBytes   int64     `json:"disk_total_bytes"`
+	DiskUsedBytes    int64     `json:"disk_used_bytes"`
 	Enabled          bool      `json:"enabled"`
 	LastDiscoveredAt time.Time `json:"last_discovered_at"`
 }
@@ -220,7 +223,7 @@ func (s *Service) ListCredentials() []Credential {
 
 func (s *Service) ListNodes() []Node {
 	rows, err := s.db.Query(
-		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.memory_total_bytes, n.memory_used_bytes, n.enabled, n.last_discovered_at
+		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.cpu_usage, n.memory_total_bytes, n.memory_used_bytes, n.disk_total_bytes, n.disk_used_bytes, n.enabled, n.last_discovered_at
 		 FROM proxmox_nodes n
 		 JOIN proxmox_credentials c ON c.id = n.credential_id
 		 ORDER BY n.id ASC`,
@@ -240,8 +243,11 @@ func (s *Service) ListNodes() []Node {
 			&n.NodeName,
 			&n.Status,
 			&n.CPUCount,
+			&n.CPUUsage,
 			&n.MemoryTotalBytes,
 			&n.MemoryUsedBytes,
+			&n.DiskTotalBytes,
+			&n.DiskUsedBytes,
 			&n.Enabled,
 			&n.LastDiscoveredAt,
 		); scanErr != nil {
@@ -254,7 +260,7 @@ func (s *Service) ListNodes() []Node {
 
 func (s *Service) ListEnabledNodes() ([]Node, error) {
 	rows, err := s.db.Query(
-		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.memory_total_bytes, n.memory_used_bytes, n.enabled, n.last_discovered_at
+		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.cpu_usage, n.memory_total_bytes, n.memory_used_bytes, n.disk_total_bytes, n.disk_used_bytes, n.enabled, n.last_discovered_at
 		 FROM proxmox_nodes n
 		 JOIN proxmox_credentials c ON c.id = n.credential_id
 		 WHERE n.enabled = TRUE
@@ -275,8 +281,11 @@ func (s *Service) ListEnabledNodes() ([]Node, error) {
 			&n.NodeName,
 			&n.Status,
 			&n.CPUCount,
+			&n.CPUUsage,
 			&n.MemoryTotalBytes,
 			&n.MemoryUsedBytes,
+			&n.DiskTotalBytes,
+			&n.DiskUsedBytes,
 			&n.Enabled,
 			&n.LastDiscoveredAt,
 		); scanErr != nil {
@@ -331,21 +340,27 @@ func (s *Service) DiscoverAndSyncNodes(credentialID int64) ([]Node, error) {
 
 	for _, d := range discovered {
 		_, execErr := s.db.Exec(
-			`INSERT INTO proxmox_nodes (credential_id, node_name, status, cpu_count, memory_total_bytes, memory_used_bytes, enabled, last_discovered_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW())
-			 ON CONFLICT (credential_id, node_name)
-			 DO UPDATE SET
-			     status = EXCLUDED.status,
-			     cpu_count = EXCLUDED.cpu_count,
-			     memory_total_bytes = EXCLUDED.memory_total_bytes,
-			     memory_used_bytes = EXCLUDED.memory_used_bytes,
-			     last_discovered_at = NOW()`,
+			`INSERT INTO proxmox_nodes (credential_id, node_name, status, cpu_count, cpu_usage, memory_total_bytes, memory_used_bytes, disk_total_bytes, disk_used_bytes, enabled, last_discovered_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
+		 ON CONFLICT (credential_id, node_name)
+		 DO UPDATE SET
+		     status = EXCLUDED.status,
+		     cpu_count = EXCLUDED.cpu_count,
+		     cpu_usage = EXCLUDED.cpu_usage,
+		     memory_total_bytes = EXCLUDED.memory_total_bytes,
+		     memory_used_bytes = EXCLUDED.memory_used_bytes,
+		     disk_total_bytes = EXCLUDED.disk_total_bytes,
+		     disk_used_bytes = EXCLUDED.disk_used_bytes,
+		     last_discovered_at = NOW()`,
 			credentialID,
 			d.NodeName,
 			d.Status,
 			d.CPUCount,
+			d.CPUUsage,
 			d.MemoryTotalBytes,
 			d.MemoryUsedBytes,
+			d.DiskTotalBytes,
+			d.DiskUsedBytes,
 		)
 		if execErr != nil {
 			return nil, fmt.Errorf("upsert discovered node: %w", execErr)
@@ -387,7 +402,7 @@ func (s *Service) getCredentialForDiscovery(id int64) (Credential, error) {
 
 func (s *Service) listNodesByCredential(credentialID int64) ([]Node, error) {
 	rows, err := s.db.Query(
-		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.memory_total_bytes, n.memory_used_bytes, n.enabled, n.last_discovered_at
+		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.cpu_usage, n.memory_total_bytes, n.memory_used_bytes, n.disk_total_bytes, n.disk_used_bytes, n.enabled, n.last_discovered_at
 		 FROM proxmox_nodes n
 		 JOIN proxmox_credentials c ON c.id = n.credential_id
 		 WHERE n.credential_id = $1
@@ -409,8 +424,11 @@ func (s *Service) listNodesByCredential(credentialID int64) ([]Node, error) {
 			&n.NodeName,
 			&n.Status,
 			&n.CPUCount,
+			&n.CPUUsage,
 			&n.MemoryTotalBytes,
 			&n.MemoryUsedBytes,
+			&n.DiskTotalBytes,
+			&n.DiskUsedBytes,
 			&n.Enabled,
 			&n.LastDiscoveredAt,
 		); scanErr != nil {

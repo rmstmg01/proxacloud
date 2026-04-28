@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Cpu, HardDrive, MemoryStick, Pencil, Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
 import { getCredentials, createCredential, updateCredential, deleteCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
@@ -11,9 +11,107 @@ import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
-import type { ProxmoxCredential } from '../types';
+import type { ProxmoxNode, ProxmoxCredential } from '../types';
 
 type AuthMethod = 'token' | 'password';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function fmtBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const gb = bytes / 1_073_741_824;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  const mb = bytes / 1_048_576;
+  return `${mb.toFixed(0)} MB`;
+}
+
+function pct(used: number, total: number): number {
+  if (total <= 0) return 0;
+  return Math.min(100, Math.round((used / total) * 100));
+}
+
+function progressColor(p: number): string {
+  if (p >= 90) return 'bg-red-500';
+  if (p >= 70) return 'bg-amber-400';
+  return 'bg-emerald-500';
+}
+
+function UsageBar({ value, max, label }: { value: number; max: number; label?: string }) {
+  const p = pct(value, max);
+  return (
+    <div className="space-y-0.5">
+      {label && <span className="text-xs text-slate-500">{label}</span>}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 h-1.5 rounded-full bg-slate-200 overflow-hidden">
+          <div className={`h-full rounded-full ${progressColor(p)}`} style={{ width: `${p}%` }} />
+        </div>
+        <span className="text-xs font-medium text-slate-600 w-8 text-right">{p}%</span>
+      </div>
+    </div>
+  );
+}
+
+function SummaryCards({ nodes }: { nodes: ProxmoxNode[] }) {
+  const onlineNodes = nodes.filter((n) => n.status === 'online');
+
+  const totalCPU = onlineNodes.reduce((s, n) => s + n.cpu_count, 0);
+  // weighted avg CPU usage across cores
+  const usedCPUCores = onlineNodes.reduce((s, n) => s + n.cpu_usage * n.cpu_count, 0);
+  const cpuPct = totalCPU > 0 ? Math.round((usedCPUCores / totalCPU) * 100) : 0;
+
+  const totalMem = onlineNodes.reduce((s, n) => s + n.memory_total_bytes, 0);
+  const usedMem = onlineNodes.reduce((s, n) => s + n.memory_used_bytes, 0);
+
+  const totalDisk = onlineNodes.reduce((s, n) => s + n.disk_total_bytes, 0);
+  const usedDisk = onlineNodes.reduce((s, n) => s + n.disk_used_bytes, 0);
+
+  const cards = [
+    {
+      icon: <Cpu className="h-5 w-5 text-indigo-500" />,
+      title: 'CPU',
+      primary: `${totalCPU} cores`,
+      secondary: `${usedCPUCores.toFixed(1)} cores in use`,
+      used: usedCPUCores,
+      total: totalCPU,
+    },
+    {
+      icon: <MemoryStick className="h-5 w-5 text-violet-500" />,
+      title: 'Memory',
+      primary: fmtBytes(totalMem),
+      secondary: `${fmtBytes(usedMem)} used`,
+      used: usedMem,
+      total: totalMem,
+    },
+    {
+      icon: <HardDrive className="h-5 w-5 text-sky-500" />,
+      title: 'Disk',
+      primary: fmtBytes(totalDisk),
+      secondary: `${fmtBytes(usedDisk)} used`,
+      used: usedDisk,
+      total: totalDisk,
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+      {cards.map((c) => (
+        <Card key={c.title}>
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3 mb-3">
+              {c.icon}
+              <span className="text-sm font-semibold text-slate-700">{c.title}</span>
+              <span className="ml-auto text-xs text-slate-400">{onlineNodes.length} online node{onlineNodes.length !== 1 ? 's' : ''}</span>
+            </div>
+            <p className="text-xl font-bold text-slate-900">{c.primary}</p>
+            <p className="text-xs text-slate-500 mb-2">{c.secondary}</p>
+            <UsageBar value={c.used} max={c.total} />
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 
 function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
   const [authMethod, setAuthMethod] = useState<AuthMethod>('token');
@@ -269,16 +367,19 @@ export function ProxmoxPage() {
         </div>
         {loadingNodes ? (
           <PageSpinner />
-        ) : (
+        ) : !nodes || nodes.length === 0 ? (
           <Card>
-            {!nodes || nodes.length === 0 ? (
-              <CardContent>
-                <p className="text-sm text-slate-400">
-                  No nodes discovered yet.
-                  {isAdmin ? ' Add credentials and click "Discover Nodes".' : ' Ask an admin to discover nodes.'}
-                </p>
-              </CardContent>
-            ) : (
+            <CardContent>
+              <p className="text-sm text-slate-400">
+                No nodes discovered yet.
+                {isAdmin ? ' Add credentials and click "Discover Nodes".' : ' Ask an admin to discover nodes.'}
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <>
+            <SummaryCards nodes={nodes} />
+            <Card>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -286,22 +387,42 @@ export function ProxmoxPage() {
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Node</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Credential</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
-                      <th className="text-left px-6 py-3 font-medium text-slate-600">CPU</th>
-                      <th className="text-left px-6 py-3 font-medium text-slate-600">Memory</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[160px]">CPU</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[180px]">Memory</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[180px]">Disk</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Last Seen</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Enabled</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {nodes.map((n) => {
-                      const memGb = (n.memory_total_bytes / 1073741824).toFixed(1);
-                      const usedGb = (n.memory_used_bytes / 1073741824).toFixed(1);
+                      const cpuPct = Math.round(n.cpu_usage * 100);
                       return (
                         <tr key={n.id} className="hover:bg-slate-50">
                           <td className="px-6 py-3 font-medium text-slate-900">{n.node_name}</td>
                           <td className="px-6 py-3 text-slate-500">{n.credential_name ?? `#${n.credential_id}`}</td>
                           <td className="px-6 py-3"><StatusBadge status={n.status} /></td>
-                          <td className="px-6 py-3 text-slate-600">{n.cpu_count} cores</td>
-                          <td className="px-6 py-3 text-slate-600">{usedGb} / {memGb} GB</td>
+                          <td className="px-6 py-3">
+                            <div className="text-slate-700 text-xs mb-1">{n.cpu_count} cores · {cpuPct}%</div>
+                            <UsageBar value={n.cpu_usage * n.cpu_count} max={n.cpu_count} />
+                          </td>
+                          <td className="px-6 py-3">
+                            <div className="text-slate-700 text-xs mb-1">{fmtBytes(n.memory_used_bytes)} / {fmtBytes(n.memory_total_bytes)}</div>
+                            <UsageBar value={n.memory_used_bytes} max={n.memory_total_bytes} />
+                          </td>
+                          <td className="px-6 py-3">
+                            {n.disk_total_bytes > 0 ? (
+                              <>
+                                <div className="text-slate-700 text-xs mb-1">{fmtBytes(n.disk_used_bytes)} / {fmtBytes(n.disk_total_bytes)}</div>
+                                <UsageBar value={n.disk_used_bytes} max={n.disk_total_bytes} />
+                              </>
+                            ) : (
+                              <span className="text-slate-400 text-xs">—</span>
+                            )}
+                          </td>
+                          <td className="px-6 py-3 text-slate-500 text-xs whitespace-nowrap">
+                            {new Date(n.last_discovered_at).toLocaleString()}
+                          </td>
                           <td className="px-6 py-3">
                             {isAdmin ? (
                               <button
@@ -325,8 +446,8 @@ export function ProxmoxPage() {
                   </tbody>
                 </table>
               </div>
-            )}
-          </Card>
+            </Card>
+          </>
         )}
       </section>
 

@@ -1,0 +1,4 @@
+ALTER TABLE proxmox_nodes
+    ADD COLUMN IF NOT EXISTS cpu_usage         DOUBLE PRECISION NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS disk_total_bytes  BIGINT           NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS disk_used_bytes   BIGINT           NOT NULL DEFAULT 0;

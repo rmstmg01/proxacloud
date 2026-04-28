@@ -66,11 +66,14 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 
 	var payload struct {
 		Data []struct {
-			Node   string `json:"node"`
-			Status string `json:"status"`
-			MaxCPU int    `json:"maxcpu"`
-			MaxMem int64  `json:"maxmem"`
-			Mem    int64  `json:"mem"`
+			Node    string  `json:"node"`
+			Status  string  `json:"status"`
+			MaxCPU  int     `json:"maxcpu"`
+			CPU     float64 `json:"cpu"`
+			MaxMem  int64   `json:"maxmem"`
+			Mem     int64   `json:"mem"`
+			MaxDisk int64   `json:"maxdisk"`
+			Disk    int64   `json:"disk"`
 		} `json:"data"`
 	}
 
@@ -84,8 +87,11 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 			NodeName:         item.Node,
 			Status:           item.Status,
 			CPUCount:         item.MaxCPU,
+			CPUUsage:         item.CPU,
 			MemoryTotalBytes: item.MaxMem,
 			MemoryUsedBytes:  item.Mem,
+			DiskTotalBytes:   item.MaxDisk,
+			DiskUsedBytes:    item.Disk,
 			Enabled:          true,
 		})
 	}

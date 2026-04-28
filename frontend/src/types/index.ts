@@ -71,8 +71,11 @@ export interface ProxmoxNode {
   node_name: string;
   status: string;
   cpu_count: number;
+  cpu_usage: number;
   memory_total_bytes: number;
   memory_used_bytes: number;
+  disk_total_bytes: number;
+  disk_used_bytes: number;
   enabled: boolean;
   last_discovered_at: string;
 }
