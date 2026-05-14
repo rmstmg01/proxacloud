@@ -371,6 +371,74 @@ type RestoreEtcdSnapshotResponse struct {
 	Warning    string `json:"warning,omitempty"`
 }
 
+// Health check and recovery types
+type ClusterNodeHealthRecord struct {
+	ID                 int64     `json:"id"`
+	ClusterID          int64     `json:"cluster_id"`
+	ClusterNodeID      int64     `json:"cluster_node_id"`
+	VMName             string    `json:"vm_name"`
+	Role               string    `json:"role"`
+	HealthStatus       string    `json:"health_status"` // healthy, unhealthy, missing, unknown
+	LastCheckAt        time.Time `json:"last_check_at"`
+	ConsecutiveFailure int       `json:"consecutive_failures"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type ClusterRecoveryConfig struct {
+	ClusterID             int64 `json:"cluster_id"`
+	AutoRecoveryEnabled   bool  `json:"auto_recovery_enabled"`
+	HealthCheckInterval   int   `json:"health_check_interval_seconds"`
+	FailureThresholdCount int   `json:"failure_threshold_count"`
+}
+
+type ClusterRecoveryEvent struct {
+	ID            int64         `json:"id"`
+	ClusterID     int64         `json:"cluster_id"`
+	ClusterNodeID sql.NullInt64 `json:"cluster_node_id"`
+	EventType     string        `json:"event_type"` // health_check_started, health_check_failed, recovery_triggered, recovery_completed, recovery_failed
+	VMName        string        `json:"vm_name"`
+	Role          string        `json:"role"`
+	Status        string        `json:"status"`
+	Message       string        `json:"message"`
+	CreatedAt     time.Time     `json:"created_at"`
+}
+
+type NodeHealthStatus struct {
+	ClusterID           int64     `json:"cluster_id"`
+	NodeID              int64     `json:"node_id"`
+	VMName              string    `json:"vm_name"`
+	Role                string    `json:"role"`
+	HealthStatus        string    `json:"health_status"`
+	LastCheckAt         time.Time `json:"last_check_at"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	RecoveryEligible    bool      `json:"recovery_eligible"`
+	RecommendedAction   string    `json:"recommended_action"`
+}
+
+type ClusterHealthResponse struct {
+	ClusterID      int64              `json:"cluster_id"`
+	OverallStatus  string             `json:"overall_status"` // healthy, degraded, critical
+	HealthyNodes   int                `json:"healthy_nodes"`
+	UnhealthyNodes int                `json:"unhealthy_nodes"`
+	MissingNodes   int                `json:"missing_nodes"`
+	NodeStatuses   []NodeHealthStatus `json:"node_statuses"`
+	RecoveryStatus string             `json:"recovery_status"` // idle, in-progress
+	LastCheckAt    time.Time          `json:"last_check_at"`
+}
+
+type TriggerRecoveryRequest struct {
+	VMName string `json:"vm_name"`
+	Force  bool   `json:"force,omitempty"`
+}
+
+type TriggerRecoveryResponse struct {
+	ClusterID int64  `json:"cluster_id"`
+	OldVMName string `json:"old_vm_name"`
+	NewVMName string `json:"new_vm_name"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+}
+
 type provisionApplyWork struct {
 	CredentialID int64
 	Workspace    string
@@ -1406,9 +1474,6 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 	if failedVM == "" {
 		return ReplaceNodeResponse{}, errors.New("failed_vm_name is required")
 	}
-	if newNode == "" {
-		return ReplaceNodeResponse{}, errors.New("new_proxmox_node_name is required")
-	}
 	if newIP != "" && net.ParseIP(newIP) == nil {
 		return ReplaceNodeResponse{}, errors.New("new_ip_address is invalid")
 	}
@@ -1432,8 +1497,19 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 		return ReplaceNodeResponse{}, fmt.Errorf("query failed node: %w", err)
 	}
 
-	if existing.Role != "worker" {
-		return ReplaceNodeResponse{}, errors.New("replace-node currently supports worker role only")
+	// Both worker and control-plane roles are supported
+	if existing.Role != "worker" && existing.Role != "control-plane" {
+		return ReplaceNodeResponse{}, fmt.Errorf("replace-node does not support role: %s", existing.Role)
+	}
+
+	// Auto-select a different Proxmox node if not specified
+	if newNode == "" {
+		selectedNode, err := selectAlternateProxmoxNode(s.db, clusterID, existing.ProxmoxNodeName)
+		if err != nil {
+			// If auto-selection fails, fall back to current node
+			selectedNode = existing.ProxmoxNodeName
+		}
+		newNode = selectedNode
 	}
 
 	newVMName := existing.VMName + "-r"

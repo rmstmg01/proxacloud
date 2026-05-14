@@ -492,6 +492,71 @@ func (h *Handler) RestoreEtcdSnapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) GetClusterHealth(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.GetClusterHealth(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) SetRecoveryConfig(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	var req ClusterRecoveryConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	req.ClusterID = clusterID
+	if err := h.service.SetRecoveryConfig(clusterID, req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "recovery config updated"})
+}
+
+func (h *Handler) TriggerNodeRecovery(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	var req TriggerRecoveryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	// Use ReplaceNode to trigger recovery
+	// For now, we'll use automatic Proxmox node selection
+	replaceReq := ReplaceNodeRequest{
+		FailedVMName:       req.VMName,
+		NewProxmoxNodeName: "", // Will be auto-selected
+	}
+
+	resp, err := h.service.ReplaceNode(clusterID, replaceReq)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -110,6 +110,12 @@ func NewApp() (*App, error) {
 		}
 	}()
 
+	// Initialize health check system with Proxmox-based checker
+	healthChecker := clusters.NewProxmoxHealthChecker(proxmoxService)
+	reconciliationWorker := clusters.NewReconciliationWorker(database, healthChecker, proxmoxService)
+	reconciliationWorker.SetService(clusterService) // Wire in the service for recovery operations
+	go reconciliationWorker.Start(30 * time.Second) // Run health checks every 30 seconds
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -179,6 +185,10 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/etcd/snapshot", clusterHandler.CreateEtcdSnapshot)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/{id}/etcd/snapshots", clusterHandler.ListEtcdSnapshots)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/etcd/restore", clusterHandler.RestoreEtcdSnapshot)
+			// Health and recovery endpoints
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/{id}/health", clusterHandler.GetClusterHealth)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/recovery/config", clusterHandler.SetRecoveryConfig)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/recovery/trigger", clusterHandler.TriggerNodeRecovery)
 		})
 	})
 
