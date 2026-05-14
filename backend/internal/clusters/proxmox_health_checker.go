@@ -30,7 +30,7 @@ func (phc *ProxmoxHealthChecker) CheckNodeHealth(credentialID int64, vmName stri
 	// if the credential is valid. Future enhancement: query /api2/json/nodes/{node}/qemu/{vmid}/status/current
 
 	// Verify the credential exists
-	cred, err := phc.proxmoxSvc.GetCredentialWithSecrets(credentialID)
+	_, err := phc.proxmoxSvc.GetCredentialWithSecrets(credentialID)
 	if err != nil {
 		log.Printf("[ProxmoxHealthChecker] Error loading credential %d: %v", credentialID, err)
 		return false, nil // Credential doesn't exist = node unhealthy

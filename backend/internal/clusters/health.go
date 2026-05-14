@@ -144,10 +144,10 @@ func (rw *ReconciliationWorker) checkAndRecoverNode(clusterID int64, node cluste
 
 			// Trigger automatic recovery
 			if err := rw.triggerAutoRecovery(clusterID, node); err != nil {
-				logRecoveryEvent(rw.db, clusterID, node.ClusterNodeID, "recovery_failed", node.VMName, node.Role, "failed", fmt.Sprintf("Auto-recovery failed: %v", err))
+				logRecoveryEvent(rw.db, clusterID, sql.NullInt64{Int64: node.ClusterNodeID, Valid: true}, "recovery_failed", node.VMName, node.Role, "failed", fmt.Sprintf("Auto-recovery failed: %v", err))
 				log.Printf("[ReconciliationWorker] Auto-recovery failed for node %s: %v", node.VMName, err)
 			} else {
-				logRecoveryEvent(rw.db, clusterID, node.ClusterNodeID, "recovery_triggered", node.VMName, node.Role, "in-progress", "Automatic recovery initiated")
+				logRecoveryEvent(rw.db, clusterID, sql.NullInt64{Int64: node.ClusterNodeID, Valid: true}, "recovery_triggered", node.VMName, node.Role, "in-progress", "Automatic recovery initiated")
 			}
 		}
 	} else if checkErr == nil {
