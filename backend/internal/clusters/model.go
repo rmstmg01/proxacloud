@@ -1788,9 +1788,16 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	// Use the kubeconfig from the mounted location
 	kubeconfigPath := "/app/backend/.kube/config"
 
-	// Check if kubeconfig exists
-	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
-		return fmt.Errorf("kubeconfig file not found at %s: %w", kubeconfigPath, err)
+	// Check if kubeconfig exists and is a file
+	info, err := os.Stat(kubeconfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("kubeconfig file not found at %s: %w", kubeconfigPath, err)
+		}
+		return fmt.Errorf("failed to stat kubeconfig path %s: %w", kubeconfigPath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("kubeconfig path %s is a directory; mount the kubeconfig file, not a directory", kubeconfigPath)
 	}
 
 	// Test kubectl connectivity
