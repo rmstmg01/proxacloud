@@ -1016,6 +1016,12 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 			if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
 				log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
 			}
+			if exportErr := s.exportBootstrapKubeconfig(workDir); exportErr != nil {
+				log.Printf("WARN export kubeconfig for cluster %d: %v", clusterID, exportErr)
+				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "warning", fmt.Sprintf("Failed to export kubeconfig: %v", exportErr))
+			} else {
+				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "info", "Kubeconfig exported to /app/backend/.kube/config")
+			}
 			if dbErr := s.updateClusterStatus(clusterID, runStatus); dbErr != nil {
 				log.Printf("ERROR updating cluster %d status: %v", clusterID, dbErr)
 			}
@@ -1824,6 +1830,26 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", configPath, "--validate=false")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb resources: %w\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
+func (s *Service) exportBootstrapKubeconfig(workDir string) error {
+	localKubeconfig := filepath.Join(workDir, "admin.conf")
+	data, err := os.ReadFile(localKubeconfig)
+	if err != nil {
+		return fmt.Errorf("read fetched kubeconfig %s: %w", localKubeconfig, err)
+	}
+
+	destDir := "/app/backend/.kube"
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("ensure kubeconfig mount directory %s: %w", destDir, err)
+	}
+
+	destPath := filepath.Join(destDir, "config")
+	if err := os.WriteFile(destPath, data, 0o600); err != nil {
+		return fmt.Errorf("write kubeconfig to %s: %w", destPath, err)
 	}
 
 	return nil

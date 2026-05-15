@@ -514,4 +514,14 @@ const playbookTemplate = `---
         --overwrite
       loop: "{{ "{{ groups['workers'] }}" }}"
       when: groups['workers'] | length > 0
+
+- hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Fetch kubeconfig admin.conf
+      fetch:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ playbook_dir }}/admin.conf"
+        flat: yes
+      run_once: true
 `
