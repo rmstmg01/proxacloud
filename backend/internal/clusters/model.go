@@ -1794,9 +1794,9 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	}
 	env = append(env, fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
 
-	// Step 1: Apply MetalLB controller manifest
+	// Step 1: Download and apply MetalLB controller manifest
 	manifestURL := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", version)
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", manifestURL)
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", manifestURL, "--validate=false")
 	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb controller manifest: %w\nOutput: %s", err, string(output))
@@ -1811,7 +1811,7 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 
 	// Step 3: Apply cluster-specific MetalLB resources
 	configPath := filepath.Join(manifestDir, "metallb-resources.yaml")
-	cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", configPath)
+	cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", configPath, "--validate=false")
 	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb resources: %w\nOutput: %s", err, string(output))
@@ -3206,9 +3206,9 @@ func buildMetalLBPowerShell(namespace, version string) string {
 
 $manifest = "https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
 
-kubectl apply -f $manifest
+kubectl apply -f $manifest --validate=false
 kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
-kubectl apply -f ./metallb-resources.yaml
+kubectl apply -f ./metallb-resources.yaml --validate=false
 `, version, namespace)
 }
 
@@ -3218,9 +3218,9 @@ set -eu
 
 manifest="https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
 
-kubectl apply -f "$manifest"
+kubectl apply -f "$manifest" --validate=false
 kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
-kubectl apply -f ./metallb-resources.yaml
+kubectl apply -f ./metallb-resources.yaml --validate=false
 `, version, namespace)
 }
 
