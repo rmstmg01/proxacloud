@@ -25,7 +25,12 @@ RUN printf 'terraform {\n  required_providers {\n    proxmox = {\n      source  
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ansible-core openssh-client
+RUN apk add --no-cache ansible-core openssh-client curl
+
+# Install kubectl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/
 
 RUN adduser -D -g '' appuser
 

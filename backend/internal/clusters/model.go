@@ -1727,7 +1727,13 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 	status := "metallb-prepared"
 	warnings := []string{}
 	if req.Apply {
-		status = "metallb-apply-requested"
+		// Execute kubectl commands to deploy MetalLB
+		if err := s.executeMetalLBDeployment(namespace, version, manifestDir); err != nil {
+			return DeployMetalLBResponse{}, fmt.Errorf("failed to deploy metallb: %w", err)
+		}
+		status = "metallb-deployed"
+		warnings = append(warnings, "metallb deployed successfully to the cluster")
+	} else {
 		warnings = append(warnings, "runtime kubectl apply is not executed yet; use the generated helper script or README in the manifest directory")
 	}
 
@@ -1773,6 +1779,33 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 		Commands:    commands,
 		Warnings:    warnings,
 	}, nil
+}
+
+func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Step 1: Apply MetalLB controller manifest
+	manifestURL := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", version)
+	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", manifestURL)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to apply metallb controller manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	// Step 2: Wait for MetalLB controller to be ready
+	cmd = exec.CommandContext(ctx, "kubectl", "wait", "--namespace", namespace, "--for=condition=available", "deployment/controller", "--timeout=180s")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to wait for metallb controller: %w\nOutput: %s", err, string(output))
+	}
+
+	// Step 3: Apply cluster-specific MetalLB resources
+	configPath := filepath.Join(manifestDir, "metallb-resources.yaml")
+	cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", configPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to apply metallb resources: %w\nOutput: %s", err, string(output))
+	}
+
+	return nil
 }
 
 func (s *Service) GetMetalLB(clusterID int64) (MetalLBStatusResponse, error) {

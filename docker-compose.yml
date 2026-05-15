@@ -48,6 +48,7 @@ services:
       OPERATIONS_WORKDIR: /app/backend/data/operations/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
+      KUBECONFIG: /kube/config
     dns:
       - 192.168.8.1
       - 8.8.8.8
@@ -57,6 +58,7 @@ services:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
       - backend_data:/app/backend/data
+      - ${KUBECONFIG:-~/.kube/config}:/kube/config:ro
 
   frontend:
     build:
@@ -85,6 +87,7 @@ services:
     command: ["sleep infinity"]
     volumes:
       - backend_data:/app/backend/data
+      - ${KUBECONFIG:-~/.kube/config}:/kube/config:ro
 
 volumes:
   postgres_data:

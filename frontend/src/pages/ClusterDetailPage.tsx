@@ -698,14 +698,18 @@ function MetalLBTab({ id }: { id: number }) {
             </label>
             <label className="flex items-center gap-3">
               <input type="checkbox" checked={form.apply} onChange={(e) => setForm({ ...form, apply: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
-              <span className="text-sm text-slate-700">Mark as apply requested</span>
+              <span className="text-sm text-slate-700">Deploy MetalLB to cluster now</span>
             </label>
             {deployMut.data && (
-              <Alert variant="success" title="MetalLB assets prepared">
+              <Alert variant="success" title={form.apply ? "MetalLB deployed successfully" : "MetalLB assets prepared"}>
                 <div className="space-y-2">
                   <p>Status: {deployMut.data.status}</p>
                   <p>Manifest directory: {deployMut.data.manifest_dir}</p>
-                  <p className="text-xs">Use the Operator Commands card above to run the generated helper script.</p>
+                  {form.apply ? (
+                    <p className="text-xs">MetalLB has been deployed to your cluster. LoadBalancer services should now receive external IPs.</p>
+                  ) : (
+                    <p className="text-xs">Use the Operator Commands card above to run the generated helper script.</p>
+                  )}
                 </div>
               </Alert>
             )}
