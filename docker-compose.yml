@@ -58,7 +58,7 @@ services:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
       - backend_data:/app/backend/data
-      - ${KUBECONFIG_DIR:-~/.kube}:/app/backend/.kube:ro
+      - ${KUBECONFIG_FILE:-~/.kube/config}:/app/backend/.kube/config:ro
 
   frontend:
     build:
@@ -87,7 +87,7 @@ services:
     command: ["sleep infinity"]
     volumes:
       - backend_data:/app/backend/data
-      - ${KUBECONFIG_DIR:-~/.kube}:/app/backend/.kube:ro
+      - ${KUBECONFIG_FILE:-~/.kube/config}:/app/backend/.kube/config:ro
 
 volumes:
   postgres_data:
