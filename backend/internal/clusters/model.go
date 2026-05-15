@@ -1806,19 +1806,11 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Use the kubeconfig from the mounted location
-	kubeconfigPath := "/app/backend/.kube/config"
-
-	// Check if kubeconfig exists and is a file
-	info, err := os.Stat(kubeconfigPath)
+	// Use the kubeconfig from the mounted location or configured env.
+	kubeconfigPath := s.kubeconfigPath()
+	kubeconfigPath, err := s.resolveKubeconfigPath(kubeconfigPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("kubeconfig file not found at %s: %w", kubeconfigPath, err)
-		}
-		return fmt.Errorf("failed to stat kubeconfig path %s: %w", kubeconfigPath, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("kubeconfig path %s is a directory; mount the kubeconfig file, not a directory", kubeconfigPath)
+		return err
 	}
 
 	// Test kubectl connectivity
@@ -1857,17 +1849,46 @@ func (s *Service) exportBootstrapKubeconfig(workDir string) error {
 		return fmt.Errorf("read fetched kubeconfig %s: %w", localKubeconfig, err)
 	}
 
-	destDir := "/app/backend/.kube"
+	destPath := s.kubeconfigPath()
+	if info, err := os.Stat(destPath); err == nil && info.IsDir() {
+		destPath = filepath.Join(destPath, "config")
+	}
+	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("ensure kubeconfig mount directory %s: %w", destDir, err)
 	}
 
-	destPath := filepath.Join(destDir, "config")
 	if err := os.WriteFile(destPath, data, 0o600); err != nil {
 		return fmt.Errorf("write kubeconfig to %s: %w", destPath, err)
 	}
 
 	return nil
+}
+
+func (s *Service) kubeconfigPath() string {
+	if envPath := strings.TrimSpace(os.Getenv("KUBECONFIG")); envPath != "" {
+		return envPath
+	}
+	return "/app/backend/.kube/config"
+}
+
+func (s *Service) resolveKubeconfigPath(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("kubeconfig file not found at %s: %w", path, err)
+		}
+		return "", fmt.Errorf("failed to stat kubeconfig path %s: %w", path, err)
+	}
+	if info.IsDir() {
+		candidate := filepath.Join(path, "config")
+		candidateInfo, candidateErr := os.Stat(candidate)
+		if candidateErr == nil && !candidateInfo.IsDir() {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("kubeconfig path %s is a directory; mount the kubeconfig file, not a directory", path)
+	}
+	return path, nil
 }
 
 func (s *Service) GetMetalLB(clusterID int64) (MetalLBStatusResponse, error) {

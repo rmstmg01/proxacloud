@@ -58,6 +58,8 @@ services:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
       - backend_data:/app/backend/data
+      # Mount the host kubeconfig directory, not the kubeconfig file.
+      # The backend expects /app/backend/.kube/config to be a file inside this directory.
       - ${KUBECONFIG_DIR:-${HOME}/.kube}:/app/backend/.kube:rw
 
   frontend:
@@ -87,6 +89,7 @@ services:
     command: ["sleep infinity"]
     volumes:
       - backend_data:/app/backend/data
+      # Mount the same kubeconfig directory so kubectl-runner can read /app/backend/.kube/config.
       - ${KUBECONFIG_DIR:-${HOME}/.kube}:/app/backend/.kube:ro
 
 volumes:
