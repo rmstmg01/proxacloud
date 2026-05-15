@@ -1785,34 +1785,36 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	// Set KUBECONFIG for kubectl to find the config
-	env := os.Environ()
-	kubeconfig := os.Getenv("KUBECONFIG")
-	if kubeconfig == "" {
-		// Default to standard location
-		kubeconfig = filepath.Join(os.Getenv("HOME"), ".kube", "config")
-	}
-	env = append(env, fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+	// Use the kubeconfig from the mounted location
+	kubeconfigPath := "/app/backend/.kube/config"
 
-	// Step 1: Download and apply MetalLB controller manifest
+	// Check if kubeconfig exists
+	if _, err := os.Stat(kubeconfigPath); os.IsNotExist(err) {
+		return fmt.Errorf("kubeconfig file not found at %s: %w", kubeconfigPath, err)
+	}
+
+	// Test kubectl connectivity
+	testCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
+	if output, err := testCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Step 1: Apply MetalLB controller manifest
 	manifestURL := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", version)
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", manifestURL, "--validate=false")
-	cmd.Env = env
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", manifestURL, "--validate=false")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb controller manifest: %w\nOutput: %s", err, string(output))
 	}
 
 	// Step 2: Wait for MetalLB controller to be ready
-	cmd = exec.CommandContext(ctx, "kubectl", "wait", "--namespace", namespace, "--for=condition=available", "deployment/controller", "--timeout=180s")
-	cmd.Env = env
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "wait", "--namespace", namespace, "--for=condition=available", "deployment/controller", "--timeout=180s")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to wait for metallb controller: %w\nOutput: %s", err, string(output))
 	}
 
 	// Step 3: Apply cluster-specific MetalLB resources
 	configPath := filepath.Join(manifestDir, "metallb-resources.yaml")
-	cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", configPath, "--validate=false")
-	cmd.Env = env
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", configPath, "--validate=false")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb resources: %w\nOutput: %s", err, string(output))
 	}
