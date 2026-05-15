@@ -41,7 +41,7 @@ COPY --from=builder /src/backend/migrations /app/backend/migrations
 COPY --from=terraform-bin /bin/terraform /usr/local/bin/terraform
 COPY --from=terraform-bin /terraform-providers /terraform-providers
 
-RUN mkdir -p /app/backend/data/terraform/runs /app/backend/data/ansible/runs /app/backend/data/operations/runs
+RUN mkdir -p /app/backend/data/terraform/runs /app/backend/data/ansible/runs /app/backend/data/operations/runs /app/backend/.kube
 RUN chown -R appuser:appuser /app
 USER appuser
 

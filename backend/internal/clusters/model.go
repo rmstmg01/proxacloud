@@ -1785,15 +1785,26 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	// Set KUBECONFIG for kubectl to find the config
+	env := os.Environ()
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		// Default to standard location
+		kubeconfig = filepath.Join(os.Getenv("HOME"), ".kube", "config")
+	}
+	env = append(env, fmt.Sprintf("KUBECONFIG=%s", kubeconfig))
+
 	// Step 1: Apply MetalLB controller manifest
 	manifestURL := fmt.Sprintf("https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml", version)
 	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", manifestURL)
+	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb controller manifest: %w\nOutput: %s", err, string(output))
 	}
 
 	// Step 2: Wait for MetalLB controller to be ready
 	cmd = exec.CommandContext(ctx, "kubectl", "wait", "--namespace", namespace, "--for=condition=available", "deployment/controller", "--timeout=180s")
+	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to wait for metallb controller: %w\nOutput: %s", err, string(output))
 	}
@@ -1801,6 +1812,7 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	// Step 3: Apply cluster-specific MetalLB resources
 	configPath := filepath.Join(manifestDir, "metallb-resources.yaml")
 	cmd = exec.CommandContext(ctx, "kubectl", "apply", "-f", configPath)
+	cmd.Env = env
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to apply metallb resources: %w\nOutput: %s", err, string(output))
 	}
