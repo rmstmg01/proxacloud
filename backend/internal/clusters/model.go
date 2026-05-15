@@ -770,6 +770,8 @@ func (s *Service) runBootstrapAfterProvision(clusterID int64, req BootstrapReque
 		return
 	}
 
+	_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "info", "Auto-bootstrap enabled; waiting for provision apply to complete before starting bootstrap")
+
 	const maxWait = 30 * time.Minute
 	const interval = 3 * time.Second
 	deadline := time.Now().Add(maxWait)
@@ -778,29 +780,42 @@ func (s *Service) runBootstrapAfterProvision(clusterID int64, req BootstrapReque
 		summary, err := s.getClusterSummary(clusterID)
 		if err != nil {
 			log.Printf("ERROR waiting for provision completion for cluster %d: %v", clusterID, err)
+			_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "error", fmt.Sprintf("Error waiting for provision completion: %v", err))
 			return
 		}
 
 		status := strings.TrimSpace(strings.ToLower(summary.Status))
 		switch status {
 		case "applied":
+			_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "info", "Provision apply completed; starting bootstrap now")
 			_, bootErr := s.Bootstrap(clusterID, req)
 			if bootErr != nil {
 				log.Printf("ERROR auto-bootstrap for cluster %d: %v", clusterID, bootErr)
+				_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "error", fmt.Sprintf("Auto-bootstrap failed to start: %v", bootErr))
 			}
 			return
 		case "failed", "destroy-failed":
 			log.Printf("INFO skip auto-bootstrap for cluster %d due to status %s", clusterID, status)
+			_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "warn", fmt.Sprintf("Skipping auto-bootstrap because provision status is %s", status))
 			return
 		}
 
 		if time.Now().After(deadline) {
 			log.Printf("ERROR timeout waiting for provision apply before bootstrap for cluster %d", clusterID)
+			_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "error", "Timed out waiting for provision apply to complete before bootstrap")
 			return
 		}
 
 		time.Sleep(interval)
 	}
+}
+
+func (s *Service) appendLatestOperationEvent(clusterID int64, step, level, message string) error {
+	op, err := s.GetLatestOperation(clusterID)
+	if err != nil {
+		return err
+	}
+	return s.appendOperationEvent(op.ID, step, level, message)
 }
 
 func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionApplyWork, primaryWorkspace string, operationID int64) {
