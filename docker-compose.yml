@@ -48,6 +48,7 @@ services:
       OPERATIONS_WORKDIR: /app/backend/data/operations/runs
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
+      KUBECONFIG: /app/backend/.kube/config
     dns:
       - 192.168.8.1
       - 8.8.8.8
