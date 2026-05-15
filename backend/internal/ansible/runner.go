@@ -89,7 +89,7 @@ func (r *Runner) PrepareWorkspace(spec BootstrapSpec) (string, error) {
 		return "", fmt.Errorf("write inventory: %w", err)
 	}
 
-	playbook, err := renderPlaybook(spec)
+	playbook, err := renderPlaybook(spec, workDir)
 	if err != nil {
 		return "", err
 	}
@@ -156,7 +156,7 @@ func renderInventory(spec BootstrapSpec, keyPath string) (string, error) {
 	return out.String(), nil
 }
 
-func renderPlaybook(spec BootstrapSpec) (string, error) {
+func renderPlaybook(spec BootstrapSpec, workDir string) (string, error) {
 	tpl, err := template.New("playbook").Parse(playbookTemplate)
 	if err != nil {
 		return "", fmt.Errorf("parse playbook template: %w", err)
@@ -183,6 +183,7 @@ func renderPlaybook(spec BootstrapSpec) (string, error) {
 		"ServiceCIDR":          nonEmpty(spec.ServiceCIDR, "10.96.0.0/12"),
 		"CNI":                  cni,
 		"InitEndpointArg":      initEndpointArg(spec.ControlPlaneVIP, primaryControlPlaneIP(spec.Nodes), controlPlaneCount, spec.DeployKubeVIP),
+		"PlaybookDir":          workDir,
 	}
 
 	var out bytes.Buffer
@@ -521,7 +522,7 @@ const playbookTemplate = `---
     - name: Fetch kubeconfig admin.conf
       fetch:
         src: /etc/kubernetes/admin.conf
-        dest: "{{ playbook_dir }}/admin.conf"
+        dest: "{{ .PlaybookDir }}/admin.conf"
         flat: yes
       run_once: true
 `
