@@ -2223,6 +2223,13 @@ func (s *Service) executeAppManifestApply(namespace, manifest string) (string, e
 		return strings.Join(outputs, "\n"), fmt.Errorf("get application resources: %w\nOutput: %s", err, string(output))
 	}
 
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "describe", "ingress", "--namespace", namespace)
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		outputs = append(outputs, fmt.Sprintf("describe ingress warning: %v", err))
+	}
+
 	return strings.Join(outputs, "\n"), nil
 }
 
@@ -3751,6 +3758,9 @@ rules:
     verbs: ["update"]
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

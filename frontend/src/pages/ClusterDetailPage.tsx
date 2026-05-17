@@ -761,6 +761,8 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: sample-app
+  annotations:
+    kubernetes.io/ingress.class: traefik
 spec:
   ingressClassName: traefik
   rules:
