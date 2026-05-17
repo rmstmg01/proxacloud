@@ -130,12 +130,12 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 		return "already-running", nil
 	}
 
-	if err := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, actualAction, false); err != nil {
+	if err := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, actualAction, false, normalActionWait(actualAction)); err != nil {
 		fallbackAction, fallbackSkipLock, fallbackOK := fallbackVMAction(actualAction)
 		if !fallbackOK {
 			return "", err
 		}
-		if fallbackErr := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, fallbackAction, fallbackSkipLock); fallbackErr != nil {
+		if fallbackErr := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, fallbackAction, fallbackSkipLock, fallbackActionWait(fallbackAction)); fallbackErr != nil {
 			return "", fmt.Errorf("%s failed (%v); fallback %s failed: %w", actualAction, err, fallbackAction, fallbackErr)
 		}
 		return fallbackAction, nil
@@ -147,9 +147,9 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 func fallbackVMAction(action string) (string, bool, bool) {
 	switch action {
 	case "shutdown":
-		return "stop", false, true
+		return "stop", true, true
 	case "reboot":
-		return "reset", false, true
+		return "reset", true, true
 	case "start":
 		return "start", true, true
 	default:
@@ -157,7 +157,25 @@ func fallbackVMAction(action string) (string, bool, bool) {
 	}
 }
 
-func (c *Client) runVMAction(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, action string, skipLock bool) error {
+func normalActionWait(action string) time.Duration {
+	switch action {
+	case "shutdown", "reboot":
+		return 30 * time.Second
+	default:
+		return 2 * time.Minute
+	}
+}
+
+func fallbackActionWait(action string) time.Duration {
+	switch action {
+	case "stop", "reset":
+		return 2 * time.Minute
+	default:
+		return 3 * time.Minute
+	}
+}
+
+func (c *Client) runVMAction(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, action string, skipLock bool, maxWait time.Duration) error {
 	reqURL := *base
 	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "status", action)
 
@@ -198,7 +216,7 @@ func (c *Client) runVMAction(httpClient *http.Client, base *url.URL, cred Creden
 	if strings.TrimSpace(taskResp.Data) == "" {
 		return fmt.Errorf("proxmox vm %s api returned an empty task id", action)
 	}
-	if err := c.waitForTask(httpClient, base, cred, proxmoxNodeName, taskResp.Data, action); err != nil {
+	if err := c.waitForTask(httpClient, base, cred, proxmoxNodeName, taskResp.Data, action, maxWait); err != nil {
 		return err
 	}
 
@@ -263,8 +281,11 @@ func responseErrorMessage(resp *http.Response) string {
 	return msg
 }
 
-func (c *Client) waitForTask(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, upid string, action string) error {
-	deadline := time.Now().Add(10 * time.Minute)
+func (c *Client) waitForTask(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, upid string, action string, maxWait time.Duration) error {
+	if maxWait <= 0 {
+		maxWait = 2 * time.Minute
+	}
+	deadline := time.Now().Add(maxWait)
 	for {
 		status, exitStatus, err := c.getTaskStatus(httpClient, base, cred, proxmoxNodeName, upid)
 		if err != nil {
