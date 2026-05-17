@@ -1362,12 +1362,12 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 	status := action
 	switch action {
 	case "start":
-		status = "starting"
+		status = "online"
 	case "shutdown":
-		status = "shutdown"
+		status = "offline"
 	case "restart":
 		proxmoxAction = "reboot"
-		status = "restarting"
+		status = "online"
 	default:
 		return ClusterPowerActionResponse{}, fmt.Errorf("unsupported cluster power action %q", action)
 	}

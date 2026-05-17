@@ -35,7 +35,9 @@ export function StatusBadge({ status }: { status: string }) {
   else if (s === 'planned' || s === 'generated')
     variant = 'info';
 
-  return <Badge variant={variant}>{status}</Badge>;
+  const label = s === 'online' ? 'Online' : s === 'offline' ? 'Offline' : status;
+
+  return <Badge variant={variant}>{label}</Badge>;
 }
 
 export function RoleBadge({ role }: { role: string }) {
