@@ -148,6 +148,19 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 		return "", fmt.Errorf("proxmox vm %s api returned status %d: %s", actualAction, resp.StatusCode, responseErrorMessage(resp))
 	}
 
+	var taskResp struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		return "", fmt.Errorf("decode proxmox vm %s task response: %w", actualAction, err)
+	}
+	if strings.TrimSpace(taskResp.Data) == "" {
+		return "", fmt.Errorf("proxmox vm %s api returned an empty task id", actualAction)
+	}
+	if err := c.waitForTask(httpClient, base, cred, proxmoxNodeName, taskResp.Data, actualAction); err != nil {
+		return "", err
+	}
+
 	return actualAction, nil
 }
 
@@ -207,6 +220,63 @@ func responseErrorMessage(resp *http.Response) string {
 		return "empty response body"
 	}
 	return msg
+}
+
+func (c *Client) waitForTask(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, upid string, action string) error {
+	deadline := time.Now().Add(10 * time.Minute)
+	for {
+		status, exitStatus, err := c.getTaskStatus(httpClient, base, cred, proxmoxNodeName, upid)
+		if err != nil {
+			return err
+		}
+
+		if strings.EqualFold(status, "stopped") {
+			if exitStatus == "" || strings.EqualFold(exitStatus, "OK") {
+				return nil
+			}
+			return fmt.Errorf("proxmox vm %s task failed: %s", action, exitStatus)
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for proxmox vm %s task %s to complete", action, upid)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func (c *Client) getTaskStatus(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, upid string) (string, string, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "tasks", upid, "status")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return "", "", fmt.Errorf("create task status request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("request proxmox task status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("proxmox task status api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			Status     string `json:"status"`
+			ExitStatus string `json:"exitstatus"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", fmt.Errorf("decode task status response: %w", err)
+	}
+
+	return strings.TrimSpace(payload.Data.Status), strings.TrimSpace(payload.Data.ExitStatus), nil
 }
 
 func (c *Client) httpClient(cred Credential) *http.Client {
