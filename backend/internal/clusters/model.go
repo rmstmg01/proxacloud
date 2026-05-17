@@ -302,6 +302,28 @@ type DeployIngressControllerResponse struct {
 	Warnings  []string `json:"warnings"`
 }
 
+type DeployCertificateManagerRequest struct {
+	Namespace    string `json:"namespace"`
+	Version      string `json:"version"`
+	IssuerName   string `json:"issuer_name"`
+	Email        string `json:"email"`
+	ACMEServer   string `json:"acme_server"`
+	IngressClass string `json:"ingress_class"`
+	Apply        bool   `json:"apply"`
+	Wait         bool   `json:"wait"`
+}
+
+type DeployCertificateManagerResponse struct {
+	ClusterID  int64    `json:"cluster_id"`
+	Status     string   `json:"status"`
+	Namespace  string   `json:"namespace"`
+	Version    string   `json:"version"`
+	IssuerName string   `json:"issuer_name"`
+	ACMEServer string   `json:"acme_server"`
+	Output     string   `json:"output,omitempty"`
+	Warnings   []string `json:"warnings"`
+}
+
 type DeployAppRequest struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -2052,6 +2074,68 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 	}, nil
 }
 
+func (s *Service) DeployCertificateManager(clusterID int64, req DeployCertificateManagerRequest) (DeployCertificateManagerResponse, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return DeployCertificateManagerResponse{}, err
+	}
+
+	namespace := strings.TrimSpace(req.Namespace)
+	if namespace == "" {
+		namespace = "cert-manager"
+	}
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = "v1.16.2"
+	}
+	issuerName := strings.TrimSpace(req.IssuerName)
+	if issuerName == "" {
+		issuerName = "letsencrypt-prod"
+	}
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		return DeployCertificateManagerResponse{}, errors.New("email is required for Let's Encrypt registration")
+	}
+	acmeServer := strings.TrimSpace(req.ACMEServer)
+	if acmeServer == "" {
+		acmeServer = "https://acme-v02.api.letsencrypt.org/directory"
+	}
+	ingressClass := strings.TrimSpace(req.IngressClass)
+	if ingressClass == "" {
+		ingressClass = "traefik"
+	}
+
+	status := "certificate-manager-prepared"
+	output := ""
+	warnings := []string{}
+	if req.Apply {
+		status = "certificate-manager-deployed"
+		applyOutput, err := s.executeCertificateManagerDeployment(namespace, version, issuerName, email, acmeServer, ingressClass, req.Wait)
+		output = applyOutput
+		if err != nil {
+			_ = s.insertProvisionRun(clusterID, "certificate-manager-deploy", "failed", issuerName, output)
+			return DeployCertificateManagerResponse{}, fmt.Errorf("failed to deploy certificate manager: %w", err)
+		}
+		warnings = append(warnings, "cert-manager and Let's Encrypt ClusterIssuer deployed successfully")
+	} else {
+		warnings = append(warnings, "cert-manager was not applied; enable apply to run kubectl")
+	}
+
+	if err := s.insertProvisionRun(clusterID, "certificate-manager-deploy", status, issuerName, output); err != nil {
+		return DeployCertificateManagerResponse{}, err
+	}
+
+	return DeployCertificateManagerResponse{
+		ClusterID:  clusterID,
+		Status:     status,
+		Namespace:  namespace,
+		Version:    version,
+		IssuerName: issuerName,
+		ACMEServer: acmeServer,
+		Output:     output,
+		Warnings:   warnings,
+	}, nil
+}
+
 func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return DeployAppResponse{}, err
@@ -2181,6 +2265,61 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, wa
 	outputs = append(outputs, string(output))
 	if err != nil {
 		return strings.Join(outputs, "\n"), fmt.Errorf("get ingress services: %w\nOutput: %s", err, string(output))
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
+func (s *Service) executeCertificateManagerDeployment(namespace, version, issuerName, email, acmeServer, ingressClass string, wait bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	outputs := make([]string, 0, 5)
+	manifestURL := fmt.Sprintf("https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml", version)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
+	}
+	outputs = append(outputs, string(output))
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", manifestURL, "--validate=false")
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply cert-manager manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	if wait {
+		for _, deployment := range []string{"cert-manager", "cert-manager-cainjector", "cert-manager-webhook"} {
+			cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "rollout", "status", "--namespace", namespace, "deployment/"+deployment, "--timeout=600s")
+			output, err = cmd.CombinedOutput()
+			outputs = append(outputs, string(output))
+			if err != nil {
+				return strings.Join(outputs, "\n"), fmt.Errorf("wait for %s rollout: %w\nOutput: %s\nDiagnostics:\n%s", deployment, err, string(output), s.kubeNamespaceDiagnostics(kubeconfigPath, namespace, "deployment/"+deployment))
+			}
+		}
+	}
+
+	issuerManifest := buildLetsEncryptClusterIssuerManifest(issuerName, email, acmeServer, ingressClass)
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(issuerManifest)
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply Let's Encrypt ClusterIssuer: %w\nOutput: %s", err, string(output))
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "clusterissuer", issuerName, "-o", "wide")
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("get ClusterIssuer: %w\nOutput: %s", err, string(output))
 	}
 
 	return strings.Join(outputs, "\n"), nil
@@ -3852,4 +3991,22 @@ spec:
       port: 443
       targetPort: websecure
 `, namespace, namespace, namespace, namespace, image, namespace)
+}
+
+func buildLetsEncryptClusterIssuerManifest(issuerName, email, acmeServer, ingressClass string) string {
+	return fmt.Sprintf(`apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: %s
+spec:
+  acme:
+    email: %s
+    server: %s
+    privateKeySecretRef:
+      name: %s-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: %s
+`, issuerName, email, acmeServer, issuerName, ingressClass)
 }

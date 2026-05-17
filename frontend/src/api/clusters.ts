@@ -17,6 +17,7 @@ import type {
   DeployMetalLBResponse,
   MetalLBStatusResponse,
   DeployIngressControllerResponse,
+  DeployCertificateManagerResponse,
   DeployAppResponse,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
@@ -244,6 +245,23 @@ export const deployIngressController = (
 ) =>
   client
     .post<DeployIngressControllerResponse>(`/clusters/${id}/ingress-controller/deploy`, body)
+    .then((r) => r.data);
+
+export const deployCertificateManager = (
+  id: number,
+  body: {
+    namespace: string;
+    version: string;
+    issuer_name: string;
+    email: string;
+    acme_server: string;
+    ingress_class: string;
+    apply: boolean;
+    wait: boolean;
+  },
+) =>
+  client
+    .post<DeployCertificateManagerResponse>(`/clusters/${id}/cert-manager/deploy`, body)
     .then((r) => r.data);
 
 export const deployApp = (
