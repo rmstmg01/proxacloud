@@ -133,15 +133,42 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 	if err := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, actualAction, false, normalActionWait(actualAction)); err != nil {
 		fallbackAction, fallbackSkipLock, fallbackOK := fallbackVMAction(actualAction)
 		if !fallbackOK {
+			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vmName, actualAction) {
+				return actualAction + "-verified", nil
+			}
 			return "", err
 		}
 		if fallbackErr := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, fallbackAction, fallbackSkipLock, fallbackActionWait(fallbackAction)); fallbackErr != nil {
+			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vmName, fallbackAction) {
+				return fallbackAction + "-verified", nil
+			}
 			return "", fmt.Errorf("%s failed (%v); fallback %s failed: %w", actualAction, err, fallbackAction, fallbackErr)
 		}
 		return fallbackAction, nil
 	}
 
 	return actualAction, nil
+}
+
+func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string, action string) bool {
+	for attempts := 0; attempts < 5; attempts++ {
+		vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+		if err == nil {
+			status := strings.TrimSpace(strings.ToLower(vm.Status))
+			switch action {
+			case "shutdown", "stop":
+				if status == "stopped" {
+					return true
+				}
+			case "start", "reboot", "reset":
+				if status == "running" {
+					return true
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return false
 }
 
 func fallbackVMAction(action string) (string, bool, bool) {
