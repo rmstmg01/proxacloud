@@ -14,6 +14,7 @@ export function ClustersPage() {
   const { data: clusters, isLoading, error } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
+    refetchInterval: 30_000,
   });
   const deleteMutation = useMutation({
     mutationFn: deleteCluster,
