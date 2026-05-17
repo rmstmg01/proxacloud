@@ -1,63 +1,344 @@
 # K8s Proxmox Manager
 
-Step-by-step implementation of a self-hosted application to provision production-style Kubernetes clusters on Proxmox using Ubuntu 24 cloud-init VMs.
+K8s Proxmox Manager is a self-hosted admin portal and API for provisioning and operating Kubernetes clusters on Proxmox. It targets homelab and private-cloud environments where Kubernetes nodes are created as Ubuntu 24 cloud-init VMs, then bootstrapped with kubeadm.
 
-## Step 1 (Implemented)
+The application combines a React admin UI, a Go backend API, PostgreSQL persistence, Proxmox node discovery, Terraform VM provisioning, Ansible Kubernetes bootstrap, and day-2 cluster operations.
 
-- Backend API scaffold in Go
+## What It Does
+
+- Stores users, roles, network profiles, SSH keys, Proxmox credentials, discovered Proxmox nodes, clusters, operation history, and health data in PostgreSQL.
+- Discovers Proxmox nodes from configured Proxmox credentials and tracks CPU, memory, disk, status, and placement eligibility.
+- Plans cluster placement across single-node, dual-node, or tri-node Proxmox topologies.
+- Generates Terraform workspaces for Ubuntu cloud-init VMs on Proxmox.
+- Optionally runs Terraform apply to create VMs.
+- Generates Ansible workspaces and kubeadm bootstrap playbooks.
+- Optionally runs Ansible to bootstrap Kubernetes control-plane and worker nodes.
+- Supports cluster lifecycle APIs for listing, detail views, run history, scaling, upgrade planning, node replacement, and kubeconfig token rotation.
+- Generates MetalLB deployment manifests and helper commands.
+- Generates observability configuration for Prometheus/Grafana-style deployments.
+- Tracks etcd snapshot and restore plans.
+- Runs background Proxmox refresh and cluster node health/recovery checks.
+- Provides a web UI for common admin workflows.
+
+## Project Structure
+
+```text
+.
+|-- backend/                 Go API server
+|   |-- cmd/api-server/      Backend entrypoint
+|   |-- internal/            Feature packages
+|   `-- migrations/          PostgreSQL migrations
+|-- frontend/                React/Vite admin portal
+|-- infra/
+|   |-- ansible/             Ansible-related assets
+|   `-- terraform/           Terraform-related assets
+|-- certs/                   TLS certificates for the frontend nginx container
+|-- docs/                    Step/API implementation notes
+|-- scripts/                 Utility scripts
+|-- docker-compose.yml       Local/container stack
+`-- .env.example             Example runtime configuration
+```
+
+## Architecture
+
+### Frontend
+
+The frontend is a React 18 application built with Vite, TypeScript, Tailwind CSS, React Router, TanStack Query, Axios, and lucide-react icons.
+
+Main UI routes:
+
+- `/login` - sign in
+- `/dashboard` - overview
+- `/clusters` - cluster list
+- `/clusters/new` - provision a new cluster
+- `/clusters/:id` - cluster detail and operations
+- `/networks` - network profiles, reserved IPs, node network tags
+- `/proxmox` - Proxmox credentials and discovered nodes
+- `/topology` - topology planning
+- `/users` - user management
+- `/ssh-keys` - SSH key management
+
+### Backend
+
+The backend is a Go API using:
+
+- `go-chi/chi` for routing
 - JWT authentication
-- Role model (`normal_user`, `super_user`, `super_admin`)
-- Seeded super admin user: `k8s-admin`
-- User management endpoints
-- Network profile management endpoints (CIDR/gateway configurable)
-- Seeded default network profile (`192.168.8.0/24`)
+- Role-based access control
+- PostgreSQL via `database/sql` and `lib/pq`
+- A startup migration runner
+- Background Proxmox discovery refresh
+- Background cluster health reconciliation
 
-## Step 2 (Implemented)
+The backend entrypoint is:
 
-- PostgreSQL-backed user and network profile services
-- SQL migration runner on startup (`AUTO_MIGRATE=true`)
-- Database seeding for super admin and default network profile
+```text
+backend/cmd/api-server/main.go
+```
 
-## Step 3 (Implemented)
+### Database
 
-- Proxmox credential APIs
-- Proxmox node discovery and inventory APIs
-- Node enable/disable control for placement eligibility
-- Topology planner API for single, dual, and tri-node deployment options
+PostgreSQL stores application state. Migrations live in:
 
-## Step 4 (Implemented)
+```text
+backend/migrations/
+```
 
-- Cluster provisioning API endpoint
-- Terraform workspace and VM template generation
-- Cloud-init generation per VM (Ubuntu 24 cloud image flow)
-- Optional Terraform apply execution controlled by request/config
+Migration coverage includes users/roles, network profiles, Proxmox inventory, cluster provisioning, day-2 operations, observability/backup data, bootstrap config, SSH key pairs, cluster operations, reserved IPs, node tags, Proxmox node resource usage, and cluster node health.
 
-## Step 5 (Implemented)
+## User Roles
 
-- Ansible bootstrap runner and workspace generation
-- Kubeadm bootstrap playbook generation for control plane and workers
-- Cluster bootstrap API endpoint with optional ansible-playbook execution
+The app has three roles:
 
-## Step 6 (Implemented)
+- `normal_user` - authenticated access to permitted read/workflow views
+- `super_user` - operational user for cluster, network, topology, SSH key, and most cluster actions
+- `super_admin` - full admin access, including user creation and Proxmox credential management
 
-- Cluster list/get/run history APIs
-- Worker scaling API
-- Kubernetes version upgrade planning API
-- Unhealthy worker replacement API
-- Kubeconfig token rotation API
+The backend seeds a super admin on startup if one does not already exist.
 
-## Step 7 (Implemented)
+Default development credentials:
 
-- MetalLB deployment configuration API and manifest generation
-- Observability deployment configuration API (Prometheus/Grafana values generation)
-- etcd snapshot planning and restore planning APIs
-- Snapshot and restore tracking persistence
+```text
+Username: k8s-admin
+Password: ChangeMeNow!
+```
 
-## Run Backend
+Change these values before using the app outside local development.
 
-1. Copy `.env.example` to `.env` and update values.
-2. Ensure PostgreSQL is running and matches `DATABASE_URL`.
-3. Start API:
+## Core Workflow
+
+1. Start the stack.
+2. Log in as the seeded super admin.
+3. Add Proxmox credentials.
+4. Discover Proxmox nodes.
+5. Enable or disable Proxmox nodes for placement.
+6. Configure network profiles, reserved IPs, node network tags, and SSH keys.
+7. Use topology planning to select single, dual, or tri-node placement.
+8. Provision VMs with Terraform workspace generation.
+9. Optionally apply Terraform to create the VMs.
+10. Bootstrap Kubernetes with generated Ansible/kubeadm workspaces.
+11. Manage the cluster through day-2 operations.
+
+## Topology Planning
+
+Supported topology types:
+
+- `single` - requires at least one enabled Proxmox node; not highly available
+- `dual` - requires at least two enabled Proxmox nodes; weaker quorum than tri-node
+- `tri` - requires at least three enabled Proxmox nodes; preferred HA layout
+
+The planner sorts enabled Proxmox nodes by available memory and distributes control-plane and worker VM placements across the selected nodes. Nodes with less than 4 GB free memory are limited to one VM placement and generate warnings.
+
+## Cluster Provisioning
+
+Provisioning accepts cluster settings such as:
+
+- Cluster name
+- Topology type
+- Control-plane count
+- Worker count
+- Kubernetes version
+- Ubuntu image
+- Network profile
+- Optional per-Proxmox-node network profile overrides
+- Optional per-Proxmox-node IP pool starts
+- SSH public key or stored SSH key pair
+- Control-plane and worker CPU/RAM/disk settings
+- Proxmox credential or per-node credential overrides
+- `apply` flag
+
+The backend creates a cluster record, allocates VM names/IPs, writes Terraform workspace files, stores run history, and either returns the generated workspace or runs Terraform depending on request/config.
+
+Terraform apply is disabled by default in Docker Compose:
+
+```text
+TERRAFORM_AUTO_APPLY=false
+```
+
+## Kubernetes Bootstrap
+
+Bootstrap accepts settings such as:
+
+- SSH user
+- SSH private key, stored key pair, or existing bootstrap SSH key
+- Optional kube-vip control-plane VIP
+- Pod CIDR
+- Service CIDR
+- CNI choice
+- Node IP mapping
+- `apply` flag
+
+The backend writes Ansible inventory/playbook material for kubeadm bootstrap and either returns the generated workspace or runs `ansible-playbook` depending on request/config.
+
+Ansible apply is disabled by default in Docker Compose:
+
+```text
+ANSIBLE_AUTO_APPLY=false
+```
+
+## Day-2 Operations
+
+Implemented cluster operation areas include:
+
+- Cluster list/detail
+- Provision run history
+- Latest operation status
+- Operation event polling
+- Cluster node listing
+- Worker scaling
+- Kubernetes version upgrade planning
+- Unhealthy node replacement
+- Kubeconfig token rotation
+- MetalLB manifest generation
+- Observability values/manifest generation
+- etcd snapshot tracking
+- etcd restore tracking
+- Cluster health status
+- Recovery configuration
+- Manual recovery trigger
+
+Some operation endpoints generate plans, manifests, or helper commands rather than directly applying changes. Apply behavior is controlled by endpoint request flags and runtime configuration.
+
+## API Overview
+
+Base API path:
+
+```text
+/api/v1
+```
+
+Public endpoints:
+
+- `GET /health`
+- `POST /api/v1/auth/login`
+
+Authenticated endpoints include:
+
+- `GET /api/v1/auth/me`
+- `GET /api/v1/users`
+- `POST /api/v1/users`
+- `GET /api/v1/networks`
+- `POST /api/v1/networks`
+- `PUT /api/v1/networks/{id}`
+- `POST /api/v1/networks/{id}/set-default`
+- `GET /api/v1/networks/{id}/reserved-ips`
+- `POST /api/v1/networks/{id}/reserved-ips`
+- `DELETE /api/v1/networks/{id}/reserved-ips/{reservedId}`
+- `GET /api/v1/networks/node-tags`
+- `PUT /api/v1/networks/node-tags/{nodeName}`
+- `DELETE /api/v1/networks/node-tags/{nodeName}`
+- `POST /api/v1/proxmox/credentials`
+- `GET /api/v1/proxmox/credentials`
+- `PUT /api/v1/proxmox/credentials/{id}`
+- `DELETE /api/v1/proxmox/credentials/{id}`
+- `POST /api/v1/proxmox/credentials/{id}/discover-nodes`
+- `GET /api/v1/proxmox/nodes`
+- `PATCH /api/v1/proxmox/nodes/{id}`
+- `GET /api/v1/ssh-keys`
+- `POST /api/v1/ssh-keys`
+- `DELETE /api/v1/ssh-keys/{id}`
+- `POST /api/v1/topology/plan`
+- `GET /api/v1/clusters`
+- `GET /api/v1/clusters/check-name`
+- `POST /api/v1/clusters/provision`
+- `POST /api/v1/clusters/provision-and-bootstrap`
+- `GET /api/v1/clusters/{id}`
+- `DELETE /api/v1/clusters/{id}`
+- `GET /api/v1/clusters/{id}/runs`
+- `GET /api/v1/clusters/{id}/operations/latest`
+- `GET /api/v1/clusters/{id}/operations/events`
+- `GET /api/v1/clusters/{id}/nodes`
+- `GET /api/v1/clusters/{id}/bootstrap-config`
+- `GET /api/v1/clusters/{id}/bootstrap-keys`
+- `POST /api/v1/clusters/{id}/bootstrap`
+- `POST /api/v1/clusters/{id}/scale`
+- `POST /api/v1/clusters/{id}/upgrade`
+- `POST /api/v1/clusters/{id}/replace-node`
+- `POST /api/v1/clusters/{id}/rotate-kubeconfig`
+- `POST /api/v1/clusters/{id}/metallb/deploy`
+- `GET /api/v1/clusters/{id}/metallb`
+- `POST /api/v1/clusters/{id}/observability/deploy`
+- `GET /api/v1/clusters/{id}/observability`
+- `POST /api/v1/clusters/{id}/etcd/snapshot`
+- `GET /api/v1/clusters/{id}/etcd/snapshots`
+- `POST /api/v1/clusters/{id}/etcd/restore`
+- `GET /api/v1/clusters/{id}/health`
+- `POST /api/v1/clusters/{id}/recovery/config`
+- `POST /api/v1/clusters/{id}/recovery/trigger`
+
+Role restrictions are enforced in the backend router. Proxmox credential management is super-admin only. Most cluster, network, topology, and SSH key operations require `super_user` or `super_admin`.
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust values.
+
+Important variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APP_ADDR` | `:8080` | Backend listen address |
+| `DATABASE_URL` | local PostgreSQL URL | Backend PostgreSQL connection |
+| `AUTO_MIGRATE` | `true` | Run migrations on backend startup |
+| `JWT_SECRET` | `change-me-in-prod` | JWT signing secret |
+| `JWT_TTL_MINUTES` | `120` | JWT lifetime |
+| `SUPER_ADMIN_USERNAME` | `k8s-admin` | Seeded admin username |
+| `SUPER_ADMIN_PASSWORD` | `ChangeMeNow!` | Seeded admin password |
+| `DEFAULT_NETWORK_NAME` | `homelab-default` | Seeded network profile name |
+| `DEFAULT_NETWORK_CIDR` | `192.168.8.0/24` | Seeded network CIDR |
+| `DEFAULT_NETWORK_GATEWAY` | `192.168.8.1` | Seeded network gateway |
+| `DEFAULT_NETWORK_DNS` | `1.1.1.1,8.8.8.8` | Seeded DNS servers |
+| `DEFAULT_NETWORK_BRIDGE` | `vmbr0` | Proxmox bridge |
+| `DEFAULT_NETWORK_VLAN` | `0` | Proxmox VLAN tag |
+| `TERRAFORM_BINARY` | `terraform` | Terraform executable |
+| `TERRAFORM_WORKDIR` | `infra/terraform/runs` | Local Terraform run directory |
+| `TERRAFORM_PLUGIN_DIR` | `/terraform-providers` | Terraform plugin directory |
+| `TERRAFORM_AUTO_APPLY` | `false` | Allow backend-triggered Terraform apply |
+| `ANSIBLE_BINARY` | `ansible-playbook` | Ansible executable |
+| `ANSIBLE_WORKDIR` | `infra/ansible/runs` | Local Ansible run directory |
+| `ANSIBLE_AUTO_APPLY` | `false` | Allow backend-triggered Ansible execution |
+| `OPERATIONS_WORKDIR` | `data/operations/runs` | Generated operation manifests/scripts |
+| `HTTP_PORT` | `80` | Frontend HTTP port in Docker Compose |
+| `HTTPS_PORT` | `443` | Frontend HTTPS port in Docker Compose |
+| `TLS_CERTS_DIR` | `./certs` | Host TLS cert directory for frontend nginx |
+
+## Run With Docker Compose
+
+Build and start the full stack:
+
+```powershell
+docker compose up -d --build
+```
+
+Check backend logs:
+
+```powershell
+docker compose logs -f backend
+```
+
+Stop the stack:
+
+```powershell
+docker compose down
+```
+
+Default service endpoints:
+
+- Backend API: `http://localhost:8080`
+- PostgreSQL: `localhost:5432`
+- Frontend portal: `https://<your-domain>` or `https://localhost` depending on TLS/browser setup
+
+The Compose stack includes:
+
+- `postgres` - PostgreSQL 16
+- `backend` - Go API server
+- `frontend` - nginx serving the built React app with HTTPS support
+- `kubectl-runner` - optional ops profile container for running kubectl commands against generated manifests
+
+## Run Backend Locally
+
+1. Start PostgreSQL and make sure `DATABASE_URL` points to it.
+2. Copy `.env.example` to `.env` and update values.
+3. Start the API:
 
 ```powershell
 cd backend
@@ -65,78 +346,62 @@ go mod tidy
 go run ./cmd/api-server
 ```
 
-API default address: `http://localhost:8080`
+Default backend address:
 
-## Run With Docker Compose
-
-```powershell
-cd .
-docker compose up -d --build
+```text
+http://localhost:8080
 ```
 
-Check logs:
+## Run Frontend Locally
+
+Install dependencies and start Vite:
 
 ```powershell
-docker compose logs -f backend
+cd frontend
+npm install
+npm run dev
 ```
 
-Stop stack:
+Build production assets:
 
 ```powershell
-docker compose down
+cd frontend
+npm run build
 ```
 
-Notes:
+## HTTPS Certificates
 
-- Backend API will be at `http://localhost:8080`
-- PostgreSQL will be at `localhost:5432`
-- Admin portal will be at `https://<your-domain>` (default host port 443)
-- Terraform/Ansible apply operations are disabled by default in compose (`*_AUTO_APPLY=false`)
-- A dedicated `kubectl-runner` service is available under the `ops` compose profile for operational apply actions
+The frontend container expects existing certificate files mounted at:
 
-## HTTPS With Existing Let's Encrypt Certificates
+```text
+/etc/nginx/certs/fullchain.pem
+/etc/nginx/certs/privkey.pem
+```
 
-If you already have `fullchain.pem` and `privkey.pem`, place them in the TLS certs directory mounted into the frontend container.
-
-1. Copy cert files:
+To use existing Let's Encrypt certificates, place them in the local `certs/` directory:
 
 ```powershell
-cd .
 mkdir certs -Force
 Copy-Item <path-to-fullchain.pem> certs/fullchain.pem
 Copy-Item <path-to-privkey.pem> certs/privkey.pem
-```
-
-2. Optional: adjust ports/cert path in `.env` (defaults shown in `.env.example`):
-
-- `HTTP_PORT=80`
-- `HTTPS_PORT=443`
-- `TLS_CERTS_DIR=./certs`
-
-3. Rebuild and start:
-
-```powershell
-cd .
 docker compose up -d --build frontend
 ```
 
-4. Open the portal:
+You can change host ports or certificate location with:
 
-- `https://<your-domain>`
+```text
+HTTP_PORT=80
+HTTPS_PORT=443
+TLS_CERTS_DIR=./certs
+```
 
-Nginx now redirects all HTTP traffic to HTTPS and serves TLS using:
+## Applying MetalLB From Docker
 
-- `/etc/nginx/certs/fullchain.pem`
-- `/etc/nginx/certs/privkey.pem`
-
-## Apply MetalLB From Docker
-
-After preparing MetalLB from the API/UI, use the generated `manifest_dir` with the ops runner.
+After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
 PowerShell example:
 
 ```powershell
-cd .
 docker compose --profile ops up -d kubectl-runner
 docker compose run --rm -e KUBECONFIG=/kube/config -v "$env:USERPROFILE/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
 ```
@@ -144,16 +409,68 @@ docker compose run --rm -e KUBECONFIG=/kube/config -v "$env:USERPROFILE/.kube/co
 Bash example:
 
 ```bash
-cd .
 docker compose --profile ops up -d kubectl-runner
 docker compose run --rm -e KUBECONFIG=/kube/config -v "$HOME/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
 ```
 
-Replace `<cluster>` with the cluster slug from `manifest_dir`.
+Replace `<cluster>` with the cluster slug shown in `manifest_dir`.
 
-## Next Steps
+## Security Notes
 
-- Step 2: PostgreSQL persistence + migrations wiring
-- Step 3: Proxmox node discovery API and topology planner (1/2/3 nodes)
-- Step 4: Terraform + cloud-init VM provisioning orchestration
-- Step 5: kubeadm HA bootstrap workflows
+- Change `JWT_SECRET`, `SUPER_ADMIN_USERNAME`, and `SUPER_ADMIN_PASSWORD` before non-local use.
+- Proxmox credentials and SSH key material are sensitive. Limit database access and backups accordingly.
+- Keep `TERRAFORM_AUTO_APPLY=false` and `ANSIBLE_AUTO_APPLY=false` until you are comfortable with the generated workspaces and operational flow.
+- Use least-privilege Proxmox API tokens where possible.
+- Review generated Terraform, Ansible, MetalLB, observability, and etcd operation files before applying them in production-like environments.
+
+## Development Notes
+
+Useful commands:
+
+```powershell
+# Backend
+cd backend
+go test ./...
+go run ./cmd/api-server
+
+# Frontend
+cd frontend
+npm run build
+npm run dev
+
+# Full stack
+docker compose up -d --build
+docker compose logs -f backend
+```
+
+The backend runs migrations automatically when `AUTO_MIGRATE=true`. Generated Terraform, Ansible, and operations files are written under the configured work directories.
+
+## Current Implementation Status
+
+Implemented areas include:
+
+- Go backend API scaffold
+- React admin UI
+- JWT auth and RBAC
+- Seeded super admin
+- User management
+- Network profile management
+- Reserved IP and Proxmox-node network tag management
+- PostgreSQL migrations and persistence
+- Proxmox credential management
+- Proxmox node discovery and enable/disable controls
+- Topology planner
+- Cluster provisioning workspace generation
+- Optional Terraform apply
+- Ansible kubeadm bootstrap workspace generation
+- Optional Ansible execution
+- Cluster list/detail/run history
+- Operation progress and event tracking
+- Worker scaling
+- Upgrade planning
+- Node replacement
+- Kubeconfig token rotation
+- MetalLB config generation
+- Observability config generation
+- etcd snapshot/restore tracking
+- Cluster health and recovery endpoints
