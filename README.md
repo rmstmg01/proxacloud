@@ -416,6 +416,8 @@ chmod 600 /root/.kube/config
 
 If "Deploy MetalLB automatically after bootstrap" is enabled during cluster provisioning, the backend deploys MetalLB immediately after this kubeconfig export succeeds. The new cluster form collects the MetalLB namespace, version, address pool, address ranges, and optional L2 interfaces up front.
 
+The automated deploy waits up to 10 minutes for the MetalLB controller rollout. If the controller still does not become ready, the operation event includes deployment, pod, and namespace event diagnostics from `metallb-system`.
+
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
 PowerShell example:

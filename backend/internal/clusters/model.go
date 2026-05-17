@@ -1977,7 +1977,7 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 }
 
 func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	// Use the kubeconfig from the mounted location or configured env.
@@ -2000,10 +2000,11 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 		return fmt.Errorf("failed to apply metallb controller manifest: %w\nOutput: %s", err, string(output))
 	}
 
-	// Step 2: Wait for MetalLB controller to be ready
-	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "wait", "--namespace", namespace, "--for=condition=available", "deployment/controller", "--timeout=180s")
+	// Step 2: Wait for MetalLB controller to be ready. Fresh clusters can spend
+	// several minutes pulling images before the deployment becomes available.
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "rollout", "status", "--namespace", namespace, "deployment/controller", "--timeout=600s")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to wait for metallb controller: %w\nOutput: %s", err, string(output))
+		return fmt.Errorf("failed to wait for metallb controller: %w\nOutput: %s\nDiagnostics:\n%s", err, string(output), s.metalLBDiagnostics(kubeconfigPath, namespace))
 	}
 
 	// Step 3: Apply cluster-specific MetalLB resources
@@ -2014,6 +2015,31 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	}
 
 	return nil
+}
+
+func (s *Service) metalLBDiagnostics(kubeconfigPath, namespace string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	commands := [][]string{
+		{"get", "deployment", "controller", "--namespace", namespace, "-o", "wide"},
+		{"describe", "deployment", "controller", "--namespace", namespace},
+		{"get", "pods", "--namespace", namespace, "-o", "wide"},
+		{"get", "events", "--namespace", namespace, "--sort-by=.lastTimestamp"},
+	}
+	sections := make([]string, 0, len(commands))
+	for _, args := range commands {
+		fullArgs := append([]string{"--kubeconfig", kubeconfigPath}, args...)
+		cmd := exec.CommandContext(ctx, "kubectl", fullArgs...)
+		output, err := cmd.CombinedOutput()
+		title := "kubectl " + strings.Join(args, " ")
+		if err != nil {
+			sections = append(sections, fmt.Sprintf("### %s\nerror: %v\n%s", title, err, string(output)))
+			continue
+		}
+		sections = append(sections, fmt.Sprintf("### %s\n%s", title, string(output)))
+	}
+	return strings.Join(sections, "\n")
 }
 
 func (s *Service) exportBootstrapKubeconfig(workDir string) (string, error) {
@@ -3459,7 +3485,7 @@ func buildMetalLBPowerShell(namespace, version string) string {
 $manifest = "https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
 
 kubectl apply -f $manifest --validate=false
-kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
+kubectl rollout status --namespace %s deployment/controller --timeout=600s
 kubectl apply -f ./metallb-resources.yaml --validate=false
 `, version, namespace)
 }
@@ -3471,7 +3497,7 @@ set -eu
 manifest="https://raw.githubusercontent.com/metallb/metallb/%s/config/manifests/metallb-native.yaml"
 
 kubectl apply -f "$manifest" --validate=false
-kubectl wait --namespace %s --for=condition=available deployment/controller --timeout=180s
+kubectl rollout status --namespace %s deployment/controller --timeout=600s
 kubectl apply -f ./metallb-resources.yaml --validate=false
 `, version, namespace)
 }

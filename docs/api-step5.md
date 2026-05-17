@@ -48,3 +48,4 @@ Behavior:
 - Stores run status in `provision_runs` with action `bootstrap`
 - If `apply=true` (or `ANSIBLE_AUTO_APPLY=true`) executes `ansible-playbook`
 - If `metallb` is provided with an applying bootstrap, the backend exports the fetched `admin.conf` kubeconfig and then deploys MetalLB automatically
+- MetalLB controller rollout waits up to 10 minutes; timeout errors include deployment, pod, and namespace event diagnostics
