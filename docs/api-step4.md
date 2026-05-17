@@ -18,11 +18,11 @@ Request example:
   "kubernetes_version": "v1.31.4",
   "ubuntu_image": "local:iso/ubuntu-24.04-server-cloudimg-amd64.img",
   "ssh_public_key": "ssh-ed25519 AAAAC3...",
-  "control_plane_cpu": 4,
-  "control_plane_ram_mb": 8192,
+  "control_plane_cpu": 2,
+  "control_plane_ram_mb": 2048,
   "control_plane_disk_gb": 80,
-  "worker_cpu": 4,
-  "worker_ram_mb": 8192,
+  "worker_cpu": 2,
+  "worker_ram_mb": 2048,
   "worker_disk_gb": 120,
   "apply": false
 }
