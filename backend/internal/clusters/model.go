@@ -2152,7 +2152,8 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, wa
 
 	outputs := make([]string, 0, 3)
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		return string(output), fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
 	}
 	outputs = append(outputs, string(output))
@@ -2160,7 +2161,7 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, wa
 	manifest := buildTraefikIngressControllerManifest(namespace, image)
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
 	cmd.Stdin = strings.NewReader(manifest)
-	output, err := cmd.CombinedOutput()
+	output, err = cmd.CombinedOutput()
 	outputs = append(outputs, string(output))
 	if err != nil {
 		return strings.Join(outputs, "\n"), fmt.Errorf("apply traefik ingress controller manifest: %w\nOutput: %s", err, string(output))
