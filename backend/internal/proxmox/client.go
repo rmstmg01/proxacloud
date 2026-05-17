@@ -133,13 +133,16 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 	if err := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, actualAction, false, normalActionWait(actualAction)); err != nil {
 		fallbackAction, fallbackSkipLock, fallbackOK := fallbackVMAction(actualAction)
 		if !fallbackOK {
-			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vmName, actualAction) {
+			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vm.VMID, vmName, actualAction, finalStateWait(actualAction)) {
 				return actualAction + "-verified", nil
 			}
 			return "", err
 		}
+		if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vm.VMID, vmName, actualAction, preFallbackStateWait(actualAction)) {
+			return actualAction + "-verified", nil
+		}
 		if fallbackErr := c.runVMAction(httpClient, base, cred, proxmoxNodeName, vm.VMID, fallbackAction, fallbackSkipLock, fallbackActionWait(fallbackAction)); fallbackErr != nil {
-			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vmName, fallbackAction) {
+			if c.vmReachedDesiredState(httpClient, base, cred, proxmoxNodeName, vm.VMID, vmName, fallbackAction, finalStateWait(fallbackAction)) {
 				return fallbackAction + "-verified", nil
 			}
 			return "", fmt.Errorf("%s failed (%v); fallback %s failed: %w", actualAction, err, fallbackAction, fallbackErr)
@@ -150,25 +153,39 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 	return actualAction, nil
 }
 
-func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string, action string) bool {
-	for attempts := 0; attempts < 5; attempts++ {
-		vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
-		if err == nil {
-			status := strings.TrimSpace(strings.ToLower(vm.Status))
-			switch action {
-			case "shutdown", "stop":
-				if status == "stopped" {
-					return true
-				}
-			case "start", "reboot", "reset":
-				if status == "running" {
-					return true
-				}
+func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
+	if maxWait <= 0 {
+		maxWait = 30 * time.Second
+	}
+	deadline := time.Now().Add(maxWait)
+	for {
+		status, err := c.getQEMUVMStatus(httpClient, base, cred, proxmoxNodeName, vmid)
+		if err != nil {
+			vm, findErr := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+			if findErr == nil {
+				status = vm.Status
 			}
 		}
-		time.Sleep(2 * time.Second)
+		if vmStatusMatchesAction(status, action) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Second)
 	}
-	return false
+}
+
+func vmStatusMatchesAction(status string, action string) bool {
+	status = strings.TrimSpace(strings.ToLower(status))
+	switch action {
+	case "shutdown", "stop":
+		return status == "stopped"
+	case "start", "reboot", "reset":
+		return status == "running"
+	default:
+		return false
+	}
 }
 
 func fallbackVMAction(action string) (string, bool, bool) {
@@ -199,6 +216,26 @@ func fallbackActionWait(action string) time.Duration {
 		return 2 * time.Minute
 	default:
 		return 3 * time.Minute
+	}
+}
+
+func preFallbackStateWait(action string) time.Duration {
+	switch action {
+	case "shutdown", "reboot":
+		return 45 * time.Second
+	default:
+		return 15 * time.Second
+	}
+}
+
+func finalStateWait(action string) time.Duration {
+	switch action {
+	case "shutdown", "stop":
+		return 5 * time.Minute
+	case "reboot", "reset", "start":
+		return 3 * time.Minute
+	default:
+		return 1 * time.Minute
 	}
 }
 
@@ -294,6 +331,40 @@ func (c *Client) findQEMUVM(httpClient *http.Client, base *url.URL, cred Credent
 	}
 
 	return qemuVMRef{}, fmt.Errorf("vm %q not found on proxmox node %q", vmName, proxmoxNodeName)
+}
+
+func (c *Client) getQEMUVMStatus(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int) (string, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "status", "current")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("create vm status request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request proxmox vm status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("proxmox vm status api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode vm status response: %w", err)
+	}
+
+	return payload.Data.Status, nil
 }
 
 func responseErrorMessage(resp *http.Response) string {
