@@ -37,6 +37,9 @@ export const getCluster = (id: number) =>
 export const deleteCluster = (id: number) =>
   client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}`).then((r) => r.data);
 
+export const startCluster = (id: number) =>
+  client.post<ClusterPowerActionResponse>(`/clusters/${id}/start`).then((r) => r.data);
+
 export const restartCluster = (id: number) =>
   client.post<ClusterPowerActionResponse>(`/clusters/${id}/restart`).then((r) => r.data);
 

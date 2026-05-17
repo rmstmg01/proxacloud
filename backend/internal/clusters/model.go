@@ -40,7 +40,7 @@ type NetworkStore interface {
 // up stored credentials when running Terraform.
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
-	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) error
+	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 }
 
 type SSHKeyPairStore interface {
@@ -1360,6 +1360,8 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 	proxmoxAction := action
 	status := action
 	switch action {
+	case "start":
+		status = "starting"
 	case "shutdown":
 		status = "shutdown"
 	case "restart":
@@ -1415,9 +1417,10 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 		step := fmt.Sprintf("%s-%s", action, node.VMName)
 		progress := 10 + int(float64(index)/float64(len(nodes))*80)
 		_ = s.updateClusterOperation(operationID, "running", step, progress, "")
-		_ = s.appendOperationEvent(operationID, step, "info", fmt.Sprintf("Sending %s to VM %s on %s", proxmoxAction, node.VMName, node.ProxmoxNodeName))
+		_ = s.appendOperationEvent(operationID, step, "info", fmt.Sprintf("Sending %s command to VM %s on %s", action, node.VMName, node.ProxmoxNodeName))
 
-		if err := s.proxmoxSvc.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction); err != nil {
+		actualAction, err := s.proxmoxSvc.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction)
+		if err != nil {
 			wrapped := fmt.Errorf("%s node %s: %w", action, node.VMName, err)
 			_ = s.updateClusterOperation(operationID, "failed", step, 100, wrapped.Error())
 			_ = s.appendOperationEvent(operationID, step, "error", wrapped.Error())
@@ -1426,7 +1429,7 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 		}
 
 		changedNodes = append(changedNodes, node.VMName)
-		outputs = append(outputs, fmt.Sprintf("%s %s on %s", proxmoxAction, node.VMName, node.ProxmoxNodeName))
+		outputs = append(outputs, fmt.Sprintf("%s %s on %s", actualAction, node.VMName, node.ProxmoxNodeName))
 	}
 
 	if err := s.insertProvisionRun(clusterID, action, status, "", strings.Join(outputs, "\n")); err != nil {

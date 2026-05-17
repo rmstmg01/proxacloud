@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -15,6 +16,12 @@ import (
 
 type Client struct {
 	timeout time.Duration
+}
+
+type qemuVMRef struct {
+	VMID   int
+	Name   string
+	Status string
 }
 
 func NewClient() *Client {
@@ -86,94 +93,120 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 	return nodes, nil
 }
 
-func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) error {
+func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)
 	action = strings.TrimSpace(strings.ToLower(action))
 	if proxmoxNodeName == "" {
-		return errors.New("proxmox node name is required")
+		return "", errors.New("proxmox node name is required")
 	}
 	if vmName == "" {
-		return errors.New("vm name is required")
+		return "", errors.New("vm name is required")
 	}
-	if action != "shutdown" && action != "reboot" {
-		return fmt.Errorf("unsupported vm power action %q", action)
+	if action != "shutdown" && action != "reboot" && action != "start" {
+		return "", fmt.Errorf("unsupported vm power action %q", action)
 	}
 
 	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
 	if err != nil {
-		return fmt.Errorf("parse endpoint: %w", err)
+		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
 	httpClient := c.httpClient(cred)
 
-	vmid, err := c.findQEMUVMID(httpClient, base, cred, proxmoxNodeName, vmName)
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
 	if err != nil {
-		return err
+		return "", err
+	}
+
+	actualAction := action
+	vmStatus := strings.TrimSpace(strings.ToLower(vm.Status))
+	if action == "reboot" && vmStatus != "running" {
+		actualAction = "start"
+	}
+	if action == "shutdown" && vmStatus != "running" {
+		return "already-stopped", nil
 	}
 
 	reqURL := *base
-	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "status", action)
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vm.VMID), "status", actualAction)
 
 	req, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
 	if err != nil {
-		return fmt.Errorf("create vm %s request: %w", action, err)
+		return "", fmt.Errorf("create vm %s request: %w", actualAction, err)
 	}
 	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
-		return err
+		return "", err
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request proxmox vm %s: %w", action, err)
+		return "", fmt.Errorf("request proxmox vm %s: %w", actualAction, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("proxmox vm %s api returned status %d", action, resp.StatusCode)
+		return "", fmt.Errorf("proxmox vm %s api returned status %d: %s", actualAction, resp.StatusCode, responseErrorMessage(resp))
 	}
 
-	return nil
+	return actualAction, nil
 }
 
-func (c *Client) findQEMUVMID(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string) (int, error) {
+func (c *Client) findQEMUVM(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string) (qemuVMRef, error) {
 	reqURL := *base
 	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu")
 
 	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
 	if err != nil {
-		return 0, fmt.Errorf("create qemu list request: %w", err)
+		return qemuVMRef{}, fmt.Errorf("create qemu list request: %w", err)
 	}
 	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
-		return 0, err
+		return qemuVMRef{}, err
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("request proxmox qemu list: %w", err)
+		return qemuVMRef{}, fmt.Errorf("request proxmox qemu list: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("proxmox qemu list api returned status %d", resp.StatusCode)
+		return qemuVMRef{}, fmt.Errorf("proxmox qemu list api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
 	}
 
 	var payload struct {
 		Data []struct {
-			VMID int    `json:"vmid"`
-			Name string `json:"name"`
+			VMID   int    `json:"vmid"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return 0, fmt.Errorf("decode qemu list response: %w", err)
+		return qemuVMRef{}, fmt.Errorf("decode qemu list response: %w", err)
 	}
 
 	for _, item := range payload.Data {
 		if strings.EqualFold(strings.TrimSpace(item.Name), vmName) {
-			return item.VMID, nil
+			return qemuVMRef{
+				VMID:   item.VMID,
+				Name:   item.Name,
+				Status: item.Status,
+			}, nil
 		}
 	}
 
-	return 0, fmt.Errorf("vm %q not found on proxmox node %q", vmName, proxmoxNodeName)
+	return qemuVMRef{}, fmt.Errorf("vm %q not found on proxmox node %q", vmName, proxmoxNodeName)
+}
+
+func responseErrorMessage(resp *http.Response) string {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	if err != nil {
+		return "unable to read response body"
+	}
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return "empty response body"
+	}
+	return msg
 }
 
 func (c *Client) httpClient(cred Credential) *http.Client {

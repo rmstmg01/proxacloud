@@ -283,6 +283,10 @@ func (h *Handler) RestartCluster(w http.ResponseWriter, r *http.Request) {
 	h.powerActionCluster(w, r, "restart")
 }
 
+func (h *Handler) StartCluster(w http.ResponseWriter, r *http.Request) {
+	h.powerActionCluster(w, r, "start")
+}
+
 func (h *Handler) ShutdownCluster(w http.ResponseWriter, r *http.Request) {
 	h.powerActionCluster(w, r, "shutdown")
 }

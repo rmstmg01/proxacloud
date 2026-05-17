@@ -250,6 +250,7 @@ Authenticated endpoints include:
 - `GET /api/v1/clusters/{id}/nodes`
 - `GET /api/v1/clusters/{id}/bootstrap-config`
 - `GET /api/v1/clusters/{id}/bootstrap-keys`
+- `POST /api/v1/clusters/{id}/start`
 - `POST /api/v1/clusters/{id}/restart`
 - `POST /api/v1/clusters/{id}/shutdown`
 - `POST /api/v1/clusters/{id}/bootstrap`

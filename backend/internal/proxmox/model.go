@@ -199,7 +199,7 @@ func (s *Service) GetCredentialWithSecrets(id int64) (Credential, error) {
 	return c, nil
 }
 
-func (s *Service) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) error {
+func (s *Service) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) (string, error) {
 	return s.client.ControlVMByName(cred, proxmoxNodeName, vmName, action)
 }
 

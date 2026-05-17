@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Plus, ChevronRight, Power, RotateCcw } from 'lucide-react';
-import { deleteCluster, getClusters, restartCluster, shutdownCluster } from '../api/clusters';
+import { Plus, ChevronRight, Play, Power, RotateCcw } from 'lucide-react';
+import { deleteCluster, getClusters, restartCluster, shutdownCluster, startCluster } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -17,6 +17,12 @@ export function ClustersPage() {
   });
   const deleteMutation = useMutation({
     mutationFn: deleteCluster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clusters'] });
+    },
+  });
+  const startMutation = useMutation({
+    mutationFn: startCluster,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
     },
@@ -51,6 +57,7 @@ export function ClustersPage() {
       />
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
+      {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
@@ -103,6 +110,19 @@ export function ClustersPage() {
                           >
                             Details <ChevronRight className="h-4 w-4" />
                           </Link>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Start cluster \"${c.name}\"? This sends a start command to every cluster VM.`)) {
+                                startMutation.mutate(c.id);
+                              }
+                            }}
+                            loading={startMutation.isPending && startMutation.variables === c.id}
+                          >
+                            <Play className="h-3.5 w-3.5" />
+                            Start
+                          </Button>
                           <Button
                             variant="secondary"
                             size="sm"
