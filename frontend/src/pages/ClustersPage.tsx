@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Plus, ChevronRight, Play, Power, RotateCcw } from 'lucide-react';
@@ -11,7 +12,7 @@ import { Button } from '../components/ui/Button';
 
 export function ClustersPage() {
   const queryClient = useQueryClient();
-  const { data: clusters, isLoading, error } = useQuery({
+  const { data: clusters, isLoading, error, dataUpdatedAt } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
     refetchInterval: 30_000,
@@ -40,6 +41,14 @@ export function ClustersPage() {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
     },
   });
+
+  useEffect(() => {
+    if (!dataUpdatedAt) return;
+    if (!startMutation.isPending) startMutation.reset();
+    if (!restartMutation.isPending) restartMutation.reset();
+    if (!shutdownMutation.isPending) shutdownMutation.reset();
+    if (!deleteMutation.isPending) deleteMutation.reset();
+  }, [dataUpdatedAt]);
 
   return (
     <Layout>
