@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s-proxmox-manager/backend/internal/ansible"
@@ -1390,9 +1391,8 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 	_ = s.appendOperationEvent(operationID, "prepare", "info", fmt.Sprintf("Starting cluster %s for %d node(s)", action, len(nodes)))
 
 	credentials := make(map[int64]proxmox.Credential)
-	changedNodes := make([]string, 0, len(nodes))
-	outputs := make([]string, 0, len(nodes))
-	for index, node := range nodes {
+	nodeCredentials := make(map[int64]proxmox.Credential, len(nodes))
+	for _, node := range nodes {
 		if node.ProxmoxCredentialID <= 0 {
 			err := fmt.Errorf("missing proxmox credential metadata for node %s", node.VMName)
 			_ = s.updateClusterOperation(operationID, "failed", "load-credential", 100, err.Error())
@@ -1413,23 +1413,56 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 			}
 			credentials[node.ProxmoxCredentialID] = cred
 		}
+		nodeCredentials[node.ID] = cred
+	}
 
-		step := fmt.Sprintf("%s-%s", action, node.VMName)
-		progress := 10 + int(float64(index)/float64(len(nodes))*80)
-		_ = s.updateClusterOperation(operationID, "running", step, progress, "")
-		_ = s.appendOperationEvent(operationID, step, "info", fmt.Sprintf("Sending %s command to VM %s on %s", action, node.VMName, node.ProxmoxNodeName))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	changedNodes := make([]string, 0, len(nodes))
+	outputs := make([]string, 0, len(nodes))
+	failures := make([]string, 0)
 
-		actualAction, err := s.proxmoxSvc.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction)
-		if err != nil {
-			wrapped := fmt.Errorf("%s node %s: %w", action, node.VMName, err)
-			_ = s.updateClusterOperation(operationID, "failed", step, 100, wrapped.Error())
-			_ = s.appendOperationEvent(operationID, step, "error", wrapped.Error())
-			_ = s.insertProvisionRun(clusterID, action, "failed", "", strings.Join(append(outputs, wrapped.Error()), "\n"))
-			return ClusterPowerActionResponse{}, wrapped
-		}
+	for index, node := range nodes {
+		node := node
+		index := index
+		cred := nodeCredentials[node.ID]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 
-		changedNodes = append(changedNodes, node.VMName)
-		outputs = append(outputs, fmt.Sprintf("%s %s on %s", actualAction, node.VMName, node.ProxmoxNodeName))
+			step := fmt.Sprintf("%s-%s", action, node.VMName)
+			progress := 10 + int(float64(index)/float64(len(nodes))*80)
+			_ = s.updateClusterOperation(operationID, "running", step, progress, "")
+			_ = s.appendOperationEvent(operationID, step, "info", fmt.Sprintf("Sending %s command to VM %s on %s", action, node.VMName, node.ProxmoxNodeName))
+
+			actualAction, err := s.proxmoxSvc.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction)
+			if err != nil {
+				wrapped := fmt.Errorf("%s node %s: %w", action, node.VMName, err)
+				_ = s.appendOperationEvent(operationID, step, "error", wrapped.Error())
+				mu.Lock()
+				failures = append(failures, wrapped.Error())
+				mu.Unlock()
+				return
+			}
+
+			mu.Lock()
+			changedNodes = append(changedNodes, node.VMName)
+			outputs = append(outputs, fmt.Sprintf("%s %s on %s", actualAction, node.VMName, node.ProxmoxNodeName))
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	sort.Strings(changedNodes)
+	sort.Strings(outputs)
+	sort.Strings(failures)
+
+	if len(failures) > 0 {
+		failureOutput := strings.Join(append(outputs, failures...), "\n")
+		err := errors.New(strings.Join(failures, "; "))
+		_ = s.updateClusterOperation(operationID, "failed", "completed-with-errors", 100, err.Error())
+		_ = s.insertProvisionRun(clusterID, action, "failed", "", failureOutput)
+		return ClusterPowerActionResponse{}, err
 	}
 
 	if err := s.insertProvisionRun(clusterID, action, status, "", strings.Join(outputs, "\n")); err != nil {
