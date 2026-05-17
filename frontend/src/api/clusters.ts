@@ -9,6 +9,7 @@ import type {
   BootstrapResponse,
   BootstrapConfigRecord,
   BootstrapSSHKeyRecord,
+  ClusterPowerActionResponse,
   ScaleResponse,
   UpgradeResponse,
   ReplaceNodeResponse,
@@ -35,6 +36,12 @@ export const getCluster = (id: number) =>
 
 export const deleteCluster = (id: number) =>
   client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}`).then((r) => r.data);
+
+export const restartCluster = (id: number) =>
+  client.post<ClusterPowerActionResponse>(`/clusters/${id}/restart`).then((r) => r.data);
+
+export const shutdownCluster = (id: number) =>
+  client.post<ClusterPowerActionResponse>(`/clusters/${id}/shutdown`).then((r) => r.data);
 
 export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);

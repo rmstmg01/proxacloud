@@ -279,6 +279,34 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": clusterID, "deleted": true})
 }
 
+func (h *Handler) RestartCluster(w http.ResponseWriter, r *http.Request) {
+	h.powerActionCluster(w, r, "restart")
+}
+
+func (h *Handler) ShutdownCluster(w http.ResponseWriter, r *http.Request) {
+	h.powerActionCluster(w, r, "shutdown")
+}
+
+func (h *Handler) powerActionCluster(w http.ResponseWriter, r *http.Request, action string) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.PowerActionCluster(clusterID, action)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
 func (h *Handler) Scale(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {

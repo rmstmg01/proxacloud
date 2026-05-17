@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Plus, ChevronRight } from 'lucide-react';
-import { deleteCluster, getClusters } from '../api/clusters';
+import { Plus, ChevronRight, Power, RotateCcw } from 'lucide-react';
+import { deleteCluster, getClusters, restartCluster, shutdownCluster } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -17,6 +17,18 @@ export function ClustersPage() {
   });
   const deleteMutation = useMutation({
     mutationFn: deleteCluster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clusters'] });
+    },
+  });
+  const restartMutation = useMutation({
+    mutationFn: restartCluster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clusters'] });
+    },
+  });
+  const shutdownMutation = useMutation({
+    mutationFn: shutdownCluster,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
     },
@@ -39,6 +51,8 @@ export function ClustersPage() {
       />
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
+      {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
+      {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       {clusters && (
         <Card>
@@ -89,6 +103,32 @@ export function ClustersPage() {
                           >
                             Details <ChevronRight className="h-4 w-4" />
                           </Link>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Restart cluster \"${c.name}\"? This sends a reboot command to every cluster VM.`)) {
+                                restartMutation.mutate(c.id);
+                              }
+                            }}
+                            loading={restartMutation.isPending && restartMutation.variables === c.id}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            Restart
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Shutdown cluster \"${c.name}\"? This sends a shutdown command to every cluster VM.`)) {
+                                shutdownMutation.mutate(c.id);
+                              }
+                            }}
+                            loading={shutdownMutation.isPending && shutdownMutation.variables === c.id}
+                          >
+                            <Power className="h-3.5 w-3.5" />
+                            Shutdown
+                          </Button>
                           <Button
                             variant="danger"
                             size="sm"

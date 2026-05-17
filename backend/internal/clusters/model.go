@@ -40,6 +40,7 @@ type NetworkStore interface {
 // up stored credentials when running Terraform.
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) error
 }
 
 type SSHKeyPairStore interface {
@@ -177,6 +178,14 @@ type ClusterSummary struct {
 	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type ClusterPowerActionResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Action    string   `json:"action"`
+	Status    string   `json:"status"`
+	Nodes     []string `json:"nodes"`
+	Warnings  []string `json:"warnings"`
 }
 
 type clusterDeleteInfo struct {
@@ -1344,6 +1353,101 @@ func (s *Service) DeleteCluster(clusterID int64) error {
 		_ = os.RemoveAll(s.terraformRunner.WorkspaceDirForKey(workspaceKeyForCredential(info.Name, credentialID)))
 	}
 	return nil
+}
+
+func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPowerActionResponse, error) {
+	action = strings.TrimSpace(strings.ToLower(action))
+	proxmoxAction := action
+	status := action
+	switch action {
+	case "shutdown":
+		status = "shutdown"
+	case "restart":
+		proxmoxAction = "reboot"
+		status = "restarting"
+	default:
+		return ClusterPowerActionResponse{}, fmt.Errorf("unsupported cluster power action %q", action)
+	}
+
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterPowerActionResponse{}, err
+	}
+
+	nodes, err := s.getClusterNodes(clusterID)
+	if err != nil {
+		return ClusterPowerActionResponse{}, err
+	}
+	if len(nodes) == 0 {
+		return ClusterPowerActionResponse{}, errors.New("cluster has no nodes")
+	}
+
+	operationID, err := s.startClusterOperation(clusterID, action, "prepare", 5)
+	if err != nil {
+		return ClusterPowerActionResponse{}, err
+	}
+	_ = s.appendOperationEvent(operationID, "prepare", "info", fmt.Sprintf("Starting cluster %s for %d node(s)", action, len(nodes)))
+
+	credentials := make(map[int64]proxmox.Credential)
+	changedNodes := make([]string, 0, len(nodes))
+	outputs := make([]string, 0, len(nodes))
+	for index, node := range nodes {
+		if node.ProxmoxCredentialID <= 0 {
+			err := fmt.Errorf("missing proxmox credential metadata for node %s", node.VMName)
+			_ = s.updateClusterOperation(operationID, "failed", "load-credential", 100, err.Error())
+			_ = s.appendOperationEvent(operationID, "load-credential", "error", err.Error())
+			_ = s.insertProvisionRun(clusterID, action, "failed", "", err.Error())
+			return ClusterPowerActionResponse{}, err
+		}
+
+		cred, ok := credentials[node.ProxmoxCredentialID]
+		if !ok {
+			cred, err = s.proxmoxSvc.GetCredentialWithSecrets(node.ProxmoxCredentialID)
+			if err != nil {
+				wrapped := fmt.Errorf("load proxmox credential for node %s: %w", node.VMName, err)
+				_ = s.updateClusterOperation(operationID, "failed", "load-credential", 100, wrapped.Error())
+				_ = s.appendOperationEvent(operationID, "load-credential", "error", wrapped.Error())
+				_ = s.insertProvisionRun(clusterID, action, "failed", "", wrapped.Error())
+				return ClusterPowerActionResponse{}, wrapped
+			}
+			credentials[node.ProxmoxCredentialID] = cred
+		}
+
+		step := fmt.Sprintf("%s-%s", action, node.VMName)
+		progress := 10 + int(float64(index)/float64(len(nodes))*80)
+		_ = s.updateClusterOperation(operationID, "running", step, progress, "")
+		_ = s.appendOperationEvent(operationID, step, "info", fmt.Sprintf("Sending %s to VM %s on %s", proxmoxAction, node.VMName, node.ProxmoxNodeName))
+
+		if err := s.proxmoxSvc.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction); err != nil {
+			wrapped := fmt.Errorf("%s node %s: %w", action, node.VMName, err)
+			_ = s.updateClusterOperation(operationID, "failed", step, 100, wrapped.Error())
+			_ = s.appendOperationEvent(operationID, step, "error", wrapped.Error())
+			_ = s.insertProvisionRun(clusterID, action, "failed", "", strings.Join(append(outputs, wrapped.Error()), "\n"))
+			return ClusterPowerActionResponse{}, wrapped
+		}
+
+		changedNodes = append(changedNodes, node.VMName)
+		outputs = append(outputs, fmt.Sprintf("%s %s on %s", proxmoxAction, node.VMName, node.ProxmoxNodeName))
+	}
+
+	if err := s.insertProvisionRun(clusterID, action, status, "", strings.Join(outputs, "\n")); err != nil {
+		_ = s.updateClusterOperation(operationID, "failed", "save-run", 100, err.Error())
+		return ClusterPowerActionResponse{}, err
+	}
+	if err := s.updateClusterStatus(clusterID, status); err != nil {
+		_ = s.updateClusterOperation(operationID, "failed", "update-status", 100, err.Error())
+		return ClusterPowerActionResponse{}, err
+	}
+
+	_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
+	_ = s.appendOperationEvent(operationID, "completed", "info", fmt.Sprintf("Cluster %s command sent to %d node(s)", action, len(changedNodes)))
+
+	return ClusterPowerActionResponse{
+		ClusterID: clusterID,
+		Action:    action,
+		Status:    status,
+		Nodes:     changedNodes,
+		Warnings:  []string{},
+	}, nil
 }
 
 func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error) {

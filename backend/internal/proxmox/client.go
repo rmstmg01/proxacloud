@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,12 +27,7 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 		return nil, fmt.Errorf("parse endpoint: %w", err)
 	}
 
-	httpClient := &http.Client{
-		Timeout: c.timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: cred.InsecureTLS},
-		},
-	}
+	httpClient := c.httpClient(cred)
 
 	reqURL := *base
 	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes")
@@ -41,17 +37,8 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	if cred.APITokenID != "" && cred.APITokenSecret != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("PVEAPIToken=%s=%s", cred.APITokenID, cred.APITokenSecret))
-	} else if cred.Username != "" && cred.Password != "" {
-		ticket, csrfToken, err := c.getTicket(httpClient, base, cred.Username, cred.Password)
-		if err != nil {
-			return nil, fmt.Errorf("authenticate with proxmox: %w", err)
-		}
-		req.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: ticket})
-		req.Header.Set("CSRFPreventionToken", csrfToken)
-	} else {
-		return nil, errors.New("missing proxmox authentication data")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return nil, err
 	}
 
 	resp, err := httpClient.Do(req)
@@ -97,6 +84,122 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 	}
 
 	return nodes, nil
+}
+
+func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) error {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	action = strings.TrimSpace(strings.ToLower(action))
+	if proxmoxNodeName == "" {
+		return errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return errors.New("vm name is required")
+	}
+	if action != "shutdown" && action != "reboot" {
+		return fmt.Errorf("unsupported vm power action %q", action)
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vmid, err := c.findQEMUVMID(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return err
+	}
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "status", action)
+
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create vm %s request: %w", action, err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox vm %s: %w", action, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox vm %s api returned status %d", action, resp.StatusCode)
+	}
+
+	return nil
+}
+
+func (c *Client) findQEMUVMID(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string) (int, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("create qemu list request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return 0, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request proxmox qemu list: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("proxmox qemu list api returned status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Data []struct {
+			VMID int    `json:"vmid"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return 0, fmt.Errorf("decode qemu list response: %w", err)
+	}
+
+	for _, item := range payload.Data {
+		if strings.EqualFold(strings.TrimSpace(item.Name), vmName) {
+			return item.VMID, nil
+		}
+	}
+
+	return 0, fmt.Errorf("vm %q not found on proxmox node %q", vmName, proxmoxNodeName)
+}
+
+func (c *Client) httpClient(cred Credential) *http.Client {
+	return &http.Client{
+		Timeout: c.timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: cred.InsecureTLS},
+		},
+	}
+}
+
+func (c *Client) authorizeRequest(httpClient *http.Client, base *url.URL, req *http.Request, cred Credential) error {
+	if cred.APITokenID != "" && cred.APITokenSecret != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("PVEAPIToken=%s=%s", cred.APITokenID, cred.APITokenSecret))
+		return nil
+	}
+	if cred.Username != "" && cred.Password != "" {
+		ticket, csrfToken, err := c.getTicket(httpClient, base, cred.Username, cred.Password)
+		if err != nil {
+			return fmt.Errorf("authenticate with proxmox: %w", err)
+		}
+		req.AddCookie(&http.Cookie{Name: "PVEAuthCookie", Value: ticket})
+		req.Header.Set("CSRFPreventionToken", csrfToken)
+		return nil
+	}
+	return errors.New("missing proxmox authentication data")
 }
 
 // getTicket authenticates with the Proxmox API using username/password and

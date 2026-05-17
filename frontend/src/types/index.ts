@@ -125,6 +125,14 @@ export interface ClusterSummary {
   updated_at: string;
 }
 
+export interface ClusterPowerActionResponse {
+  cluster_id: number;
+  action: string;
+  status: string;
+  nodes: string[];
+  warnings: string[];
+}
+
 export interface ClusterNodeRecord {
   id: number;
   role: string;
