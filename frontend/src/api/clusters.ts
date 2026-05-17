@@ -16,6 +16,8 @@ import type {
   RotateKubeconfigResponse,
   DeployMetalLBResponse,
   MetalLBStatusResponse,
+  DeployIngressControllerResponse,
+  DeployAppResponse,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
   EtcdSnapshotRecord,
@@ -229,6 +231,32 @@ export const deployMetalLB = (
 export const getMetalLB = (id: number) =>
   client
     .get<MetalLBStatusResponse>(`/clusters/${id}/metallb`)
+    .then((r) => r.data);
+
+export const deployIngressController = (
+  id: number,
+  body: {
+    namespace: string;
+    image: string;
+    apply: boolean;
+    wait: boolean;
+  },
+) =>
+  client
+    .post<DeployIngressControllerResponse>(`/clusters/${id}/ingress-controller/deploy`, body)
+    .then((r) => r.data);
+
+export const deployApp = (
+  id: number,
+  body: {
+    name: string;
+    namespace: string;
+    manifest: string;
+    apply: boolean;
+  },
+) =>
+  client
+    .post<DeployAppResponse>(`/clusters/${id}/apps/deploy`, body)
     .then((r) => r.data);
 
 export const deployObservability = (

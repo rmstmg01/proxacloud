@@ -27,6 +27,13 @@ Behavior:
 - `POST /api/v1/clusters/{id}/metallb/deploy`
 - `GET /api/v1/clusters/{id}/metallb`
 
+## Applications
+
+- `POST /api/v1/clusters/{id}/ingress-controller/deploy`
+- `POST /api/v1/clusters/{id}/apps/deploy`
+
+The ingress controller endpoint deploys Traefik with the Kubernetes Ingress provider, a default `IngressClass`, and a `LoadBalancer` service for MetalLB. The app deploy endpoint applies user-provided Kubernetes YAML to the selected namespace with the exported cluster kubeconfig.
+
 Deploy request example:
 
 ```json

@@ -273,6 +273,24 @@ export interface MetalLBStatusResponse {
   updated_at: string;
 }
 
+export interface DeployIngressControllerResponse {
+  cluster_id: number;
+  status: string;
+  namespace: string;
+  image: string;
+  output?: string;
+  warnings: string[];
+}
+
+export interface DeployAppResponse {
+  cluster_id: number;
+  status: string;
+  name: string;
+  namespace: string;
+  output?: string;
+  warnings: string[];
+}
+
 export interface DeployObservabilityResponse {
   cluster_id: number;
   status: string;

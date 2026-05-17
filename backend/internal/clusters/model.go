@@ -286,6 +286,38 @@ type DeployObservabilityRequest struct {
 	Apply                bool   `json:"apply"`
 }
 
+type DeployIngressControllerRequest struct {
+	Namespace string `json:"namespace"`
+	Image     string `json:"image"`
+	Apply     bool   `json:"apply"`
+	Wait      bool   `json:"wait"`
+}
+
+type DeployIngressControllerResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Status    string   `json:"status"`
+	Namespace string   `json:"namespace"`
+	Image     string   `json:"image"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings"`
+}
+
+type DeployAppRequest struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Manifest  string `json:"manifest"`
+	Apply     bool   `json:"apply"`
+}
+
+type DeployAppResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Status    string   `json:"status"`
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings"`
+}
+
 type MetalLBAddressPool struct {
 	Name          string   `json:"name"`
 	Addresses     []string `json:"addresses"`
@@ -1976,6 +2008,98 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 	}, nil
 }
 
+func (s *Service) DeployIngressController(clusterID int64, req DeployIngressControllerRequest) (DeployIngressControllerResponse, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return DeployIngressControllerResponse{}, err
+	}
+
+	namespace := strings.TrimSpace(req.Namespace)
+	if namespace == "" {
+		namespace = "traefik"
+	}
+	image := strings.TrimSpace(req.Image)
+	if image == "" {
+		image = "traefik:v3.3"
+	}
+
+	status := "ingress-controller-prepared"
+	output := ""
+	warnings := []string{}
+	if req.Apply {
+		status = "ingress-controller-deployed"
+		applyOutput, err := s.executeIngressControllerDeployment(namespace, image, req.Wait)
+		output = applyOutput
+		if err != nil {
+			_ = s.insertProvisionRun(clusterID, "ingress-controller-deploy", "failed", namespace, output)
+			return DeployIngressControllerResponse{}, fmt.Errorf("failed to deploy ingress controller: %w", err)
+		}
+		warnings = append(warnings, "traefik ingress controller deployed successfully")
+	} else {
+		warnings = append(warnings, "ingress controller was not applied; enable apply to run kubectl")
+	}
+
+	if err := s.insertProvisionRun(clusterID, "ingress-controller-deploy", status, namespace, output); err != nil {
+		return DeployIngressControllerResponse{}, err
+	}
+
+	return DeployIngressControllerResponse{
+		ClusterID: clusterID,
+		Status:    status,
+		Namespace: namespace,
+		Image:     image,
+		Output:    output,
+		Warnings:  warnings,
+	}, nil
+}
+
+func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppResponse, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return DeployAppResponse{}, err
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "application"
+	}
+	namespace := strings.TrimSpace(req.Namespace)
+	if namespace == "" {
+		namespace = "default"
+	}
+	manifest := strings.TrimSpace(req.Manifest)
+	if manifest == "" {
+		return DeployAppResponse{}, errors.New("manifest is required")
+	}
+
+	status := "app-prepared"
+	output := ""
+	warnings := []string{}
+	if req.Apply {
+		status = "app-deployed"
+		applyOutput, err := s.executeAppManifestApply(namespace, manifest)
+		output = applyOutput
+		if err != nil {
+			_ = s.insertProvisionRun(clusterID, "app-deploy", "failed", name, output)
+			return DeployAppResponse{}, fmt.Errorf("failed to deploy app: %w", err)
+		}
+		warnings = append(warnings, "application manifest applied successfully")
+	} else {
+		warnings = append(warnings, "application manifest was not applied; enable apply to run kubectl")
+	}
+
+	if err := s.insertProvisionRun(clusterID, "app-deploy", status, name, output); err != nil {
+		return DeployAppResponse{}, err
+	}
+
+	return DeployAppResponse{
+		ClusterID: clusterID,
+		Status:    status,
+		Name:      name,
+		Namespace: namespace,
+		Output:    output,
+		Warnings:  warnings,
+	}, nil
+}
+
 func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
@@ -2017,13 +2141,101 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	return nil
 }
 
+func (s *Service) executeIngressControllerDeployment(namespace, image string, wait bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	outputs := make([]string, 0, 3)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return string(output), fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
+	}
+	outputs = append(outputs, string(output))
+
+	manifest := buildTraefikIngressControllerManifest(namespace, image)
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply traefik ingress controller manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	if wait {
+		cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "rollout", "status", "--namespace", namespace, "deployment/traefik", "--timeout=600s")
+		output, err = cmd.CombinedOutput()
+		outputs = append(outputs, string(output))
+		if err != nil {
+			return strings.Join(outputs, "\n"), fmt.Errorf("wait for traefik rollout: %w\nOutput: %s\nDiagnostics:\n%s", err, string(output), s.kubeNamespaceDiagnostics(kubeconfigPath, namespace, "deployment/traefik"))
+		}
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "svc", "--namespace", namespace, "-o", "wide")
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("get ingress services: %w\nOutput: %s", err, string(output))
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
+func (s *Service) executeAppManifestApply(namespace, manifest string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	outputs := make([]string, 0, 3)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "namespace", namespace)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		createCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "create", "namespace", namespace)
+		createOutput, createErr := createCmd.CombinedOutput()
+		outputs = append(outputs, string(output), string(createOutput))
+		if createErr != nil {
+			return strings.Join(outputs, "\n"), fmt.Errorf("ensure namespace %s: %w\nOutput: %s", namespace, createErr, string(createOutput))
+		}
+	} else {
+		outputs = append(outputs, string(output))
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", namespace, "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply application manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "all,ingress", "--namespace", namespace)
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("get application resources: %w\nOutput: %s", err, string(output))
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
 func (s *Service) metalLBDiagnostics(kubeconfigPath, namespace string) string {
+	return s.kubeNamespaceDiagnostics(kubeconfigPath, namespace, "deployment/controller")
+}
+
+func (s *Service) kubeNamespaceDiagnostics(kubeconfigPath, namespace, workload string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	commands := [][]string{
-		{"get", "deployment", "controller", "--namespace", namespace, "-o", "wide"},
-		{"describe", "deployment", "controller", "--namespace", namespace},
+		{"get", workload, "--namespace", namespace, "-o", "wide"},
+		{"describe", workload, "--namespace", namespace},
 		{"get", "pods", "--namespace", namespace, "-o", "wide"},
 		{"get", "events", "--namespace", namespace, "--sort-by=.lastTimestamp"},
 	}
@@ -3508,4 +3720,125 @@ func buildMetalLBCommands(manifestDir string) MetalLBCommands {
 		PowerShell: fmt.Sprintf("Set-Location %s\n.\\apply-metallb.ps1", quotedDir),
 		Shell:      fmt.Sprintf("cd %s\nsh ./apply-metallb.sh", quotedDir),
 	}
+}
+
+func buildTraefikIngressControllerManifest(namespace, image string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: %s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik-ingress-controller
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["update"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik-ingress-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik-ingress-controller
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: %s
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: traefik
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: traefik.io/ingress-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: traefik
+    spec:
+      serviceAccountName: traefik
+      containers:
+        - name: traefik
+          image: %s
+          args:
+            - --entrypoints.web.address=:80
+            - --entrypoints.websecure.address=:443
+            - --providers.kubernetesingress=true
+            - --providers.kubernetesingress.ingressclass=traefik
+            - --api.dashboard=true
+            - --ping=true
+          ports:
+            - name: web
+              containerPort: 80
+            - name: websecure
+              containerPort: 443
+            - name: traefik
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: traefik
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: traefik
+  ports:
+    - name: web
+      port: 80
+      targetPort: web
+    - name: websecure
+      port: 443
+      targetPort: websecure
+`, namespace, namespace, namespace, namespace, image, namespace)
 }

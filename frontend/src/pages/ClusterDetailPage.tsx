@@ -14,6 +14,8 @@ import {
   rotateKubeconfig,
   deployMetalLB,
   getMetalLB,
+  deployIngressController,
+  deployApp,
   deployObservability,
   getObservability,
   createEtcdSnapshot,
@@ -33,7 +35,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -41,6 +43,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'bootstrap', label: 'Bootstrap' },
   { key: 'day2', label: 'Day-2 Ops' },
   { key: 'metallb', label: 'MetalLB' },
+  { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
 ];
@@ -722,6 +725,215 @@ function MetalLBTab({ id }: { id: number }) {
   );
 }
 
+const SAMPLE_APP_MANIFEST = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:stable
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+spec:
+  selector:
+    app: sample-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sample-app
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: sample-app.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: sample-app
+                port:
+                  number: 80
+`;
+
+function ApplicationsTab({ id }: { id: number }) {
+  const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
+  const appMut = useMutation({ mutationFn: (b: Parameters<typeof deployApp>[1]) => deployApp(id, b) });
+  const [ingressForm, setIngressForm] = useState({
+    namespace: 'traefik',
+    image: 'traefik:v3.3',
+    apply: true,
+    wait: true,
+  });
+  const [appForm, setAppForm] = useState({
+    name: 'sample-app',
+    namespace: 'default',
+    manifest: SAMPLE_APP_MANIFEST,
+    apply: true,
+  });
+
+  const handleIngressDeploy = async (e: FormEvent) => {
+    e.preventDefault();
+    await ingressMut.mutateAsync({
+      namespace: ingressForm.namespace.trim() || 'traefik',
+      image: ingressForm.image.trim() || 'traefik:v3.3',
+      apply: ingressForm.apply,
+      wait: ingressForm.wait,
+    });
+  };
+
+  const handleAppDeploy = async (e: FormEvent) => {
+    e.preventDefault();
+    await appMut.mutateAsync({
+      name: appForm.name.trim() || 'application',
+      namespace: appForm.namespace.trim() || 'default',
+      manifest: appForm.manifest,
+      apply: appForm.apply,
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>Traefik Ingress Controller</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleIngressDeploy} className="space-y-4 max-w-xl">
+            <Input
+              label="Namespace"
+              value={ingressForm.namespace}
+              onChange={(e) => setIngressForm({ ...ingressForm, namespace: e.target.value })}
+              placeholder="traefik"
+              required
+            />
+            <Input
+              label="Traefik image"
+              value={ingressForm.image}
+              onChange={(e) => setIngressForm({ ...ingressForm, image: e.target.value })}
+              placeholder="traefik:v3.3"
+              required
+            />
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={ingressForm.apply}
+                onChange={(e) => setIngressForm({ ...ingressForm, apply: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Apply to cluster now</span>
+            </label>
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={ingressForm.wait}
+                onChange={(e) => setIngressForm({ ...ingressForm, wait: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Wait for Traefik rollout</span>
+            </label>
+            <Button type="submit" loading={ingressMut.isPending}>Deploy Traefik</Button>
+            {ingressMut.data && (
+              <Alert variant="success" title="Traefik deployment submitted">
+                <div className="space-y-2">
+                  <p>Status: {ingressMut.data.status}</p>
+                  <p>Namespace: {ingressMut.data.namespace}</p>
+                </div>
+              </Alert>
+            )}
+            {ingressMut.error && <ErrorMessage error={ingressMut.error} />}
+          </form>
+          {ingressMut.data?.output && (
+            <Textarea
+              label="kubectl output"
+              value={ingressMut.data.output}
+              readOnly
+              rows={8}
+              className="mt-4 font-mono text-xs"
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Deploy Application Manifest</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleAppDeploy} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
+              <Input
+                label="Application name"
+                value={appForm.name}
+                onChange={(e) => setAppForm({ ...appForm, name: e.target.value })}
+                required
+              />
+              <Input
+                label="Namespace"
+                value={appForm.namespace}
+                onChange={(e) => setAppForm({ ...appForm, namespace: e.target.value })}
+                required
+              />
+            </div>
+            <Textarea
+              label="Kubernetes YAML"
+              value={appForm.manifest}
+              onChange={(e) => setAppForm({ ...appForm, manifest: e.target.value })}
+              rows={18}
+              className="font-mono text-xs"
+              required
+            />
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={appForm.apply}
+                onChange={(e) => setAppForm({ ...appForm, apply: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Apply manifest to cluster now</span>
+            </label>
+            <Button type="submit" loading={appMut.isPending}>Deploy App</Button>
+            {appMut.data && (
+              <Alert variant="success" title="Application deployment submitted">
+                <div className="space-y-2">
+                  <p>Status: {appMut.data.status}</p>
+                  <p>Namespace: {appMut.data.namespace}</p>
+                </div>
+              </Alert>
+            )}
+            {appMut.error && <ErrorMessage error={appMut.error} />}
+          </form>
+          {appMut.data?.output && (
+            <Textarea
+              label="kubectl output"
+              value={appMut.data.output}
+              readOnly
+              rows={10}
+              className="mt-4 font-mono text-xs"
+            />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function EtcdTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: snapshots, isLoading } = useQuery({ queryKey: ['etcd-snapshots', id], queryFn: () => getEtcdSnapshots(id) });
@@ -870,6 +1082,7 @@ export function ClusterDetailPage() {
       {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
       {activeTab === 'day2' && <Day2Tab id={clusterId} />}
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
+      {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
       {activeTab === 'etcd' && <EtcdTab id={clusterId} />}
     </Layout>

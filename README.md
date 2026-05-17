@@ -260,6 +260,8 @@ Authenticated endpoints include:
 - `POST /api/v1/clusters/{id}/rotate-kubeconfig`
 - `POST /api/v1/clusters/{id}/metallb/deploy`
 - `GET /api/v1/clusters/{id}/metallb`
+- `POST /api/v1/clusters/{id}/ingress-controller/deploy`
+- `POST /api/v1/clusters/{id}/apps/deploy`
 - `POST /api/v1/clusters/{id}/observability/deploy`
 - `GET /api/v1/clusters/{id}/observability`
 - `POST /api/v1/clusters/{id}/etcd/snapshot`
@@ -417,6 +419,8 @@ chmod 600 /root/.kube/config
 If "Deploy MetalLB automatically after bootstrap" is enabled during cluster provisioning, the backend deploys MetalLB immediately after this kubeconfig export succeeds. The new cluster form collects the MetalLB namespace, version, address pool, address ranges, and optional L2 interfaces up front.
 
 The automated deploy waits up to 10 minutes for the MetalLB controller rollout. If the controller still does not become ready, the operation event includes deployment, pod, and namespace event diagnostics from `metallb-system`.
+
+The cluster detail Applications tab can deploy Traefik as the ingress controller. It creates a `traefik` namespace, RBAC, default `IngressClass`, Traefik deployment, and a `LoadBalancer` service so MetalLB can assign an external IP. The same tab can apply application YAML manifests through the backend kubeconfig.
 
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
