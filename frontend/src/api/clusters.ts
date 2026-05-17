@@ -138,6 +138,18 @@ export const provisionAndBootstrapCluster = (body: {
     cni: string;
     node_ips: Record<string, string>;
     apply: boolean;
+    metallb?: {
+      namespace: string;
+      version: string;
+      address_pools: {
+        name: string;
+        addresses: string[];
+        auto_assign: boolean;
+        avoid_buggy_ips: boolean;
+      }[];
+      interfaces: string[];
+      apply: boolean;
+    };
   };
 }) =>
   client
@@ -162,6 +174,18 @@ export const bootstrapCluster = (
     cni: string;
     node_ips: Record<string, string>;
     apply: boolean;
+    metallb?: {
+      namespace: string;
+      version: string;
+      address_pools: {
+        name: string;
+        addresses: string[];
+        auto_assign: boolean;
+        avoid_buggy_ips: boolean;
+      }[];
+      interfaces: string[];
+      apply: boolean;
+    };
   },
 ) => client.post<BootstrapResponse>(`/clusters/${id}/bootstrap`, body).then((r) => r.data);
 

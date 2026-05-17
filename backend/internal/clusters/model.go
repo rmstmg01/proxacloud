@@ -121,19 +121,20 @@ type ProvisionAndBootstrapResponse struct {
 }
 
 type BootstrapRequest struct {
-	SSHUser           string            `json:"ssh_user"`
-	SSHPrivateKey     string            `json:"ssh_private_key,omitempty"`
-	SSHPrivateKeyPath string            `json:"ssh_private_key_path,omitempty"`
-	SSHKeyPairID      int64             `json:"ssh_key_pair_id,omitempty"`
-	SSHKeyID          int64             `json:"ssh_key_id,omitempty"`
-	SSHKeyName        string            `json:"ssh_key_name,omitempty"`
-	DeployKubeVIP     bool              `json:"deploy_kube_vip,omitempty"`
-	ControlPlaneVIP   string            `json:"control_plane_vip"`
-	PodCIDR           string            `json:"pod_cidr"`
-	ServiceCIDR       string            `json:"service_cidr"`
-	CNI               string            `json:"cni"`
-	NodeIPs           map[string]string `json:"node_ips"`
-	Apply             bool              `json:"apply"`
+	SSHUser           string                `json:"ssh_user"`
+	SSHPrivateKey     string                `json:"ssh_private_key,omitempty"`
+	SSHPrivateKeyPath string                `json:"ssh_private_key_path,omitempty"`
+	SSHKeyPairID      int64                 `json:"ssh_key_pair_id,omitempty"`
+	SSHKeyID          int64                 `json:"ssh_key_id,omitempty"`
+	SSHKeyName        string                `json:"ssh_key_name,omitempty"`
+	DeployKubeVIP     bool                  `json:"deploy_kube_vip,omitempty"`
+	ControlPlaneVIP   string                `json:"control_plane_vip"`
+	PodCIDR           string                `json:"pod_cidr"`
+	ServiceCIDR       string                `json:"service_cidr"`
+	CNI               string                `json:"cni"`
+	NodeIPs           map[string]string     `json:"node_ips"`
+	Apply             bool                  `json:"apply"`
+	MetalLB           *DeployMetalLBRequest `json:"metallb,omitempty"`
 }
 
 type BootstrapResponse struct {
@@ -745,6 +746,14 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 
 	bootstrapReq := req.Bootstrap
 	bootstrapReq.Apply = true
+	if bootstrapReq.MetalLB != nil {
+		metallbReq := *bootstrapReq.MetalLB
+		metallbReq.Apply = true
+		if _, _, _, _, err := normalizeMetalLBRequest(metallbReq); err != nil {
+			return ProvisionAndBootstrapResponse{}, fmt.Errorf("bootstrap.metallb: %w", err)
+		}
+		bootstrapReq.MetalLB = &metallbReq
+	}
 
 	if strings.TrimSpace(bootstrapReq.SSHUser) == "" {
 		return ProvisionAndBootstrapResponse{}, errors.New("bootstrap.ssh_user is required for provision-and-bootstrap")
@@ -766,6 +775,9 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 
 	warnings := append([]string{}, provisionResp.Warnings...)
 	warnings = append(warnings, "bootstrap will start automatically after terraform apply succeeds")
+	if bootstrapReq.MetalLB != nil {
+		warnings = append(warnings, "metallb will deploy automatically after bootstrap succeeds and kubeconfig is exported")
+	}
 
 	return ProvisionAndBootstrapResponse{
 		ClusterID:   provisionResp.ClusterID,
@@ -986,6 +998,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	if strings.TrimSpace(req.ControlPlaneVIP) == "" {
 		warnings = append(warnings, "control_plane_vip is empty; kubeadm init will use primary control-plane endpoint")
 	}
+	if req.MetalLB != nil {
+		warnings = append(warnings, "metallb will deploy automatically after bootstrap succeeds and kubeconfig is exported")
+	}
 
 	workDir, err := s.ansibleRunner.PrepareWorkspace(ansible.BootstrapSpec{
 		ClusterName:       clusterName,
@@ -1035,19 +1050,38 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 				}
 				return
 			}
-			_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
 			_ = s.appendOperationEvent(operationID, "completed", "info", "Bootstrap completed successfully")
 			log.Printf("INFO bootstrap cluster %d completed with status %s", clusterID, runStatus)
 			if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
 				log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
 			}
-			if exportErr := s.exportBootstrapKubeconfig(workDir); exportErr != nil {
+			exportPath, exportErr := s.exportBootstrapKubeconfig(workDir)
+			if exportErr != nil {
 				log.Printf("WARN export kubeconfig for cluster %d: %v", clusterID, exportErr)
 				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "warning", fmt.Sprintf("Failed to export kubeconfig: %v", exportErr))
 			} else {
-				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "info", "Kubeconfig exported to /app/backend/.kube/config")
+				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "info", fmt.Sprintf("Kubeconfig exported to %s", exportPath))
 			}
-			if dbErr := s.updateClusterStatus(clusterID, runStatus); dbErr != nil {
+			finalStatus := runStatus
+			if req.MetalLB != nil {
+				if exportErr != nil {
+					_ = s.appendOperationEvent(operationID, "metallb-deploy", "error", "Skipping MetalLB deployment because kubeconfig export failed")
+				} else {
+					_ = s.updateClusterOperation(operationID, "running", "metallb-deploy", 90, "")
+					_ = s.appendOperationEvent(operationID, "metallb-deploy", "info", "Deploying MetalLB after bootstrap")
+					metallbReq := *req.MetalLB
+					metallbReq.Apply = true
+					if _, deployErr := s.DeployMetalLB(clusterID, metallbReq); deployErr != nil {
+						log.Printf("ERROR post-bootstrap metallb deployment for cluster %d: %v", clusterID, deployErr)
+						_ = s.appendOperationEvent(operationID, "metallb-deploy", "error", fmt.Sprintf("MetalLB deployment failed: %v", deployErr))
+					} else {
+						finalStatus = "metallb-deployed"
+						_ = s.appendOperationEvent(operationID, "metallb-deploy", "info", "MetalLB deployed successfully")
+					}
+				}
+			}
+			_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
+			if dbErr := s.updateClusterStatus(clusterID, finalStatus); dbErr != nil {
 				log.Printf("ERROR updating cluster %d status: %v", clusterID, dbErr)
 			}
 		}()
@@ -1982,11 +2016,11 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	return nil
 }
 
-func (s *Service) exportBootstrapKubeconfig(workDir string) error {
+func (s *Service) exportBootstrapKubeconfig(workDir string) (string, error) {
 	localKubeconfig := filepath.Join(workDir, "admin.conf")
 	data, err := os.ReadFile(localKubeconfig)
 	if err != nil {
-		return fmt.Errorf("read fetched kubeconfig %s: %w", localKubeconfig, err)
+		return "", fmt.Errorf("read fetched kubeconfig %s: %w", localKubeconfig, err)
 	}
 
 	destPath := s.kubeconfigPath()
@@ -1995,14 +2029,14 @@ func (s *Service) exportBootstrapKubeconfig(workDir string) error {
 	}
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return fmt.Errorf("ensure kubeconfig mount directory %s: %w", destDir, err)
+		return "", fmt.Errorf("ensure kubeconfig mount directory %s: %w", destDir, err)
 	}
 
 	if err := os.WriteFile(destPath, data, 0o600); err != nil {
-		return fmt.Errorf("write kubeconfig to %s: %w", destPath, err)
+		return "", fmt.Errorf("write kubeconfig to %s: %w", destPath, err)
 	}
 
-	return nil
+	return destPath, nil
 }
 
 func (s *Service) kubeconfigPath() string {
@@ -2615,6 +2649,13 @@ func validateBootstrapRequest(req BootstrapRequest) error {
 	if strings.TrimSpace(req.ServiceCIDR) != "" {
 		if _, _, err := net.ParseCIDR(strings.TrimSpace(req.ServiceCIDR)); err != nil {
 			return errors.New("service_cidr is invalid")
+		}
+	}
+	if req.MetalLB != nil {
+		metallbReq := *req.MetalLB
+		metallbReq.Apply = true
+		if _, _, _, _, err := normalizeMetalLBRequest(metallbReq); err != nil {
+			return fmt.Errorf("metallb: %w", err)
 		}
 	}
 

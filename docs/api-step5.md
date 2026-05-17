@@ -22,6 +22,20 @@ Request example:
     "homelab-prod-cp-3": "192.168.8.33",
     "homelab-prod-wk-1": "192.168.8.41"
   },
+  "metallb": {
+    "namespace": "metallb-system",
+    "version": "v0.14.9",
+    "address_pools": [
+      {
+        "name": "services",
+        "addresses": ["192.168.8.220-192.168.8.240"],
+        "auto_assign": true,
+        "avoid_buggy_ips": false
+      }
+    ],
+    "interfaces": [],
+    "apply": true
+  },
   "apply": false
 }
 ```
@@ -33,3 +47,4 @@ Behavior:
 - Generates Ansible assets under `ANSIBLE_WORKDIR/<cluster-name>`
 - Stores run status in `provision_runs` with action `bootstrap`
 - If `apply=true` (or `ANSIBLE_AUTO_APPLY=true`) executes `ansible-playbook`
+- If `metallb` is provided with an applying bootstrap, the backend exports the fetched `admin.conf` kubeconfig and then deploys MetalLB automatically

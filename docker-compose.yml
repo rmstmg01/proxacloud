@@ -59,8 +59,9 @@ services:
       - ./backups:/app/backend/backups
       - backend_data:/app/backend/data
       # Mount the host kubeconfig directory, not the kubeconfig file.
-      # The backend expects /app/backend/.kube/config to be a file inside this directory.
-      - ${KUBECONFIG_DIR:-${HOME}/.kube}:/app/backend/.kube:rw
+      # On the hosted Linux server this makes auto-bootstrap write /root/.kube/config
+      # through /app/backend/.kube/config, equivalent to docker cp + chmod 600.
+      - ${KUBECONFIG_DIR:-/root/.kube}:/app/backend/.kube:rw
 
   frontend:
     build:
@@ -90,7 +91,7 @@ services:
     volumes:
       - backend_data:/app/backend/data
       # Mount the same kubeconfig directory so kubectl-runner can read /app/backend/.kube/config.
-      - ${KUBECONFIG_DIR:-${HOME}/.kube}:/app/backend/.kube:ro
+      - ${KUBECONFIG_DIR:-/root/.kube}:/app/backend/.kube:ro
 
 volumes:
   postgres_data:

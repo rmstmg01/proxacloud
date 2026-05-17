@@ -49,6 +49,14 @@ export function ProvisionClusterPage() {
     bootstrap_pod_cidr: '10.244.0.0/16',
     bootstrap_service_cidr: '10.96.0.0/12',
     bootstrap_cni: 'calico',
+    metallb_after_bootstrap: false,
+    metallb_namespace: 'metallb-system',
+    metallb_version: 'v0.14.9',
+    metallb_pool_name: 'services',
+    metallb_addresses_raw: '',
+    metallb_interfaces_raw: '',
+    metallb_auto_assign: true,
+    metallb_avoid_buggy_ips: false,
     apply: false,
   });
 
@@ -149,6 +157,30 @@ export function ProvisionClusterPage() {
       apply: form.bootstrap_after_provision ? true : form.apply,
     };
 
+    const metallbPayload =
+      form.bootstrap_after_provision && form.metallb_after_bootstrap
+        ? {
+            namespace: form.metallb_namespace.trim() || 'metallb-system',
+            version: form.metallb_version.trim() || 'v0.14.9',
+            address_pools: [
+              {
+                name: form.metallb_pool_name.trim() || 'services',
+                addresses: form.metallb_addresses_raw
+                  .split('\n')
+                  .map((value) => value.trim())
+                  .filter(Boolean),
+                auto_assign: form.metallb_auto_assign,
+                avoid_buggy_ips: form.metallb_avoid_buggy_ips,
+              },
+            ],
+            interfaces: form.metallb_interfaces_raw
+              .split('\n')
+              .map((value) => value.trim())
+              .filter(Boolean),
+            apply: true,
+          }
+        : undefined;
+
     const result = form.bootstrap_after_provision
       ? await combinedMutation.mutateAsync({
           provision: provisionPayload,
@@ -162,6 +194,7 @@ export function ProvisionClusterPage() {
             cni: form.bootstrap_cni.trim(),
             node_ips: {},
             apply: true,
+            metallb: metallbPayload,
           },
         })
       : await mutation.mutateAsync(provisionPayload);
@@ -548,6 +581,77 @@ export function ProvisionClusterPage() {
                 <p className="sm:col-span-2 text-xs text-amber-700">
                   Auto-bootstrap requires a saved SSH key pair with private key.
                 </p>
+                <label className="sm:col-span-2 flex items-center gap-3 border-t border-slate-200 pt-4">
+                  <input
+                    type="checkbox"
+                    checked={form.metallb_after_bootstrap}
+                    onChange={(e) => setField('metallb_after_bootstrap', e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  <span className="text-sm text-slate-700">Deploy MetalLB automatically after bootstrap</span>
+                </label>
+                {form.metallb_after_bootstrap && (
+                  <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4 rounded border border-slate-200 bg-white p-4">
+                    <Input
+                      label="MetalLB namespace"
+                      value={form.metallb_namespace}
+                      onChange={(e) => setField('metallb_namespace', e.target.value)}
+                      placeholder="metallb-system"
+                      required
+                    />
+                    <Input
+                      label="MetalLB version"
+                      value={form.metallb_version}
+                      onChange={(e) => setField('metallb_version', e.target.value)}
+                      placeholder="v0.14.9"
+                      required
+                    />
+                    <Input
+                      label="Address pool name"
+                      value={form.metallb_pool_name}
+                      onChange={(e) => setField('metallb_pool_name', e.target.value)}
+                      placeholder="services"
+                      required
+                    />
+                    <Textarea
+                      label="L2 interfaces"
+                      value={form.metallb_interfaces_raw}
+                      onChange={(e) => setField('metallb_interfaces_raw', e.target.value)}
+                      rows={3}
+                      placeholder={'ens18\neth0'}
+                      helperText="Optional. Leave empty for all eligible interfaces."
+                    />
+                    <div className="sm:col-span-2">
+                      <Textarea
+                        label="Address ranges"
+                        value={form.metallb_addresses_raw}
+                        onChange={(e) => setField('metallb_addresses_raw', e.target.value)}
+                        rows={4}
+                        placeholder={'192.168.8.220-192.168.8.240\n192.168.8.250/32'}
+                        helperText="One CIDR, IP, or IP range per line."
+                        required
+                      />
+                    </div>
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={form.metallb_auto_assign}
+                        onChange={(e) => setField('metallb_auto_assign', e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span className="text-sm text-slate-700">Enable auto assignment</span>
+                    </label>
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={form.metallb_avoid_buggy_ips}
+                        onChange={(e) => setField('metallb_avoid_buggy_ips', e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span className="text-sm text-slate-700">Avoid buggy .0 and .255 addresses</span>
+                    </label>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
@@ -584,7 +688,11 @@ export function ProvisionClusterPage() {
             disabled={isNameTaken || nameCheckQuery.isFetching}
             size="lg"
           >
-            {form.bootstrap_after_provision ? 'Provision + Bootstrap Cluster' : 'Provision Cluster'}
+            {form.bootstrap_after_provision
+              ? form.metallb_after_bootstrap
+                ? 'Provision + Bootstrap + MetalLB'
+                : 'Provision + Bootstrap Cluster'
+              : 'Provision Cluster'}
           </Button>
           <Button type="button" variant="secondary" size="lg" onClick={() => navigate('/clusters')}>
             Cancel

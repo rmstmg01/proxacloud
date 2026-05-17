@@ -299,6 +299,7 @@ Important variables:
 | `ANSIBLE_BINARY` | `ansible-playbook` | Ansible executable |
 | `ANSIBLE_WORKDIR` | `infra/ansible/runs` | Local Ansible run directory |
 | `ANSIBLE_AUTO_APPLY` | `false` | Allow backend-triggered Ansible execution |
+| `KUBECONFIG_DIR` | `/root/.kube` | Host kubeconfig directory mounted into the backend and kubectl-runner containers |
 | `OPERATIONS_WORKDIR` | `data/operations/runs` | Generated operation manifests/scripts |
 | `HTTP_PORT` | `80` | Frontend HTTP port in Docker Compose |
 | `HTTPS_PORT` | `443` | Frontend HTTPS port in Docker Compose |
@@ -400,20 +401,35 @@ TLS_CERTS_DIR=./certs
 
 ## Applying MetalLB From Docker
 
+When bootstrap runs automatically after provision apply, the backend fetches:
+
+```text
+/app/backend/data/ansible/runs/<cluster>/admin.conf
+```
+
+After Ansible succeeds, the backend writes that file to `/app/backend/.kube/config` with mode `0600`. In Docker Compose, `/app/backend/.kube` is mounted from `KUBECONFIG_DIR`, which defaults to `/root/.kube` on the hosted Linux server. This automates the equivalent of:
+
+```bash
+docker cp k8s-proxmox-backend:/app/backend/data/ansible/runs/<cluster>/admin.conf /root/.kube/config
+chmod 600 /root/.kube/config
+```
+
+If "Deploy MetalLB automatically after bootstrap" is enabled during cluster provisioning, the backend deploys MetalLB immediately after this kubeconfig export succeeds. The new cluster form collects the MetalLB namespace, version, address pool, address ranges, and optional L2 interfaces up front.
+
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
 PowerShell example:
 
 ```powershell
 docker compose --profile ops up -d kubectl-runner
-docker compose run --rm -e KUBECONFIG=/kube/config -v "$env:USERPROFILE/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
+docker compose run --rm kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
 ```
 
 Bash example:
 
 ```bash
 docker compose --profile ops up -d kubectl-runner
-docker compose run --rm -e KUBECONFIG=/kube/config -v "$HOME/.kube/config:/kube/config:ro" kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
+docker compose run --rm kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
 ```
 
 Replace `<cluster>` with the cluster slug shown in `manifest_dir`.
