@@ -3895,7 +3895,29 @@ func isValidAppHostname(hostname string) bool {
 	if strings.Contains(hostname, "://") || strings.ContainsAny(hostname, "/ \\") {
 		return false
 	}
-	return net.IsDomainName(hostname)
+	if len(hostname) > 253 {
+		return false
+	}
+	trimmed := strings.TrimSuffix(hostname, ".")
+	if trimmed == "" {
+		return false
+	}
+	labels := strings.Split(trimmed, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) operationsManifestDir(clusterName, component string) string {
