@@ -2248,6 +2248,9 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if err := s.insertProvisionRun(clusterID, "app-deploy", status, name, output); err != nil {
 		return DeployAppResponse{}, err
 	}
+	if err := s.updateClusterStatus(clusterID, status); err != nil {
+		return DeployAppResponse{}, err
+	}
 
 	return DeployAppResponse{
 		ClusterID:     clusterID,
