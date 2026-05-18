@@ -216,7 +216,7 @@ func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	initArgs := r.initArgs()
 	steps := [][]string{
 		initArgs,
-		{"destroy", "-input=false", "-auto-approve"},
+		{"destroy", "-input=false", "-auto-approve", "-lock-timeout=2m"},
 	}
 
 	for _, args := range steps {
@@ -227,6 +227,9 @@ func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
 			fullOutput := strings.TrimSpace(output.String())
 			if fullOutput == "" {
 				return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroy-failed"}, err
+			}
+			if strings.Contains(fullOutput, "Error acquiring the state lock") {
+				return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroy-failed"}, fmt.Errorf("%w\nterraform state is locked for workspace %s; if no Terraform operation is still running, unlock it manually with terraform force-unlock <LOCK_ID>\nterraform output:\n%s", err, workDir, fullOutput)
 			}
 			return RunResult{WorkDir: workDir, Output: output.String(), Status: "destroy-failed"}, fmt.Errorf("%w\nterraform output:\n%s", err, fullOutput)
 		}
