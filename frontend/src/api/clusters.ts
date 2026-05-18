@@ -255,6 +255,7 @@ export const deployApp = (
     hostname: string;
     ingress_class: string;
     tls_secret_name: string;
+    tls_certificate_id: number;
     tls_fullchain_pem: string;
     tls_private_key_pem: string;
     apply: boolean;

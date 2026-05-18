@@ -26,6 +26,7 @@ import {
   getBootstrapKeys,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
+import { getSSLCertificates } from '../api/sslCertificates';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -784,6 +785,7 @@ spec:
 `;
 
 function ApplicationsTab({ id }: { id: number }) {
+  const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
   const appMut = useMutation({ mutationFn: (b: Parameters<typeof deployApp>[1]) => deployApp(id, b) });
   const [ingressForm, setIngressForm] = useState({
@@ -798,6 +800,7 @@ function ApplicationsTab({ id }: { id: number }) {
     hostname: 'sample-app.example.com',
     ingress_class: 'traefik',
     tls_secret_name: 'sample-app-tls',
+    tls_certificate_id: 0,
     tls_fullchain_pem: '',
     tls_private_key_pem: '',
     manifest: SAMPLE_APP_MANIFEST,
@@ -832,6 +835,7 @@ function ApplicationsTab({ id }: { id: number }) {
       hostname: appForm.hostname.trim(),
       ingress_class: appForm.ingress_class.trim() || 'traefik',
       tls_secret_name: appForm.tls_secret_name.trim() || `${appForm.name.trim() || 'application'}-tls`,
+      tls_certificate_id: appForm.tls_certificate_id,
       tls_fullchain_pem: appForm.tls_fullchain_pem.trim(),
       tls_private_key_pem: appForm.tls_private_key_pem.trim(),
       manifest: appForm.manifest,
@@ -939,12 +943,37 @@ function ApplicationsTab({ id }: { id: number }) {
                 placeholder="sample-app-tls"
               />
             </div>
+            <div className="max-w-xl">
+              <Select
+                label="Saved TLS certificate"
+                value={appForm.tls_certificate_id}
+                onChange={(e) => setAppForm({
+                  ...appForm,
+                  tls_certificate_id: Number(e.target.value),
+                  tls_fullchain_pem: '',
+                  tls_private_key_pem: '',
+                })}
+              >
+                <option value={0}>-- Upload PEMs for this deploy --</option>
+                {sslCertificates?.map((cert) => (
+                  <option key={cert.id} value={cert.id}>
+                    {cert.name}{cert.dns_names?.length ? ` (${cert.dns_names.join(', ')})` : ''}
+                  </option>
+                ))}
+              </Select>
+            </div>
             <Alert variant="info" title="Existing certificate upload">
-              Choose your Let&apos;s Encrypt fullchain.pem and privkey.pem to create/update the Kubernetes TLS secret before the app manifest is applied.
+              Select a saved certificate or choose your Let&apos;s Encrypt fullchain.pem and privkey.pem to create/update the Kubernetes TLS secret before the app manifest is applied.
             </Alert>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Input label="fullchain.pem" type="file" accept=".pem,.crt" onChange={loadPEMFile('tls_fullchain_pem')} />
+                <Input
+                  label="fullchain.pem"
+                  type="file"
+                  accept=".pem,.crt"
+                  onChange={loadPEMFile('tls_fullchain_pem')}
+                  disabled={appForm.tls_certificate_id > 0}
+                />
                 <Textarea
                   label="Certificate PEM"
                   value={appForm.tls_fullchain_pem}
@@ -952,10 +981,17 @@ function ApplicationsTab({ id }: { id: number }) {
                   rows={6}
                   className="font-mono text-xs"
                   placeholder="-----BEGIN CERTIFICATE-----"
+                  disabled={appForm.tls_certificate_id > 0}
                 />
               </div>
               <div className="space-y-2">
-                <Input label="privkey.pem" type="file" accept=".pem,.key" onChange={loadPEMFile('tls_private_key_pem')} />
+                <Input
+                  label="privkey.pem"
+                  type="file"
+                  accept=".pem,.key"
+                  onChange={loadPEMFile('tls_private_key_pem')}
+                  disabled={appForm.tls_certificate_id > 0}
+                />
                 <Textarea
                   label="Private key PEM"
                   value={appForm.tls_private_key_pem}
@@ -963,6 +999,7 @@ function ApplicationsTab({ id }: { id: number }) {
                   rows={6}
                   className="font-mono text-xs"
                   placeholder="-----BEGIN PRIVATE KEY-----"
+                  disabled={appForm.tls_certificate_id > 0}
                 />
               </div>
             </div>

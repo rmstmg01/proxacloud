@@ -89,6 +89,16 @@ export interface SSHKeyPair {
   updated_at: string;
 }
 
+export interface SSLCertificate {
+  id: number;
+  name: string;
+  subject?: string;
+  dns_names: string[];
+  not_after?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
 export type TopologyType = 'single' | 'dual' | 'tri';

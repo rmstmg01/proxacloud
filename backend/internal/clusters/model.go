@@ -24,6 +24,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
 	"k8s-proxmox-manager/backend/internal/sshkeys"
+	"k8s-proxmox-manager/backend/internal/sslcerts"
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
 )
@@ -49,6 +50,10 @@ type SSHKeyPairStore interface {
 	GetByID(id int64) (sshkeys.KeyPair, error)
 }
 
+type TLSCertificateStore interface {
+	GetByID(id int64) (sslcerts.Certificate, error)
+}
+
 type Service struct {
 	db              *sql.DB
 	networks        NetworkStore
@@ -57,6 +62,7 @@ type Service struct {
 	ansibleRunner   *ansible.Runner
 	proxmoxSvc      ProxmoxCredentialStore
 	sshKeys         SSHKeyPairStore
+	tlsCertificates TLSCertificateStore
 	operationsDir   string
 	autoApply       bool
 	autoBootstrap   bool
@@ -332,6 +338,7 @@ type DeployAppRequest struct {
 	Hostname         string `json:"hostname"`
 	IngressClass     string `json:"ingress_class"`
 	TLSSecretName    string `json:"tls_secret_name"`
+	TLSCertificateID int64  `json:"tls_certificate_id"`
 	TLSFullchainPEM  string `json:"tls_fullchain_pem"`
 	TLSPrivateKeyPEM string `json:"tls_private_key_pem"`
 	Apply            bool   `json:"apply"`
@@ -526,6 +533,7 @@ func NewService(
 	ansibleRunner *ansible.Runner,
 	proxmoxSvc ProxmoxCredentialStore,
 	sshKeys SSHKeyPairStore,
+	tlsCertificates TLSCertificateStore,
 	operationsDir string,
 	autoApply bool,
 	autoBootstrap bool,
@@ -543,6 +551,7 @@ func NewService(
 		ansibleRunner:   ansibleRunner,
 		proxmoxSvc:      proxmoxSvc,
 		sshKeys:         sshKeys,
+		tlsCertificates: tlsCertificates,
 		operationsDir:   operationsDir,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
@@ -2176,6 +2185,23 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 	tlsFullchainPEM := strings.TrimSpace(req.TLSFullchainPEM)
 	tlsPrivateKeyPEM := strings.TrimSpace(req.TLSPrivateKeyPEM)
+	if req.TLSCertificateID > 0 {
+		if s.tlsCertificates == nil {
+			return DeployAppResponse{}, errors.New("saved TLS certificates are not configured")
+		}
+		cert, err := s.tlsCertificates.GetByID(req.TLSCertificateID)
+		if err != nil {
+			return DeployAppResponse{}, fmt.Errorf("load saved TLS certificate: %w", err)
+		}
+		if tlsFullchainPEM != "" || tlsPrivateKeyPEM != "" {
+			return DeployAppResponse{}, errors.New("select a saved TLS certificate or upload PEMs, not both")
+		}
+		tlsFullchainPEM = strings.TrimSpace(cert.FullchainPEM)
+		tlsPrivateKeyPEM = strings.TrimSpace(cert.PrivateKeyPEM)
+		if tlsSecretName == "" {
+			tlsSecretName = sanitizeKubernetesName(cert.Name)
+		}
+	}
 	hasTLSPEMs := tlsFullchainPEM != "" || tlsPrivateKeyPEM != ""
 	if hasTLSPEMs {
 		if tlsFullchainPEM == "" || tlsPrivateKeyPEM == "" {

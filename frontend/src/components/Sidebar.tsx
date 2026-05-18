@@ -6,6 +6,7 @@ import {
   Cpu,
   Users,
   KeyRound,
+  ShieldCheck,
   GitBranch,
   LogOut,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/topology', icon: GitBranch, label: 'Topology' },
   { to: '/users', icon: Users, label: 'Users' },
   { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
+  { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },
 ];
 
 export function Sidebar() {

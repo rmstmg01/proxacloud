@@ -12,6 +12,7 @@ import { ProxmoxPage } from './pages/ProxmoxPage';
 import { UsersPage } from './pages/UsersPage';
 import { TopologyPage } from './pages/TopologyPage';
 import { SSHKeysPage } from './pages/SSHKeysPage';
+import { SSLCertificatesPage } from './pages/SSLCertificatesPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -91,6 +92,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <SSHKeysPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/ssl-certificates"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <SSLCertificatesPage />
                 </ProtectedRoute>
               }
             />
