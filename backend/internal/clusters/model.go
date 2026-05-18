@@ -4120,6 +4120,7 @@ spec:
             - --entrypoints.websecure.address=:443
             - --providers.kubernetesingress=true
             - --providers.kubernetesingress.ingressclass=traefik
+            - --providers.kubernetesingress.ingressendpoint.publishedservice=%s/traefik
             - --api.dashboard=true
             - --ping=true
           ports:
@@ -4160,7 +4161,7 @@ spec:
     - name: websecure
       port: 443
       targetPort: websecure
-`, namespace, namespace, namespace, namespace, image, namespace)
+`, namespace, namespace, namespace, namespace, image, namespace, namespace)
 }
 
 func buildLetsEncryptClusterIssuerManifest(issuerName, email, acmeServer, ingressClass string) string {
