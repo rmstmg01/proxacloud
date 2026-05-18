@@ -1223,16 +1223,23 @@ function ApplicationsTab({ id }: { id: number }) {
         </CardContent>
       </Card>
 
-      <Modal open={!!selectedRevision} onClose={() => setSelectedRevision(null)} title={selectedRevision ? `Revision ${selectedRevision.revision_number}` : 'Revision'}>
+      <Modal
+        open={!!selectedRevision}
+        onClose={() => setSelectedRevision(null)}
+        title={selectedRevision ? `Revision ${selectedRevision.revision_number}` : 'Revision'}
+        maxWidth="6xl"
+      >
         {selectedRevision && (
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
               <p>Status: {selectedRevision.status}</p>
               {selectedRevision.error_message && <p className="text-red-600">Error: {selectedRevision.error_message}</p>}
             </div>
-            <Textarea label="Raw manifest" value={selectedRevision.raw_manifest} readOnly rows={10} className="font-mono text-xs" />
-            <Textarea label="Rendered manifest" value={selectedRevision.rendered_manifest} readOnly rows={10} className="font-mono text-xs" />
-            <Textarea label="kubectl output" value={selectedRevision.kubectl_output} readOnly rows={8} className="font-mono text-xs" />
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <Textarea label="Raw manifest" value={selectedRevision.raw_manifest} readOnly rows={20} className="font-mono text-xs" />
+              <Textarea label="Rendered manifest" value={selectedRevision.rendered_manifest} readOnly rows={20} className="font-mono text-xs" />
+            </div>
+            <Textarea label="kubectl output" value={selectedRevision.kubectl_output} readOnly rows={14} className="font-mono text-xs" />
           </div>
         )}
       </Modal>
