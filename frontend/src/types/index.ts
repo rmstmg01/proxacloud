@@ -297,11 +297,44 @@ export interface DeployAppResponse {
   status: string;
   name: string;
   namespace: string;
+  app_id?: number;
+  revision_id?: number;
+  revision?: number;
   hostname?: string;
   ingress_class?: string;
   tls_secret_name?: string;
   output?: string;
   warnings: string[];
+}
+
+export interface ApplicationManifestRecord {
+  id: number;
+  cluster_id: number;
+  name: string;
+  namespace: string;
+  hostname: string;
+  ingress_class: string;
+  tls_secret_name: string;
+  tls_certificate_id?: number;
+  latest_revision_id?: number;
+  latest_revision?: number;
+  latest_status?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplicationManifestRevisionRecord {
+  id: number;
+  application_manifest_id: number;
+  cluster_id: number;
+  revision_number: number;
+  raw_manifest: string;
+  rendered_manifest: string;
+  kubectl_output: string;
+  status: string;
+  error_message: string;
+  apply: boolean;
+  created_at: string;
 }
 
 export interface DeployObservabilityResponse {

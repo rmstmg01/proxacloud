@@ -16,6 +16,10 @@ import {
   getMetalLB,
   deployIngressController,
   deployApp,
+  getApplicationManifests,
+  getApplicationManifestRevision,
+  getApplicationManifestRevisions,
+  redeployApplicationManifest,
   deployObservability,
   getObservability,
   createEtcdSnapshot,
@@ -785,9 +789,41 @@ spec:
 `;
 
 function ApplicationsTab({ id }: { id: number }) {
+  const qc = useQueryClient();
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
+  const { data: appHistory } = useQuery({ queryKey: ['application-manifests', id], queryFn: () => getApplicationManifests(id) });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
-  const appMut = useMutation({ mutationFn: (b: Parameters<typeof deployApp>[1]) => deployApp(id, b) });
+  const appMut = useMutation({
+    mutationFn: (b: Parameters<typeof deployApp>[1]) => deployApp(id, b),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['application-manifests', id] });
+      if (data.app_id) {
+        qc.invalidateQueries({ queryKey: ['application-manifest-revisions', id, data.app_id] });
+      }
+    },
+  });
+  const redeployMut = useMutation({
+    mutationFn: (b: { appID: number; revisionID?: number; apply: boolean }) =>
+      redeployApplicationManifest(id, b.appID, { revision_id: b.revisionID, apply: b.apply }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: ['application-manifests', id] });
+      qc.invalidateQueries({ queryKey: ['application-manifest-revisions', id, variables.appID] });
+    },
+  });
+  const [selectedHistoryAppID, setSelectedHistoryAppID] = useState(0);
+  const { data: selectedRevisions } = useQuery({
+    queryKey: ['application-manifest-revisions', id, selectedHistoryAppID],
+    queryFn: () => getApplicationManifestRevisions(id, selectedHistoryAppID),
+    enabled: selectedHistoryAppID > 0,
+  });
+  const [selectedRevision, setSelectedRevision] = useState<{
+    raw_manifest: string;
+    rendered_manifest: string;
+    kubectl_output: string;
+    error_message: string;
+    revision_number: number;
+    status: string;
+  } | null>(null);
   const [ingressForm, setIngressForm] = useState({
     namespace: 'traefik',
     image: 'traefik:v3.3',
@@ -817,6 +853,24 @@ function ApplicationsTab({ id }: { id: number }) {
     reader.readAsText(file);
   };
 
+  const loadRevisionIntoForm = async (appID: number, revisionID: number) => {
+    const app = appHistory?.find((item) => item.id === appID);
+    if (!app) return;
+    const revision = await getApplicationManifestRevision(id, appID, revisionID);
+    setAppForm({
+      name: app.name,
+      namespace: app.namespace,
+      hostname: app.hostname,
+      ingress_class: app.ingress_class || 'traefik',
+      tls_secret_name: app.tls_secret_name,
+      tls_certificate_id: app.tls_certificate_id || 0,
+      tls_fullchain_pem: '',
+      tls_private_key_pem: '',
+      manifest: revision.raw_manifest,
+      apply: true,
+    });
+  };
+
   const handleIngressDeploy = async (e: FormEvent) => {
     e.preventDefault();
     await ingressMut.mutateAsync({
@@ -842,6 +896,8 @@ function ApplicationsTab({ id }: { id: number }) {
       apply: appForm.apply,
     });
   };
+
+  const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
 
   return (
     <div className="space-y-6">
@@ -1044,6 +1100,142 @@ function ApplicationsTab({ id }: { id: number }) {
           )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Deployed Application Manifests</CardTitle></CardHeader>
+        <CardContent>
+          {!appHistory?.length ? (
+            <p className="text-sm text-slate-400">No application manifest deployments recorded yet.</p>
+          ) : (
+            <div className="space-y-4">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50">
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">App</th>
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">Hostname</th>
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">Revision</th>
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">Status</th>
+                      <th className="text-left px-4 py-2 font-medium text-slate-600">Updated</th>
+                      <th className="px-4 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {appHistory.map((app) => (
+                      <tr key={app.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2 font-medium text-slate-900">{app.name}</td>
+                        <td className="px-4 py-2 text-slate-600">{app.namespace}</td>
+                        <td className="px-4 py-2 text-slate-600">{app.hostname || '-'}</td>
+                        <td className="px-4 py-2 text-slate-600">{app.latest_revision || '-'}</td>
+                        <td className="px-4 py-2 text-slate-600">{app.latest_status || '-'}</td>
+                        <td className="px-4 py-2 text-slate-500">{new Date(app.updated_at).toLocaleString()}</td>
+                        <td className="px-4 py-2">
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => setSelectedHistoryAppID(selectedHistoryAppID === app.id ? 0 : app.id)}
+                            >
+                              Revisions
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={!app.latest_revision_id}
+                              onClick={() => app.latest_revision_id && loadRevisionIntoForm(app.id, app.latest_revision_id)}
+                            >
+                              Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              loading={redeployMut.isPending && redeployMut.variables?.appID === app.id}
+                              onClick={() => redeployMut.mutate({ appID: app.id, apply: true })}
+                            >
+                              Redeploy
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {selectedHistoryApp && (
+                <div className="border border-slate-200 rounded-md overflow-hidden">
+                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                    <p className="font-medium text-slate-900">{selectedHistoryApp.name} revisions</p>
+                  </div>
+                  {!selectedRevisions?.length ? (
+                    <p className="px-4 py-3 text-sm text-slate-400">No revisions found.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200">
+                            <th className="text-left px-4 py-2 font-medium text-slate-600">Revision</th>
+                            <th className="text-left px-4 py-2 font-medium text-slate-600">Status</th>
+                            <th className="text-left px-4 py-2 font-medium text-slate-600">Applied</th>
+                            <th className="text-left px-4 py-2 font-medium text-slate-600">Created</th>
+                            <th className="px-4 py-2" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {selectedRevisions.map((revision) => (
+                            <tr key={revision.id}>
+                              <td className="px-4 py-2">{revision.revision_number}</td>
+                              <td className="px-4 py-2">{revision.status}</td>
+                              <td className="px-4 py-2">{revision.apply ? 'Yes' : 'No'}</td>
+                              <td className="px-4 py-2 text-slate-500">{new Date(revision.created_at).toLocaleString()}</td>
+                              <td className="px-4 py-2">
+                                <div className="flex justify-end gap-2">
+                                  <Button type="button" size="sm" variant="secondary" onClick={() => setSelectedRevision(revision)}>
+                                    View
+                                  </Button>
+                                  <Button type="button" size="sm" variant="secondary" onClick={() => loadRevisionIntoForm(selectedHistoryApp.id, revision.id)}>
+                                    Edit
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    loading={redeployMut.isPending && redeployMut.variables?.revisionID === revision.id}
+                                    onClick={() => redeployMut.mutate({ appID: selectedHistoryApp.id, revisionID: revision.id, apply: true })}
+                                  >
+                                    Redeploy
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+              {redeployMut.error && <ErrorMessage error={redeployMut.error} />}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Modal open={!!selectedRevision} onClose={() => setSelectedRevision(null)} title={selectedRevision ? `Revision ${selectedRevision.revision_number}` : 'Revision'}>
+        {selectedRevision && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+              <p>Status: {selectedRevision.status}</p>
+              {selectedRevision.error_message && <p className="text-red-600">Error: {selectedRevision.error_message}</p>}
+            </div>
+            <Textarea label="Raw manifest" value={selectedRevision.raw_manifest} readOnly rows={10} className="font-mono text-xs" />
+            <Textarea label="Rendered manifest" value={selectedRevision.rendered_manifest} readOnly rows={10} className="font-mono text-xs" />
+            <Textarea label="kubectl output" value={selectedRevision.kubectl_output} readOnly rows={8} className="font-mono text-xs" />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

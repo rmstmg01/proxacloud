@@ -18,6 +18,8 @@ import type {
   MetalLBStatusResponse,
   DeployIngressControllerResponse,
   DeployAppResponse,
+  ApplicationManifestRecord,
+  ApplicationManifestRevisionRecord,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
   EtcdSnapshotRecord,
@@ -263,6 +265,28 @@ export const deployApp = (
 ) =>
   client
     .post<DeployAppResponse>(`/clusters/${id}/apps/deploy`, body)
+    .then((r) => r.data);
+
+export const getApplicationManifests = (id: number) =>
+  client.get<ApplicationManifestRecord[]>(`/clusters/${id}/apps`).then((r) => r.data);
+
+export const getApplicationManifestRevisions = (id: number, appID: number) =>
+  client
+    .get<ApplicationManifestRevisionRecord[]>(`/clusters/${id}/apps/${appID}/revisions`)
+    .then((r) => r.data);
+
+export const getApplicationManifestRevision = (id: number, appID: number, revisionID: number) =>
+  client
+    .get<ApplicationManifestRevisionRecord>(`/clusters/${id}/apps/${appID}/revisions/${revisionID}`)
+    .then((r) => r.data);
+
+export const redeployApplicationManifest = (
+  id: number,
+  appID: number,
+  body: { revision_id?: number; apply: boolean },
+) =>
+  client
+    .post<DeployAppResponse>(`/clusters/${id}/apps/${appID}/redeploy`, body)
     .then((r) => r.data);
 
 export const deployObservability = (

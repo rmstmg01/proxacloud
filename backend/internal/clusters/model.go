@@ -71,6 +71,7 @@ type Service struct {
 var ErrClusterExists = errors.New("cluster already exists")
 var ErrClusterNotFound = errors.New("cluster not found")
 var ErrOperationNotFound = errors.New("cluster operation not found")
+var ErrApplicationManifestNotFound = errors.New("application manifest not found")
 
 type ProvisionRequest struct {
 	Name                string `json:"name"`
@@ -349,11 +350,49 @@ type DeployAppResponse struct {
 	Status        string   `json:"status"`
 	Name          string   `json:"name"`
 	Namespace     string   `json:"namespace"`
+	AppID         int64    `json:"app_id,omitempty"`
+	RevisionID    int64    `json:"revision_id,omitempty"`
+	Revision      int      `json:"revision,omitempty"`
 	Hostname      string   `json:"hostname,omitempty"`
 	IngressClass  string   `json:"ingress_class,omitempty"`
 	TLSSecretName string   `json:"tls_secret_name,omitempty"`
 	Output        string   `json:"output,omitempty"`
 	Warnings      []string `json:"warnings"`
+}
+
+type ApplicationManifestRecord struct {
+	ID               int64     `json:"id"`
+	ClusterID        int64     `json:"cluster_id"`
+	Name             string    `json:"name"`
+	Namespace        string    `json:"namespace"`
+	Hostname         string    `json:"hostname"`
+	IngressClass     string    `json:"ingress_class"`
+	TLSSecretName    string    `json:"tls_secret_name"`
+	TLSCertificateID int64     `json:"tls_certificate_id,omitempty"`
+	LatestRevisionID int64     `json:"latest_revision_id,omitempty"`
+	LatestRevision   int       `json:"latest_revision,omitempty"`
+	LatestStatus     string    `json:"latest_status,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type ApplicationManifestRevisionRecord struct {
+	ID                    int64     `json:"id"`
+	ApplicationManifestID int64     `json:"application_manifest_id"`
+	ClusterID             int64     `json:"cluster_id"`
+	RevisionNumber        int       `json:"revision_number"`
+	RawManifest           string    `json:"raw_manifest"`
+	RenderedManifest      string    `json:"rendered_manifest"`
+	KubectlOutput         string    `json:"kubectl_output"`
+	Status                string    `json:"status"`
+	ErrorMessage          string    `json:"error_message"`
+	Apply                 bool      `json:"apply"`
+	CreatedAt             time.Time `json:"created_at"`
+}
+
+type RedeployAppRequest struct {
+	RevisionID int64 `json:"revision_id,omitempty"`
+	Apply      bool  `json:"apply"`
 }
 
 type MetalLBAddressPool struct {
@@ -2167,8 +2206,8 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if namespace == "" {
 		namespace = "default"
 	}
-	manifest := strings.TrimSpace(req.Manifest)
-	if manifest == "" {
+	rawManifest := strings.TrimSpace(req.Manifest)
+	if rawManifest == "" {
 		return DeployAppResponse{}, errors.New("manifest is required")
 	}
 	hostname := strings.TrimSpace(req.Hostname)
@@ -2214,8 +2253,9 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 			return DeployAppResponse{}, fmt.Errorf("invalid TLS certificate/key pair: %w", err)
 		}
 	}
+	renderedManifest := rawManifest
 	if hostname != "" {
-		manifest = manifest + "\n---\n" + buildAppIngressManifest(name, hostname, ingressClass, tlsSecretName)
+		renderedManifest = renderedManifest + "\n---\n" + buildAppIngressManifest(name, hostname, ingressClass, tlsSecretName)
 	}
 
 	status := "app-prepared"
@@ -2227,9 +2267,25 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if hostname != "" && !hasTLSPEMs {
 		warnings = append(warnings, fmt.Sprintf("no TLS PEMs were uploaded; ingress will reference existing secret %s", tlsSecretName))
 	}
+	appID, revisionID, revisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
+		ClusterID:        clusterID,
+		Name:             name,
+		Namespace:        namespace,
+		Hostname:         hostname,
+		IngressClass:     ingressClass,
+		TLSSecretName:    tlsSecretName,
+		TLSCertificateID: req.TLSCertificateID,
+		RawManifest:      rawManifest,
+		RenderedManifest: renderedManifest,
+		Status:           status,
+		Apply:            req.Apply,
+	})
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
 	if req.Apply {
 		status = "app-deployed"
-		applyOutput, err := s.executeAppManifestApply(namespace, manifest, appTLSSecretSpec{
+		applyOutput, err := s.executeAppManifestApply(namespace, renderedManifest, appTLSSecretSpec{
 			Name:             tlsSecretName,
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
@@ -2237,12 +2293,16 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 		})
 		output = applyOutput
 		if err != nil {
+			_ = s.updateApplicationManifestRevision(revisionID, "failed", output, err.Error())
 			_ = s.insertProvisionRun(clusterID, "app-deploy", "failed", name, output)
 			return DeployAppResponse{}, fmt.Errorf("failed to deploy app: %w", err)
 		}
 		warnings = append(warnings, "application manifest applied successfully")
 	} else {
 		warnings = append(warnings, "application manifest was not applied; enable apply to run kubectl")
+	}
+	if err := s.updateApplicationManifestRevision(revisionID, status, output, ""); err != nil {
+		return DeployAppResponse{}, err
 	}
 
 	if err := s.insertProvisionRun(clusterID, "app-deploy", status, name, output); err != nil {
@@ -2257,9 +2317,204 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 		Status:        status,
 		Name:          name,
 		Namespace:     namespace,
+		AppID:         appID,
+		RevisionID:    revisionID,
+		Revision:      revisionNumber,
 		Hostname:      hostname,
 		IngressClass:  ingressClass,
 		TLSSecretName: tlsSecretName,
+		Output:        output,
+		Warnings:      warnings,
+	}, nil
+}
+
+func (s *Service) ListApplicationManifests(clusterID int64) ([]ApplicationManifestRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT am.id, am.cluster_id, am.name, am.namespace, am.hostname, am.ingress_class,
+		        am.tls_secret_name, COALESCE(am.tls_certificate_id, 0), COALESCE(am.latest_revision_id, 0),
+		        COALESCE(r.revision_number, 0), COALESCE(r.status, ''), am.created_at, am.updated_at
+		 FROM application_manifests am
+		 LEFT JOIN application_manifest_revisions r ON r.id = am.latest_revision_id
+		 WHERE am.cluster_id = $1
+		 ORDER BY am.updated_at DESC, am.namespace ASC, am.name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list application manifests: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ApplicationManifestRecord, 0)
+	for rows.Next() {
+		var rec ApplicationManifestRecord
+		if scanErr := rows.Scan(
+			&rec.ID,
+			&rec.ClusterID,
+			&rec.Name,
+			&rec.Namespace,
+			&rec.Hostname,
+			&rec.IngressClass,
+			&rec.TLSSecretName,
+			&rec.TLSCertificateID,
+			&rec.LatestRevisionID,
+			&rec.LatestRevision,
+			&rec.LatestStatus,
+			&rec.CreatedAt,
+			&rec.UpdatedAt,
+		); scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) ListApplicationManifestRevisions(clusterID, appID int64) ([]ApplicationManifestRevisionRecord, error) {
+	if err := s.ensureApplicationManifestBelongsToCluster(clusterID, appID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, application_manifest_id, cluster_id, revision_number, raw_manifest, rendered_manifest,
+		        kubectl_output, status, error_message, apply, created_at
+		 FROM application_manifest_revisions
+		 WHERE cluster_id = $1 AND application_manifest_id = $2
+		 ORDER BY revision_number DESC`,
+		clusterID,
+		appID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list application manifest revisions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ApplicationManifestRevisionRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanApplicationManifestRevision(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) GetApplicationManifestRevision(clusterID, appID, revisionID int64) (ApplicationManifestRevisionRecord, error) {
+	if err := s.ensureApplicationManifestBelongsToCluster(clusterID, appID); err != nil {
+		return ApplicationManifestRevisionRecord{}, err
+	}
+	row := s.db.QueryRow(
+		`SELECT id, application_manifest_id, cluster_id, revision_number, raw_manifest, rendered_manifest,
+		        kubectl_output, status, error_message, apply, created_at
+		 FROM application_manifest_revisions
+		 WHERE cluster_id = $1 AND application_manifest_id = $2 AND id = $3`,
+		clusterID,
+		appID,
+		revisionID,
+	)
+	rec, err := scanApplicationManifestRevision(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ApplicationManifestRevisionRecord{}, ErrApplicationManifestNotFound
+		}
+		return ApplicationManifestRevisionRecord{}, fmt.Errorf("get application manifest revision: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req RedeployAppRequest) (DeployAppResponse, error) {
+	app, err := s.getApplicationManifestRecord(clusterID, appID)
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+	revisionID := req.RevisionID
+	if revisionID <= 0 {
+		revisionID = app.LatestRevisionID
+	}
+	if revisionID <= 0 {
+		return DeployAppResponse{}, errors.New("application has no revision to redeploy")
+	}
+	revision, err := s.GetApplicationManifestRevision(clusterID, appID, revisionID)
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+
+	tlsFullchainPEM := ""
+	tlsPrivateKeyPEM := ""
+	hasTLSPEMs := false
+	if app.TLSCertificateID > 0 {
+		if s.tlsCertificates == nil {
+			return DeployAppResponse{}, errors.New("saved TLS certificates are not configured")
+		}
+		cert, loadErr := s.tlsCertificates.GetByID(app.TLSCertificateID)
+		if loadErr != nil {
+			return DeployAppResponse{}, fmt.Errorf("load saved TLS certificate: %w", loadErr)
+		}
+		tlsFullchainPEM = strings.TrimSpace(cert.FullchainPEM)
+		tlsPrivateKeyPEM = strings.TrimSpace(cert.PrivateKeyPEM)
+		hasTLSPEMs = tlsFullchainPEM != "" || tlsPrivateKeyPEM != ""
+	}
+
+	status := "app-prepared"
+	output := ""
+	newAppID, newRevisionID, newRevisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
+		ClusterID:        clusterID,
+		Name:             app.Name,
+		Namespace:        app.Namespace,
+		Hostname:         app.Hostname,
+		IngressClass:     app.IngressClass,
+		TLSSecretName:    app.TLSSecretName,
+		TLSCertificateID: app.TLSCertificateID,
+		RawManifest:      revision.RawManifest,
+		RenderedManifest: revision.RenderedManifest,
+		Status:           status,
+		Apply:            req.Apply,
+	})
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+
+	warnings := []string{fmt.Sprintf("redeployed from revision %d", revision.RevisionNumber)}
+	if req.Apply {
+		status = "app-deployed"
+		output, err = s.executeAppManifestApply(app.Namespace, revision.RenderedManifest, appTLSSecretSpec{
+			Name:             app.TLSSecretName,
+			FullchainPEM:     tlsFullchainPEM,
+			PrivateKeyPEM:    tlsPrivateKeyPEM,
+			CreateFromUpload: hasTLSPEMs,
+		})
+		if err != nil {
+			_ = s.updateApplicationManifestRevision(newRevisionID, "failed", output, err.Error())
+			_ = s.insertProvisionRun(clusterID, "app-redeploy", "failed", app.Name, output)
+			return DeployAppResponse{}, fmt.Errorf("failed to redeploy app: %w", err)
+		}
+		warnings = append(warnings, "application manifest redeployed successfully")
+	} else {
+		warnings = append(warnings, "application manifest redeploy was recorded but not applied; enable apply to run kubectl")
+	}
+	if err := s.updateApplicationManifestRevision(newRevisionID, status, output, ""); err != nil {
+		return DeployAppResponse{}, err
+	}
+	if err := s.insertProvisionRun(clusterID, "app-redeploy", status, app.Name, output); err != nil {
+		return DeployAppResponse{}, err
+	}
+	if err := s.updateClusterStatus(clusterID, status); err != nil {
+		return DeployAppResponse{}, err
+	}
+
+	return DeployAppResponse{
+		ClusterID:     clusterID,
+		Status:        status,
+		Name:          app.Name,
+		Namespace:     app.Namespace,
+		AppID:         newAppID,
+		RevisionID:    newRevisionID,
+		Revision:      newRevisionNumber,
+		Hostname:      app.Hostname,
+		IngressClass:  app.IngressClass,
+		TLSSecretName: app.TLSSecretName,
 		Output:        output,
 		Warnings:      warnings,
 	}, nil
@@ -3324,6 +3579,183 @@ func (s *Service) insertProvisionRun(clusterID int64, action, status, workDir, o
 		return fmt.Errorf("insert provision run: %w", err)
 	}
 	return nil
+}
+
+type applicationManifestRevisionInput struct {
+	ClusterID        int64
+	Name             string
+	Namespace        string
+	Hostname         string
+	IngressClass     string
+	TLSSecretName    string
+	TLSCertificateID int64
+	RawManifest      string
+	RenderedManifest string
+	Status           string
+	Apply            bool
+}
+
+func (s *Service) createApplicationManifestRevision(in applicationManifestRevisionInput) (int64, int64, int, error) {
+	tlsCertificateID := sql.NullInt64{Int64: in.TLSCertificateID, Valid: in.TLSCertificateID > 0}
+	var appID int64
+	err := s.db.QueryRow(
+		`INSERT INTO application_manifests (cluster_id, name, namespace, hostname, ingress_class, tls_secret_name, tls_certificate_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 ON CONFLICT (cluster_id, namespace, name)
+		 DO UPDATE SET
+		   hostname = EXCLUDED.hostname,
+		   ingress_class = EXCLUDED.ingress_class,
+		   tls_secret_name = EXCLUDED.tls_secret_name,
+		   tls_certificate_id = EXCLUDED.tls_certificate_id,
+		   updated_at = NOW()
+		 RETURNING id`,
+		in.ClusterID,
+		in.Name,
+		in.Namespace,
+		in.Hostname,
+		in.IngressClass,
+		in.TLSSecretName,
+		tlsCertificateID,
+	).Scan(&appID)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("upsert application manifest: %w", err)
+	}
+
+	revisionNumber := 1
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(revision_number), 0) + 1
+		 FROM application_manifest_revisions
+		 WHERE application_manifest_id = $1`,
+		appID,
+	).Scan(&revisionNumber); err != nil {
+		return 0, 0, 0, fmt.Errorf("calculate application manifest revision: %w", err)
+	}
+
+	var revisionID int64
+	err = s.db.QueryRow(
+		`INSERT INTO application_manifest_revisions
+		   (application_manifest_id, cluster_id, revision_number, raw_manifest, rendered_manifest, status, apply)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id`,
+		appID,
+		in.ClusterID,
+		revisionNumber,
+		in.RawManifest,
+		in.RenderedManifest,
+		in.Status,
+		in.Apply,
+	).Scan(&revisionID)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("insert application manifest revision: %w", err)
+	}
+
+	if _, err := s.db.Exec(
+		`UPDATE application_manifests
+		 SET latest_revision_id = $2, updated_at = NOW()
+		 WHERE id = $1`,
+		appID,
+		revisionID,
+	); err != nil {
+		return 0, 0, 0, fmt.Errorf("update latest application manifest revision: %w", err)
+	}
+
+	return appID, revisionID, revisionNumber, nil
+}
+
+func (s *Service) updateApplicationManifestRevision(revisionID int64, status, output, errorMessage string) error {
+	if revisionID <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`UPDATE application_manifest_revisions
+		 SET status = $2,
+		     kubectl_output = $3,
+		     error_message = $4
+		 WHERE id = $1`,
+		revisionID,
+		status,
+		output,
+		errorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("update application manifest revision: %w", err)
+	}
+	return nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanApplicationManifestRevision(row scanner) (ApplicationManifestRevisionRecord, error) {
+	var rec ApplicationManifestRevisionRecord
+	err := row.Scan(
+		&rec.ID,
+		&rec.ApplicationManifestID,
+		&rec.ClusterID,
+		&rec.RevisionNumber,
+		&rec.RawManifest,
+		&rec.RenderedManifest,
+		&rec.KubectlOutput,
+		&rec.Status,
+		&rec.ErrorMessage,
+		&rec.Apply,
+		&rec.CreatedAt,
+	)
+	return rec, err
+}
+
+func (s *Service) ensureApplicationManifestBelongsToCluster(clusterID, appID int64) error {
+	var exists bool
+	if err := s.db.QueryRow(
+		`SELECT EXISTS (
+		   SELECT 1 FROM application_manifests
+		   WHERE id = $1 AND cluster_id = $2
+		 )`,
+		appID,
+		clusterID,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("check application manifest: %w", err)
+	}
+	if !exists {
+		return ErrApplicationManifestNotFound
+	}
+	return nil
+}
+
+func (s *Service) getApplicationManifestRecord(clusterID, appID int64) (ApplicationManifestRecord, error) {
+	var rec ApplicationManifestRecord
+	err := s.db.QueryRow(
+		`SELECT am.id, am.cluster_id, am.name, am.namespace, am.hostname, am.ingress_class,
+		        am.tls_secret_name, COALESCE(am.tls_certificate_id, 0), COALESCE(am.latest_revision_id, 0),
+		        COALESCE(r.revision_number, 0), COALESCE(r.status, ''), am.created_at, am.updated_at
+		 FROM application_manifests am
+		 LEFT JOIN application_manifest_revisions r ON r.id = am.latest_revision_id
+		 WHERE am.cluster_id = $1 AND am.id = $2`,
+		clusterID,
+		appID,
+	).Scan(
+		&rec.ID,
+		&rec.ClusterID,
+		&rec.Name,
+		&rec.Namespace,
+		&rec.Hostname,
+		&rec.IngressClass,
+		&rec.TLSSecretName,
+		&rec.TLSCertificateID,
+		&rec.LatestRevisionID,
+		&rec.LatestRevision,
+		&rec.LatestStatus,
+		&rec.CreatedAt,
+		&rec.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ApplicationManifestRecord{}, ErrApplicationManifestNotFound
+		}
+		return ApplicationManifestRecord{}, fmt.Errorf("get application manifest: %w", err)
+	}
+	return rec, nil
 }
 
 func (s *Service) startClusterOperation(clusterID int64, action, step string, progressPercent int) (int64, error) {

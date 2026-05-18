@@ -518,6 +518,73 @@ func (h *Handler) DeployApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListApplicationManifests(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.ListApplicationManifests(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ListApplicationManifestRevisions(w http.ResponseWriter, r *http.Request) {
+	clusterID, appID, ok := parseClusterAndAppIDs(w, r)
+	if !ok {
+		return
+	}
+
+	resp, err := h.service.ListApplicationManifestRevisions(clusterID, appID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) GetApplicationManifestRevision(w http.ResponseWriter, r *http.Request) {
+	clusterID, appID, ok := parseClusterAndAppIDs(w, r)
+	if !ok {
+		return
+	}
+	revisionID, err := strconv.ParseInt(chi.URLParam(r, "revisionID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid revision id"})
+		return
+	}
+
+	resp, err := h.service.GetApplicationManifestRevision(clusterID, appID, revisionID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) RedeployApplicationManifest(w http.ResponseWriter, r *http.Request) {
+	clusterID, appID, ok := parseClusterAndAppIDs(w, r)
+	if !ok {
+		return
+	}
+	var req RedeployAppRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	resp, err := h.service.RedeployApplicationManifest(clusterID, appID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) GetMetalLB(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -531,6 +598,20 @@ func (h *Handler) GetMetalLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func parseClusterAndAppIDs(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return 0, 0, false
+	}
+	appID, err := strconv.ParseInt(chi.URLParam(r, "appID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid application id"})
+		return 0, 0, false
+	}
+	return clusterID, appID, true
 }
 
 func (h *Handler) CreateEtcdSnapshot(w http.ResponseWriter, r *http.Request) {
