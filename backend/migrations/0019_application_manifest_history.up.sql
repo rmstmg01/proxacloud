@@ -28,11 +28,21 @@ CREATE TABLE IF NOT EXISTS application_manifest_revisions (
     UNIQUE (application_manifest_id, revision_number)
 );
 
-ALTER TABLE application_manifests
-    ADD CONSTRAINT application_manifests_latest_revision_fk
-    FOREIGN KEY (latest_revision_id)
-    REFERENCES application_manifest_revisions(id)
-    ON DELETE SET NULL;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'application_manifests_latest_revision_fk'
+          AND conrelid = 'application_manifests'::regclass
+    ) THEN
+        ALTER TABLE application_manifests
+            ADD CONSTRAINT application_manifests_latest_revision_fk
+            FOREIGN KEY (latest_revision_id)
+            REFERENCES application_manifest_revisions(id)
+            ON DELETE SET NULL;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_application_manifests_cluster
     ON application_manifests(cluster_id, namespace, name);
