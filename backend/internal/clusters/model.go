@@ -4191,6 +4191,9 @@ func buildAppIngressManifest(appName, hostname, ingressClass, tlsSecretName stri
 kind: Ingress
 metadata:
   name: %s
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
 spec:
   ingressClassName: %s
   tls:
