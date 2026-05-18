@@ -3,6 +3,7 @@ package clusters
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -325,19 +326,27 @@ type DeployCertificateManagerResponse struct {
 }
 
 type DeployAppRequest struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-	Manifest  string `json:"manifest"`
-	Apply     bool   `json:"apply"`
+	Name             string `json:"name"`
+	Namespace        string `json:"namespace"`
+	Manifest         string `json:"manifest"`
+	Hostname         string `json:"hostname"`
+	IngressClass     string `json:"ingress_class"`
+	TLSSecretName    string `json:"tls_secret_name"`
+	TLSFullchainPEM  string `json:"tls_fullchain_pem"`
+	TLSPrivateKeyPEM string `json:"tls_private_key_pem"`
+	Apply            bool   `json:"apply"`
 }
 
 type DeployAppResponse struct {
-	ClusterID int64    `json:"cluster_id"`
-	Status    string   `json:"status"`
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace"`
-	Output    string   `json:"output,omitempty"`
-	Warnings  []string `json:"warnings"`
+	ClusterID     int64    `json:"cluster_id"`
+	Status        string   `json:"status"`
+	Name          string   `json:"name"`
+	Namespace     string   `json:"namespace"`
+	Hostname      string   `json:"hostname,omitempty"`
+	IngressClass  string   `json:"ingress_class,omitempty"`
+	TLSSecretName string   `json:"tls_secret_name,omitempty"`
+	Output        string   `json:"output,omitempty"`
+	Warnings      []string `json:"warnings"`
 }
 
 type MetalLBAddressPool struct {
@@ -2153,13 +2162,53 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if manifest == "" {
 		return DeployAppResponse{}, errors.New("manifest is required")
 	}
+	hostname := strings.TrimSpace(req.Hostname)
+	if hostname != "" && !isValidAppHostname(hostname) {
+		return DeployAppResponse{}, fmt.Errorf("invalid hostname %q", hostname)
+	}
+	ingressClass := strings.TrimSpace(req.IngressClass)
+	if ingressClass == "" {
+		ingressClass = "traefik"
+	}
+	tlsSecretName := strings.TrimSpace(req.TLSSecretName)
+	if hostname != "" && tlsSecretName == "" {
+		tlsSecretName = sanitizeKubernetesName(name + "-tls")
+	}
+	tlsFullchainPEM := strings.TrimSpace(req.TLSFullchainPEM)
+	tlsPrivateKeyPEM := strings.TrimSpace(req.TLSPrivateKeyPEM)
+	hasTLSPEMs := tlsFullchainPEM != "" || tlsPrivateKeyPEM != ""
+	if hasTLSPEMs {
+		if tlsFullchainPEM == "" || tlsPrivateKeyPEM == "" {
+			return DeployAppResponse{}, errors.New("both fullchain.pem and privkey.pem are required when uploading a TLS certificate")
+		}
+		if tlsSecretName == "" {
+			tlsSecretName = sanitizeKubernetesName(name + "-tls")
+		}
+		if _, err := tls.X509KeyPair([]byte(tlsFullchainPEM), []byte(tlsPrivateKeyPEM)); err != nil {
+			return DeployAppResponse{}, fmt.Errorf("invalid TLS certificate/key pair: %w", err)
+		}
+	}
+	if hostname != "" {
+		manifest = manifest + "\n---\n" + buildAppIngressManifest(name, hostname, ingressClass, tlsSecretName)
+	}
 
 	status := "app-prepared"
 	output := ""
 	warnings := []string{}
+	if hostname != "" {
+		warnings = append(warnings, fmt.Sprintf("application ingress will use hostname %s", hostname))
+	}
+	if hostname != "" && !hasTLSPEMs {
+		warnings = append(warnings, fmt.Sprintf("no TLS PEMs were uploaded; ingress will reference existing secret %s", tlsSecretName))
+	}
 	if req.Apply {
 		status = "app-deployed"
-		applyOutput, err := s.executeAppManifestApply(namespace, manifest)
+		applyOutput, err := s.executeAppManifestApply(namespace, manifest, appTLSSecretSpec{
+			Name:             tlsSecretName,
+			FullchainPEM:     tlsFullchainPEM,
+			PrivateKeyPEM:    tlsPrivateKeyPEM,
+			CreateFromUpload: hasTLSPEMs,
+		})
 		output = applyOutput
 		if err != nil {
 			_ = s.insertProvisionRun(clusterID, "app-deploy", "failed", name, output)
@@ -2175,12 +2224,15 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 
 	return DeployAppResponse{
-		ClusterID: clusterID,
-		Status:    status,
-		Name:      name,
-		Namespace: namespace,
-		Output:    output,
-		Warnings:  warnings,
+		ClusterID:     clusterID,
+		Status:        status,
+		Name:          name,
+		Namespace:     namespace,
+		Hostname:      hostname,
+		IngressClass:  ingressClass,
+		TLSSecretName: tlsSecretName,
+		Output:        output,
+		Warnings:      warnings,
 	}, nil
 }
 
@@ -2325,7 +2377,14 @@ func (s *Service) executeCertificateManagerDeployment(namespace, version, issuer
 	return strings.Join(outputs, "\n"), nil
 }
 
-func (s *Service) executeAppManifestApply(namespace, manifest string) (string, error) {
+type appTLSSecretSpec struct {
+	Name             string
+	FullchainPEM     string
+	PrivateKeyPEM    string
+	CreateFromUpload bool
+}
+
+func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -2345,6 +2404,14 @@ func (s *Service) executeAppManifestApply(namespace, manifest string) (string, e
 		}
 	} else {
 		outputs = append(outputs, string(output))
+	}
+
+	if tlsSecret.CreateFromUpload {
+		secretOutput, err := s.applyTLSSecret(ctx, kubeconfigPath, namespace, tlsSecret)
+		outputs = append(outputs, secretOutput)
+		if err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
 	}
 
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", namespace, "-f", "-", "--validate=false")
@@ -2370,6 +2437,51 @@ func (s *Service) executeAppManifestApply(namespace, manifest string) (string, e
 	}
 
 	return strings.Join(outputs, "\n"), nil
+}
+
+func (s *Service) applyTLSSecret(ctx context.Context, kubeconfigPath, namespace string, secret appTLSSecretSpec) (string, error) {
+	if strings.TrimSpace(secret.Name) == "" {
+		return "", errors.New("tls secret name is required")
+	}
+	tmpDir, err := os.MkdirTemp("", "kpm-app-tls-*")
+	if err != nil {
+		return "", fmt.Errorf("create temporary tls workspace: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	certPath := filepath.Join(tmpDir, "tls.crt")
+	keyPath := filepath.Join(tmpDir, "tls.key")
+	if err := os.WriteFile(certPath, []byte(secret.FullchainPEM), 0o600); err != nil {
+		return "", fmt.Errorf("write temporary fullchain.pem: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(secret.PrivateKeyPEM), 0o600); err != nil {
+		return "", fmt.Errorf("write temporary privkey.pem: %w", err)
+	}
+
+	createCmd := exec.CommandContext(
+		ctx,
+		"kubectl",
+		"--kubeconfig", kubeconfigPath,
+		"--namespace", namespace,
+		"create", "secret", "tls", secret.Name,
+		"--cert", certPath,
+		"--key", keyPath,
+		"--dry-run=client",
+		"-o", "yaml",
+	)
+	secretManifest, err := createCmd.CombinedOutput()
+	if err != nil {
+		return string(secretManifest), fmt.Errorf("render TLS secret %s: %w\nOutput: %s", secret.Name, err, string(secretManifest))
+	}
+
+	applyCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", namespace, "-f", "-", "--validate=false")
+	applyCmd.Stdin = strings.NewReader(string(secretManifest))
+	output, err := applyCmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("apply TLS secret %s: %w\nOutput: %s", secret.Name, err, string(output))
+	}
+
+	return string(output), nil
 }
 
 func (s *Service) metalLBDiagnostics(kubeconfigPath, namespace string) string {
@@ -3750,6 +3862,42 @@ func sanitizePathToken(name string) string {
 	return token
 }
 
+func sanitizeKubernetesName(name string) string {
+	token := strings.ToLower(strings.TrimSpace(name))
+	var builder strings.Builder
+	previousDash := false
+	for _, r := range token {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if valid {
+			builder.WriteRune(r)
+			previousDash = false
+			continue
+		}
+		if !previousDash {
+			builder.WriteByte('-')
+			previousDash = true
+		}
+	}
+	token = strings.Trim(builder.String(), "-")
+	if token == "" {
+		return "application"
+	}
+	if len(token) > 63 {
+		token = strings.Trim(token[:63], "-")
+	}
+	if token == "" {
+		return "application"
+	}
+	return token
+}
+
+func isValidAppHostname(hostname string) bool {
+	if strings.Contains(hostname, "://") || strings.ContainsAny(hostname, "/ \\") {
+		return false
+	}
+	return net.IsDomainName(hostname)
+}
+
 func (s *Service) operationsManifestDir(clusterName, component string) string {
 	return filepath.Join(s.operationsDir, sanitizePathToken(clusterName), component)
 }
@@ -4007,6 +4155,35 @@ spec:
     solvers:
       - http01:
           ingress:
-            class: %s
+          class: %s
 `, issuerName, email, acmeServer, issuerName, ingressClass)
+}
+
+func buildAppIngressManifest(appName, hostname, ingressClass, tlsSecretName string) string {
+	name := sanitizeKubernetesName(appName)
+	if tlsSecretName == "" {
+		tlsSecretName = sanitizeKubernetesName(appName + "-tls")
+	}
+	return fmt.Sprintf(`apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: %s
+spec:
+  ingressClassName: %s
+  tls:
+    - hosts:
+        - %s
+      secretName: %s
+  rules:
+    - host: %s
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: %s
+                port:
+                  number: 80
+`, name, ingressClass, hostname, tlsSecretName, hostname, name)
 }

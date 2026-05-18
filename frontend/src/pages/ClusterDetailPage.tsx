@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
@@ -807,9 +807,24 @@ function ApplicationsTab({ id }: { id: number }) {
   const [appForm, setAppForm] = useState({
     name: 'sample-app',
     namespace: 'default',
+    hostname: 'sample-app.example.com',
+    ingress_class: 'traefik',
+    tls_secret_name: 'sample-app-tls',
+    tls_fullchain_pem: '',
+    tls_private_key_pem: '',
     manifest: SAMPLE_APP_MANIFEST,
     apply: true,
   });
+
+  const loadPEMFile = (field: 'tls_fullchain_pem' | 'tls_private_key_pem') => (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAppForm((f) => ({ ...f, [field]: String(reader.result ?? '') }));
+    };
+    reader.readAsText(file);
+  };
 
   const handleIngressDeploy = async (e: FormEvent) => {
     e.preventDefault();
@@ -826,6 +841,11 @@ function ApplicationsTab({ id }: { id: number }) {
     await appMut.mutateAsync({
       name: appForm.name.trim() || 'application',
       namespace: appForm.namespace.trim() || 'default',
+      hostname: appForm.hostname.trim(),
+      ingress_class: appForm.ingress_class.trim() || 'traefik',
+      tls_secret_name: appForm.tls_secret_name.trim() || `${appForm.name.trim() || 'application'}-tls`,
+      tls_fullchain_pem: appForm.tls_fullchain_pem.trim(),
+      tls_private_key_pem: appForm.tls_private_key_pem.trim(),
       manifest: appForm.manifest,
       apply: appForm.apply,
     });
@@ -1013,6 +1033,54 @@ function ApplicationsTab({ id }: { id: number }) {
                 required
               />
             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-3xl">
+              <Input
+                label="Application hostname"
+                value={appForm.hostname}
+                onChange={(e) => setAppForm({ ...appForm, hostname: e.target.value })}
+                placeholder="app.example.com"
+                helperText="Creates an Ingress for this host when set."
+              />
+              <Input
+                label="Ingress class"
+                value={appForm.ingress_class}
+                onChange={(e) => setAppForm({ ...appForm, ingress_class: e.target.value })}
+                placeholder="traefik"
+              />
+              <Input
+                label="TLS secret name"
+                value={appForm.tls_secret_name}
+                onChange={(e) => setAppForm({ ...appForm, tls_secret_name: e.target.value })}
+                placeholder="sample-app-tls"
+              />
+            </div>
+            <Alert variant="info" title="Existing certificate upload">
+              Choose your Let&apos;s Encrypt fullchain.pem and privkey.pem to create/update the Kubernetes TLS secret before the app manifest is applied.
+            </Alert>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Input label="fullchain.pem" type="file" accept=".pem,.crt" onChange={loadPEMFile('tls_fullchain_pem')} />
+                <Textarea
+                  label="Certificate PEM"
+                  value={appForm.tls_fullchain_pem}
+                  onChange={(e) => setAppForm({ ...appForm, tls_fullchain_pem: e.target.value })}
+                  rows={6}
+                  className="font-mono text-xs"
+                  placeholder="-----BEGIN CERTIFICATE-----"
+                />
+              </div>
+              <div className="space-y-2">
+                <Input label="privkey.pem" type="file" accept=".pem,.key" onChange={loadPEMFile('tls_private_key_pem')} />
+                <Textarea
+                  label="Private key PEM"
+                  value={appForm.tls_private_key_pem}
+                  onChange={(e) => setAppForm({ ...appForm, tls_private_key_pem: e.target.value })}
+                  rows={6}
+                  className="font-mono text-xs"
+                  placeholder="-----BEGIN PRIVATE KEY-----"
+                />
+              </div>
+            </div>
             <Textarea
               label="Kubernetes YAML"
               value={appForm.manifest}
@@ -1036,6 +1104,8 @@ function ApplicationsTab({ id }: { id: number }) {
                 <div className="space-y-2">
                   <p>Status: {appMut.data.status}</p>
                   <p>Namespace: {appMut.data.namespace}</p>
+                  {appMut.data.hostname && <p>Hostname: {appMut.data.hostname}</p>}
+                  {appMut.data.tls_secret_name && <p>TLS secret: {appMut.data.tls_secret_name}</p>}
                 </div>
               </Alert>
             )}

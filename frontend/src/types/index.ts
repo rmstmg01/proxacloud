@@ -298,6 +298,9 @@ export interface DeployAppResponse {
   status: string;
   name: string;
   namespace: string;
+  hostname?: string;
+  ingress_class?: string;
+  tls_secret_name?: string;
   output?: string;
   warnings: string[];
 }
