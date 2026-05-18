@@ -282,17 +282,6 @@ export interface DeployIngressControllerResponse {
   warnings: string[];
 }
 
-export interface DeployCertificateManagerResponse {
-  cluster_id: number;
-  status: string;
-  namespace: string;
-  version: string;
-  issuer_name: string;
-  acme_server: string;
-  output?: string;
-  warnings: string[];
-}
-
 export interface DeployAppResponse {
   cluster_id: number;
   status: string;

@@ -15,7 +15,6 @@ import {
   deployMetalLB,
   getMetalLB,
   deployIngressController,
-  deployCertificateManager,
   deployApp,
   deployObservability,
   getObservability,
@@ -786,21 +785,10 @@ spec:
 
 function ApplicationsTab({ id }: { id: number }) {
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
-  const certMut = useMutation({ mutationFn: (b: Parameters<typeof deployCertificateManager>[1]) => deployCertificateManager(id, b) });
   const appMut = useMutation({ mutationFn: (b: Parameters<typeof deployApp>[1]) => deployApp(id, b) });
   const [ingressForm, setIngressForm] = useState({
     namespace: 'traefik',
     image: 'traefik:v3.3',
-    apply: true,
-    wait: true,
-  });
-  const [certForm, setCertForm] = useState({
-    namespace: 'cert-manager',
-    version: 'v1.16.2',
-    issuer_name: 'letsencrypt-prod',
-    email: '',
-    acme_server: 'https://acme-v02.api.letsencrypt.org/directory',
-    ingress_class: 'traefik',
     apply: true,
     wait: true,
   });
@@ -848,20 +836,6 @@ function ApplicationsTab({ id }: { id: number }) {
       tls_private_key_pem: appForm.tls_private_key_pem.trim(),
       manifest: appForm.manifest,
       apply: appForm.apply,
-    });
-  };
-
-  const handleCertDeploy = async (e: FormEvent) => {
-    e.preventDefault();
-    await certMut.mutateAsync({
-      namespace: certForm.namespace.trim() || 'cert-manager',
-      version: certForm.version.trim() || 'v1.16.2',
-      issuer_name: certForm.issuer_name.trim() || 'letsencrypt-prod',
-      email: certForm.email.trim(),
-      acme_server: certForm.acme_server.trim() || 'https://acme-v02.api.letsencrypt.org/directory',
-      ingress_class: certForm.ingress_class.trim() || 'traefik',
-      apply: certForm.apply,
-      wait: certForm.wait,
     });
   };
 
@@ -918,95 +892,6 @@ function ApplicationsTab({ id }: { id: number }) {
             <Textarea
               label="kubectl output"
               value={ingressMut.data.output}
-              readOnly
-              rows={8}
-              className="mt-4 font-mono text-xs"
-            />
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle>Let's Encrypt Certificates</CardTitle></CardHeader>
-        <CardContent>
-          <form onSubmit={handleCertDeploy} className="space-y-4 max-w-xl">
-            <Alert variant="info" title="Public DNS required">
-              Let&apos;s Encrypt HTTP-01 needs the app hostname to resolve publicly to Traefik and ports 80/443 to reach the cluster.
-            </Alert>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <Input
-                label="Namespace"
-                value={certForm.namespace}
-                onChange={(e) => setCertForm({ ...certForm, namespace: e.target.value })}
-                required
-              />
-              <Input
-                label="cert-manager version"
-                value={certForm.version}
-                onChange={(e) => setCertForm({ ...certForm, version: e.target.value })}
-                required
-              />
-              <Input
-                label="ClusterIssuer name"
-                value={certForm.issuer_name}
-                onChange={(e) => setCertForm({ ...certForm, issuer_name: e.target.value })}
-                required
-              />
-              <Input
-                label="Email"
-                type="email"
-                value={certForm.email}
-                onChange={(e) => setCertForm({ ...certForm, email: e.target.value })}
-                required
-              />
-              <Select
-                label="ACME server"
-                value={certForm.acme_server}
-                onChange={(e) => setCertForm({ ...certForm, acme_server: e.target.value })}
-              >
-                <option value="https://acme-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt production</option>
-                <option value="https://acme-staging-v02.api.letsencrypt.org/directory">Let&apos;s Encrypt staging</option>
-              </Select>
-              <Input
-                label="Ingress class"
-                value={certForm.ingress_class}
-                onChange={(e) => setCertForm({ ...certForm, ingress_class: e.target.value })}
-                required
-              />
-            </div>
-            <label className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={certForm.apply}
-                onChange={(e) => setCertForm({ ...certForm, apply: e.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-              />
-              <span className="text-sm text-slate-700">Apply cert-manager and ClusterIssuer now</span>
-            </label>
-            <label className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={certForm.wait}
-                onChange={(e) => setCertForm({ ...certForm, wait: e.target.checked })}
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-              />
-              <span className="text-sm text-slate-700">Wait for cert-manager rollout</span>
-            </label>
-            <Button type="submit" loading={certMut.isPending}>Deploy Cert Manager</Button>
-            {certMut.data && (
-              <Alert variant="success" title="Certificate manager deployment submitted">
-                <div className="space-y-2">
-                  <p>Status: {certMut.data.status}</p>
-                  <p>Issuer: {certMut.data.issuer_name}</p>
-                </div>
-              </Alert>
-            )}
-            {certMut.error && <ErrorMessage error={certMut.error} />}
-          </form>
-          {certMut.data?.output && (
-            <Textarea
-              label="kubectl output"
-              value={certMut.data.output}
               readOnly
               rows={8}
               className="mt-4 font-mono text-xs"
