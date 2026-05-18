@@ -1235,9 +1235,27 @@ function ApplicationsTab({ id }: { id: number }) {
               <p>Status: {selectedRevision.status}</p>
               {selectedRevision.error_message && <p className="text-red-600">Error: {selectedRevision.error_message}</p>}
             </div>
-            <Textarea label="Raw manifest" value={selectedRevision.raw_manifest} readOnly rows={18} className="font-mono text-xs" />
-            <Textarea label="Rendered manifest" value={selectedRevision.rendered_manifest} readOnly rows={18} className="font-mono text-xs" />
-            <Textarea label="kubectl output" value={selectedRevision.kubectl_output} readOnly rows={14} className="font-mono text-xs" />
+            <Textarea
+              label="Raw manifest"
+              value={selectedRevision.raw_manifest}
+              readOnly
+              rows={18}
+              className="font-mono text-xs min-h-[22rem] hover:min-h-[70vh] focus:min-h-[70vh]"
+            />
+            <Textarea
+              label="Rendered manifest"
+              value={selectedRevision.rendered_manifest}
+              readOnly
+              rows={18}
+              className="font-mono text-xs min-h-[22rem] hover:min-h-[70vh] focus:min-h-[70vh]"
+            />
+            <Textarea
+              label="kubectl output"
+              value={selectedRevision.kubectl_output}
+              readOnly
+              rows={14}
+              className="font-mono text-xs min-h-[18rem] hover:min-h-[70vh] focus:min-h-[70vh]"
+            />
           </div>
         )}
       </Modal>
