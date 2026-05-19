@@ -9,10 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
 )
+
+const defaultProxmoxSSHPort = 9846
 
 type VMNode struct {
 	VMName          string `json:"vm_name"`
@@ -132,11 +135,8 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 		return "", fmt.Errorf("create workspace: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(terraformMainTF), 0o644); err != nil {
-		return "", fmt.Errorf("write main.tf: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(workDir, "variables.tf"), []byte(terraformVariablesTF), 0o644); err != nil {
-		return "", fmt.Errorf("write variables.tf: %w", err)
+	if err := r.writeStaticWorkspaceFilesForNodes(workDir, spec.Nodes); err != nil {
+		return "", err
 	}
 
 	for _, n := range spec.Nodes {
@@ -270,13 +270,62 @@ func (r *Runner) writeStaticWorkspaceFiles(workDir string) error {
 	if strings.TrimSpace(workDir) == "" {
 		return errors.New("terraform workspace directory is required")
 	}
-	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(terraformMainTF), 0o644); err != nil {
+
+	nodes := []VMNode{}
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
+	if raw, err := os.ReadFile(tfvarsPath); err == nil {
+		var spec WorkspaceSpec
+		if unmarshalErr := json.Unmarshal(raw, &spec); unmarshalErr != nil {
+			return fmt.Errorf("read terraform workspace variables: %w", unmarshalErr)
+		}
+		nodes = spec.Nodes
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read terraform workspace variables: %w", err)
+	}
+
+	return r.writeStaticWorkspaceFilesForNodes(workDir, nodes)
+}
+
+func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNode) error {
+	mainTF, err := renderTerraformMainTF(nodes)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(mainTF), 0o644); err != nil {
 		return fmt.Errorf("write main.tf: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(workDir, "variables.tf"), []byte(terraformVariablesTF), 0o644); err != nil {
 		return fmt.Errorf("write variables.tf: %w", err)
 	}
 	return nil
+}
+
+func renderTerraformMainTF(nodes []VMNode) (string, error) {
+	nodeNames := make([]string, 0)
+	seen := make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		name := strings.TrimSpace(node.ProxmoxNodeName)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		nodeNames = append(nodeNames, name)
+	}
+	sort.Strings(nodeNames)
+
+	var nodeBlocks strings.Builder
+	for _, name := range nodeNames {
+		nodeBlocks.WriteString("\n    node {\n")
+		nodeBlocks.WriteString(fmt.Sprintf("      name    = %q\n", name))
+		nodeBlocks.WriteString(fmt.Sprintf("      address = %q\n", name))
+		nodeBlocks.WriteString(fmt.Sprintf("      port    = %d\n", defaultProxmoxSSHPort))
+		nodeBlocks.WriteString("    }\n")
+	}
+
+	return strings.Replace(terraformMainTF, "{{ .SSHNodeBlocks }}", nodeBlocks.String(), 1), nil
 }
 
 func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
@@ -324,7 +373,7 @@ const terraformMainTF = `terraform {
 provider "proxmox" {
   ssh {
     agent = false
-    port  = 9846
+{{ .SSHNodeBlocks }}
   }
 }
 
