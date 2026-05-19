@@ -28,7 +28,7 @@ export function StatusBadge({ status }: { status: string }) {
   let variant: Variant = 'default';
   if (s === 'running' || s === 'active' || s === 'healthy' || s === 'online' || s === 'completed' || s === 'success')
     variant = 'success';
-  else if (s === 'pending' || s === 'provisioning' || s === 'bootstrapping' || s === 'upgrading' || s === 'scaling')
+  else if (s === 'pending' || s === 'provisioning' || s === 'redeploying' || s === 'bootstrapping' || s === 'upgrading' || s === 'scaling')
     variant = 'warning';
   else if (s === 'failed' || s === 'error' || s === 'offline' || s === 'unreachable')
     variant = 'danger';

@@ -10,6 +10,7 @@ import type {
   BootstrapConfigRecord,
   BootstrapSSHKeyRecord,
   ClusterPowerActionResponse,
+  ClusterRedeployResponse,
   ScaleResponse,
   UpgradeResponse,
   ReplaceNodeResponse,
@@ -50,6 +51,9 @@ export const restartCluster = (id: number) =>
 
 export const shutdownCluster = (id: number) =>
   client.post<ClusterPowerActionResponse>(`/clusters/${id}/shutdown`).then((r) => r.data);
+
+export const redeployCluster = (id: number) =>
+  client.post<ClusterRedeployResponse>(`/clusters/${id}/redeploy`).then((r) => r.data);
 
 export const getClusterRuns = (id: number) =>
   client.get<ProvisionRunRecord[]>(`/clusters/${id}/runs`).then((r) => r.data);

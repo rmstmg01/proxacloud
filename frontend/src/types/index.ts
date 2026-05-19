@@ -143,6 +143,14 @@ export interface ClusterPowerActionResponse {
   warnings: string[];
 }
 
+export interface ClusterRedeployResponse {
+  cluster_id: number;
+  action: string;
+  status: string;
+  work_dirs: string[];
+  warnings: string[];
+}
+
 export interface ClusterNodeRecord {
   id: number;
   role: string;

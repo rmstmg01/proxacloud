@@ -291,6 +291,26 @@ func (h *Handler) ShutdownCluster(w http.ResponseWriter, r *http.Request) {
 	h.powerActionCluster(w, r, "shutdown")
 }
 
+func (h *Handler) RedeployCluster(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+
+	resp, err := h.service.RedeployCluster(clusterID)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
 func (h *Handler) powerActionCluster(w http.ResponseWriter, r *http.Request, action string) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {

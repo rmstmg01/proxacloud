@@ -201,6 +201,14 @@ type ClusterPowerActionResponse struct {
 	Warnings  []string `json:"warnings"`
 }
 
+type ClusterRedeployResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Action    string   `json:"action"`
+	Status    string   `json:"status"`
+	WorkDirs  []string `json:"work_dirs"`
+	Warnings  []string `json:"warnings"`
+}
+
 type clusterDeleteInfo struct {
 	Name                string
 	ProxmoxCredentialID sql.NullInt64
@@ -1422,6 +1430,81 @@ func (s *Service) ListOperationEvents(clusterID int64, operationID int64, sinceI
 	}
 
 	return out, nil
+}
+
+func (s *Service) RedeployCluster(clusterID int64) (ClusterRedeployResponse, error) {
+	summary, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return ClusterRedeployResponse{}, err
+	}
+
+	nodes, err := s.getClusterNodes(clusterID)
+	if err != nil {
+		return ClusterRedeployResponse{}, err
+	}
+	credentialIDs := distinctCredentialIDsFromClusterNodes(nodes)
+	if len(credentialIDs) == 0 {
+		return ClusterRedeployResponse{}, errors.New("cluster cannot be redeployed because proxmox credential metadata is missing")
+	}
+
+	latestWorkDir, err := s.latestProvisionWorkDir(clusterID)
+	if err != nil {
+		return ClusterRedeployResponse{}, err
+	}
+
+	multiCredential := len(credentialIDs) > 1
+	applyWork := make([]provisionApplyWork, 0, len(credentialIDs))
+	workDirs := make([]string, 0, len(credentialIDs))
+	for _, credentialID := range credentialIDs {
+		candidates := make([]string, 0, 2)
+		if multiCredential {
+			candidates = append(candidates, s.terraformRunner.WorkspaceDirForKey(workspaceKeyForCredential(summary.Name, credentialID)))
+		} else {
+			if latestWorkDir != "" {
+				candidates = append(candidates, latestWorkDir)
+			}
+			candidates = append(candidates, s.terraformRunner.WorkspaceDir(summary.Name))
+		}
+
+		workDir, findErr := firstExistingTerraformWorkspace(candidates)
+		if findErr != nil {
+			return ClusterRedeployResponse{}, findErr
+		}
+		if workDir == "" {
+			return ClusterRedeployResponse{}, fmt.Errorf("no terraform workspace found for cluster %s credential_id=%d", summary.Name, credentialID)
+		}
+		applyWork = append(applyWork, provisionApplyWork{CredentialID: credentialID, Workspace: workDir})
+		workDirs = append(workDirs, workDir)
+	}
+
+	operationID, err := s.startClusterOperation(clusterID, "redeploy", "terraform-apply", 10)
+	if err != nil {
+		return ClusterRedeployResponse{}, err
+	}
+	_ = s.appendOperationEvent(operationID, "terraform-apply", "info", "Redeploy started using existing Terraform workspace configuration")
+
+	primaryWorkspace := workDirs[0]
+	if latestWorkDir != "" {
+		primaryWorkspace = latestWorkDir
+	}
+	if err := s.insertProvisionRun(clusterID, "redeploy", "redeploying", primaryWorkspace, ""); err != nil {
+		_ = s.updateClusterOperation(operationID, "failed", "save-run", 100, err.Error())
+		return ClusterRedeployResponse{}, err
+	}
+	if err := s.updateClusterStatus(clusterID, "redeploying"); err != nil {
+		_ = s.updateClusterOperation(operationID, "failed", "update-status", 100, err.Error())
+		return ClusterRedeployResponse{}, err
+	}
+
+	go s.runProvisionApplyAsync(clusterID, applyWork, primaryWorkspace, operationID)
+
+	return ClusterRedeployResponse{
+		ClusterID: clusterID,
+		Action:    "redeploy",
+		Status:    "redeploying",
+		WorkDirs:  workDirs,
+		Warnings:  []string{"terraform apply is running in background; check cluster run history for progress"},
+	}, nil
 }
 
 func (s *Service) DeleteCluster(clusterID int64) error {
@@ -3514,6 +3597,27 @@ func workspaceKeyForCredential(clusterName string, credentialID int64) string {
 	return fmt.Sprintf("%s-cred-%d", strings.TrimSpace(clusterName), credentialID)
 }
 
+func firstExistingTerraformWorkspace(candidates []string) (string, error) {
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		workDir := strings.TrimSpace(candidate)
+		if workDir == "" {
+			continue
+		}
+		if _, exists := seen[workDir]; exists {
+			continue
+		}
+		seen[workDir] = struct{}{}
+
+		if _, err := os.Stat(filepath.Join(workDir, "terraform.tfvars.json")); err == nil {
+			return workDir, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect terraform workspace: %w", err)
+		}
+	}
+	return "", nil
+}
+
 func distinctCredentialIDsFromClusterNodes(nodes []ClusterNodeRecord) []int64 {
 	seen := make(map[int64]struct{})
 	out := make([]int64, 0)
@@ -4180,6 +4284,24 @@ func (s *Service) getClusterDeleteInfo(clusterID int64) (clusterDeleteInfo, erro
 		return clusterDeleteInfo{}, fmt.Errorf("query cluster delete info: %w", err)
 	}
 	return info, nil
+}
+
+func (s *Service) latestProvisionWorkDir(clusterID int64) (string, error) {
+	var workDir string
+	err := s.db.QueryRow(
+		`SELECT COALESCE((
+		  SELECT pr.work_dir
+		  FROM provision_runs pr
+		  WHERE pr.cluster_id = $1 AND pr.work_dir <> '' AND pr.action IN ('provision', 'redeploy')
+		  ORDER BY pr.created_at DESC
+		  LIMIT 1
+		), '')`,
+		clusterID,
+	).Scan(&workDir)
+	if err != nil {
+		return "", fmt.Errorf("query latest provision workspace: %w", err)
+	}
+	return strings.TrimSpace(workDir), nil
 }
 
 func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {

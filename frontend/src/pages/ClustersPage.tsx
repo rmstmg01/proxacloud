@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Plus, ChevronRight, Play, Power, RotateCcw } from 'lucide-react';
-import { deleteCluster, getClusters, restartCluster, shutdownCluster, startCluster } from '../api/clusters';
+import { Plus, ChevronRight, Play, Power, RotateCcw, RefreshCw } from 'lucide-react';
+import { deleteCluster, getClusters, redeployCluster, restartCluster, shutdownCluster, startCluster } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -41,12 +41,19 @@ export function ClustersPage() {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
     },
   });
+  const redeployMutation = useMutation({
+    mutationFn: redeployCluster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['clusters'] });
+    },
+  });
 
   useEffect(() => {
     if (!dataUpdatedAt) return;
     if (!startMutation.isPending) startMutation.reset();
     if (!restartMutation.isPending) restartMutation.reset();
     if (!shutdownMutation.isPending) shutdownMutation.reset();
+    if (!redeployMutation.isPending) redeployMutation.reset();
     if (!deleteMutation.isPending) deleteMutation.reset();
   }, [dataUpdatedAt]);
 
@@ -70,6 +77,7 @@ export function ClustersPage() {
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
+      {redeployMutation.error && <ErrorMessage error={redeployMutation.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       {clusters && (
         <Card>
@@ -158,6 +166,19 @@ export function ClustersPage() {
                           >
                             <Power className="h-3.5 w-3.5" />
                             Shutdown
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => {
+                              if (window.confirm(`Redeploy cluster \"${c.name}\" using the same generated Terraform configuration?`)) {
+                                redeployMutation.mutate(c.id);
+                              }
+                            }}
+                            loading={redeployMutation.isPending && redeployMutation.variables === c.id}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            Redeploy
                           </Button>
                           <Button
                             variant="danger"
