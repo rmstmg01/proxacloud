@@ -184,6 +184,9 @@ func buildEnv(authEnv []string) []string {
 }
 
 func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStaticWorkspaceFiles(workDir); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
+	}
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
 	initArgs := r.initArgs()
@@ -211,6 +214,9 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 }
 
 func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStaticWorkspaceFiles(workDir); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
+	}
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
 	initArgs := r.initArgs()
@@ -260,6 +266,19 @@ func (r *Runner) execTerraform(workDir string, env []string, args ...string) (st
 	return combined, nil
 }
 
+func (r *Runner) writeStaticWorkspaceFiles(workDir string) error {
+	if strings.TrimSpace(workDir) == "" {
+		return errors.New("terraform workspace directory is required")
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(terraformMainTF), 0o644); err != nil {
+		return fmt.Errorf("write main.tf: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "variables.tf"), []byte(terraformVariablesTF), 0o644); err != nil {
+		return fmt.Errorf("write variables.tf: %w", err)
+	}
+	return nil
+}
+
 func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
 	tpl, err := template.New("cloudinit").Parse(cloudInitTemplate)
 	if err != nil {
@@ -305,6 +324,7 @@ const terraformMainTF = `terraform {
 provider "proxmox" {
   ssh {
     agent = false
+    port  = 9846
   }
 }
 
