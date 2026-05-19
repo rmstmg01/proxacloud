@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,7 +137,7 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 		return "", fmt.Errorf("create workspace: %w", err)
 	}
 
-	if err := r.writeStaticWorkspaceFilesForNodes(workDir, spec.Nodes); err != nil {
+	if err := r.writeStaticWorkspaceFilesForNodes(workDir, spec.Nodes, ""); err != nil {
 		return "", err
 	}
 
@@ -184,7 +186,7 @@ func buildEnv(authEnv []string) []string {
 }
 
 func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
-	if err := r.writeStaticWorkspaceFiles(workDir); err != nil {
+	if err := r.writeStaticWorkspaceFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
 	}
 	output := strings.Builder{}
@@ -214,7 +216,7 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 }
 
 func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
-	if err := r.writeStaticWorkspaceFiles(workDir); err != nil {
+	if err := r.writeStaticWorkspaceFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
 	}
 	output := strings.Builder{}
@@ -266,7 +268,7 @@ func (r *Runner) execTerraform(workDir string, env []string, args ...string) (st
 	return combined, nil
 }
 
-func (r *Runner) writeStaticWorkspaceFiles(workDir string) error {
+func (r *Runner) writeStaticWorkspaceFiles(workDir string, endpoint string) error {
 	if strings.TrimSpace(workDir) == "" {
 		return errors.New("terraform workspace directory is required")
 	}
@@ -283,11 +285,11 @@ func (r *Runner) writeStaticWorkspaceFiles(workDir string) error {
 		return fmt.Errorf("read terraform workspace variables: %w", err)
 	}
 
-	return r.writeStaticWorkspaceFilesForNodes(workDir, nodes)
+	return r.writeStaticWorkspaceFilesForNodes(workDir, nodes, endpoint)
 }
 
-func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNode) error {
-	mainTF, err := renderTerraformMainTF(nodes)
+func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNode, endpoint string) error {
+	mainTF, err := renderTerraformMainTF(nodes, endpoint)
 	if err != nil {
 		return err
 	}
@@ -300,7 +302,7 @@ func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNod
 	return nil
 }
 
-func renderTerraformMainTF(nodes []VMNode) (string, error) {
+func renderTerraformMainTF(nodes []VMNode, endpoint string) (string, error) {
 	nodeNames := make([]string, 0)
 	seen := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
@@ -316,16 +318,43 @@ func renderTerraformMainTF(nodes []VMNode) (string, error) {
 	}
 	sort.Strings(nodeNames)
 
+	address := proxmoxSSHAddress(endpoint)
 	var nodeBlocks strings.Builder
 	for _, name := range nodeNames {
+		nodeAddress := name
+		if address != "" {
+			nodeAddress = address
+		}
 		nodeBlocks.WriteString("\n    node {\n")
 		nodeBlocks.WriteString(fmt.Sprintf("      name    = %q\n", name))
-		nodeBlocks.WriteString(fmt.Sprintf("      address = %q\n", name))
+		nodeBlocks.WriteString(fmt.Sprintf("      address = %q\n", nodeAddress))
 		nodeBlocks.WriteString(fmt.Sprintf("      port    = %d\n", defaultProxmoxSSHPort))
 		nodeBlocks.WriteString("    }\n")
 	}
 
 	return strings.Replace(terraformMainTF, "{{ .SSHNodeBlocks }}", nodeBlocks.String(), 1), nil
+}
+
+func proxmoxSSHAddress(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ""
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		host = strings.TrimSpace(parsed.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	if withoutPort, _, err := net.SplitHostPort(host); err == nil {
+		host = withoutPort
+	}
+	return strings.Trim(host, "[]")
 }
 
 func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
