@@ -2876,7 +2876,7 @@ func (s *Service) StartKubectlCommand(clusterID int64, req KubectlCommandRequest
 	}
 
 	rawCommand := strings.TrimSpace(req.Command)
-	args, err := parseKubectlCommand(rawCommand)
+	commands, err := parseKubectlCommands(rawCommand)
 	if err != nil {
 		return KubectlCommandRun{}, err
 	}
@@ -2895,7 +2895,7 @@ func (s *Service) StartKubectlCommand(clusterID int64, req KubectlCommandRequest
 		KubectlCommandRun: KubectlCommandRun{
 			ID:        runID,
 			ClusterID: clusterID,
-			Command:   "kubectl " + strings.Join(args, " "),
+			Command:   formatKubectlCommands(commands),
 			Status:    "running",
 			StartedAt: time.Now().UTC(),
 		},
@@ -2905,7 +2905,7 @@ func (s *Service) StartKubectlCommand(clusterID int64, req KubectlCommandRequest
 	s.kubectlRuns[runID] = run
 	s.kubectlRunsMu.Unlock()
 
-	go s.executeKubectlCommand(run, kubeconfigPath, args)
+	go s.executeKubectlCommands(run, kubeconfigPath, commands)
 
 	return run.snapshot(), nil
 }
@@ -2920,26 +2920,50 @@ func (s *Service) GetKubectlCommandRun(clusterID int64, runID string) (KubectlCo
 	return run.snapshot(), nil
 }
 
-func (s *Service) executeKubectlCommand(run *kubectlCommandRunState, kubeconfigPath string, args []string) {
+func (s *Service) executeKubectlCommands(run *kubectlCommandRunState, kubeconfigPath string, commands [][]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	for index, args := range commands {
+		if ctx.Err() != nil {
+			break
+		}
+		if len(commands) > 1 {
+			run.appendOutput(fmt.Sprintf("### Command %d/%d: kubectl %s\n", index+1, len(commands), strings.Join(args, " ")))
+		}
+		if err := runKubectlCommand(ctx, run, kubeconfigPath, args); err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				run.finish("failed", "kubectl command sequence timed out after 10 minutes")
+				return
+			}
+			run.finish("failed", err.Error())
+			return
+		}
+		if len(commands) > 1 {
+			run.appendOutput("\n")
+		}
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		run.finish("failed", "kubectl command sequence timed out after 10 minutes")
+		return
+	}
+	run.finish("succeeded", "")
+}
+
+func runKubectlCommand(ctx context.Context, run *kubectlCommandRunState, kubeconfigPath string, args []string) error {
 	fullArgs := append([]string{"--kubeconfig", kubeconfigPath}, args...)
 	cmd := exec.CommandContext(ctx, "kubectl", fullArgs...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		run.finish("failed", fmt.Sprintf("open stdout pipe: %v", err))
-		return
+		return fmt.Errorf("open stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		run.finish("failed", fmt.Sprintf("open stderr pipe: %v", err))
-		return
+		return fmt.Errorf("open stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		run.finish("failed", fmt.Sprintf("start kubectl: %v", err))
-		return
+		return fmt.Errorf("start kubectl: %w", err)
 	}
 
 	var wg sync.WaitGroup
@@ -2949,15 +2973,10 @@ func (s *Service) executeKubectlCommand(run *kubectlCommandRunState, kubeconfigP
 
 	err = cmd.Wait()
 	wg.Wait()
-	if ctx.Err() == context.DeadlineExceeded {
-		run.finish("failed", "kubectl command timed out after 10 minutes")
-		return
-	}
 	if err != nil {
-		run.finish("failed", err.Error())
-		return
+		return err
 	}
-	run.finish("succeeded", "")
+	return nil
 }
 
 func copyKubectlOutput(run *kubectlCommandRunState, reader io.Reader, wg *sync.WaitGroup) {
@@ -3012,10 +3031,32 @@ func newKubectlRunID() (string, error) {
 	return hex.EncodeToString(tokenBytes), nil
 }
 
-func parseKubectlCommand(command string) ([]string, error) {
+func parseKubectlCommands(command string) ([][]string, error) {
 	if command == "" {
 		return nil, errors.New("kubectl command is required")
 	}
+	lines := strings.Split(command, "\n")
+	commands := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		line = strings.TrimPrefix(line, "$ ")
+		line = strings.TrimPrefix(line, "> ")
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		args, err := parseKubectlCommand(line)
+		if err != nil {
+			return nil, err
+		}
+		commands = append(commands, args)
+	}
+	if len(commands) == 0 {
+		return nil, errors.New("kubectl command is required")
+	}
+	return commands, nil
+}
+
+func parseKubectlCommand(command string) ([]string, error) {
 	parts, err := splitCommandFields(command)
 	if err != nil {
 		return nil, err
@@ -3035,6 +3076,14 @@ func parseKubectlCommand(command string) ([]string, error) {
 		}
 	}
 	return parts, nil
+}
+
+func formatKubectlCommands(commands [][]string) string {
+	lines := make([]string, 0, len(commands))
+	for _, args := range commands {
+		lines = append(lines, "kubectl "+strings.Join(args, " "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func splitCommandFields(command string) ([]string, error) {

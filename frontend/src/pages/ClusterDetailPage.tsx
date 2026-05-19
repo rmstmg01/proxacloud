@@ -791,7 +791,7 @@ spec:
 `;
 
 function KubectlCommandPanel({ id }: { id: number }) {
-  const [command, setCommand] = useState('kubectl get pods -A');
+  const [command, setCommand] = useState('kubectl get pods -A\nkubectl get events -A --sort-by=.lastTimestamp');
   const [runID, setRunID] = useState('');
 
   const runQuery = useQuery({
@@ -819,12 +819,14 @@ function KubectlCommandPanel({ id }: { id: number }) {
   return (
     <div className="mt-4 border-t border-slate-200 pt-4">
       <form onSubmit={runCommand} className="space-y-3">
-        <Input
-          label="Kubectl command"
+        <Textarea
+          label="Kubectl commands"
           value={command}
           onChange={(e) => setCommand(e.target.value)}
-          placeholder="kubectl get pods -A"
-          helperText="The cluster kubeconfig is selected automatically; use either kubectl get pods -A or get pods -A."
+          rows={5}
+          className="font-mono text-xs"
+          placeholder={'kubectl get pods -A\nkubectl get events -A --sort-by=.lastTimestamp'}
+          helperText="Paste one kubectl command per line. The cluster kubeconfig is selected automatically."
         />
         <div className="flex flex-wrap items-center gap-2">
           <Button type="submit" loading={runMut.isPending}>
