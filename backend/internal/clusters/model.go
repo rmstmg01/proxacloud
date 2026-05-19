@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -66,6 +67,8 @@ type Service struct {
 	operationsDir   string
 	autoApply       bool
 	autoBootstrap   bool
+	kubectlRunsMu   sync.RWMutex
+	kubectlRuns     map[string]*kubectlCommandRunState
 }
 
 var ErrClusterExists = errors.New("cluster already exists")
@@ -360,6 +363,26 @@ type DeployAppResponse struct {
 	Warnings      []string `json:"warnings"`
 }
 
+type KubectlCommandRequest struct {
+	Command string `json:"command"`
+}
+
+type KubectlCommandRun struct {
+	ID         string     `json:"id"`
+	ClusterID  int64      `json:"cluster_id"`
+	Command    string     `json:"command"`
+	Status     string     `json:"status"`
+	Output     string     `json:"output"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+type kubectlCommandRunState struct {
+	KubectlCommandRun
+	outputMu sync.RWMutex
+}
+
 type ApplicationManifestRecord struct {
 	ID               int64     `json:"id"`
 	ClusterID        int64     `json:"cluster_id"`
@@ -594,6 +617,7 @@ func NewService(
 		operationsDir:   operationsDir,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
+		kubectlRuns:     make(map[string]*kubectlCommandRunState),
 	}
 }
 
@@ -2844,6 +2868,222 @@ func (s *Service) resolveKubeconfigPath(path string) (string, error) {
 		return "", fmt.Errorf("kubeconfig path %s is a directory; mount the kubeconfig file, not a directory", path)
 	}
 	return path, nil
+}
+
+func (s *Service) StartKubectlCommand(clusterID int64, req KubectlCommandRequest) (KubectlCommandRun, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return KubectlCommandRun{}, err
+	}
+
+	rawCommand := strings.TrimSpace(req.Command)
+	args, err := parseKubectlCommand(rawCommand)
+	if err != nil {
+		return KubectlCommandRun{}, err
+	}
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return KubectlCommandRun{}, err
+	}
+
+	runID, err := newKubectlRunID()
+	if err != nil {
+		return KubectlCommandRun{}, err
+	}
+
+	run := &kubectlCommandRunState{
+		KubectlCommandRun: KubectlCommandRun{
+			ID:        runID,
+			ClusterID: clusterID,
+			Command:   "kubectl " + strings.Join(args, " "),
+			Status:    "running",
+			StartedAt: time.Now().UTC(),
+		},
+	}
+
+	s.kubectlRunsMu.Lock()
+	s.kubectlRuns[runID] = run
+	s.kubectlRunsMu.Unlock()
+
+	go s.executeKubectlCommand(run, kubeconfigPath, args)
+
+	return run.snapshot(), nil
+}
+
+func (s *Service) GetKubectlCommandRun(clusterID int64, runID string) (KubectlCommandRun, error) {
+	s.kubectlRunsMu.RLock()
+	run := s.kubectlRuns[runID]
+	s.kubectlRunsMu.RUnlock()
+	if run == nil || run.ClusterID != clusterID {
+		return KubectlCommandRun{}, errors.New("kubectl command run not found")
+	}
+	return run.snapshot(), nil
+}
+
+func (s *Service) executeKubectlCommand(run *kubectlCommandRunState, kubeconfigPath string, args []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	fullArgs := append([]string{"--kubeconfig", kubeconfigPath}, args...)
+	cmd := exec.CommandContext(ctx, "kubectl", fullArgs...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		run.finish("failed", fmt.Sprintf("open stdout pipe: %v", err))
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		run.finish("failed", fmt.Sprintf("open stderr pipe: %v", err))
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		run.finish("failed", fmt.Sprintf("start kubectl: %v", err))
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go copyKubectlOutput(run, stdout, &wg)
+	go copyKubectlOutput(run, stderr, &wg)
+
+	err = cmd.Wait()
+	wg.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		run.finish("failed", "kubectl command timed out after 10 minutes")
+		return
+	}
+	if err != nil {
+		run.finish("failed", err.Error())
+		return
+	}
+	run.finish("succeeded", "")
+}
+
+func copyKubectlOutput(run *kubectlCommandRunState, reader io.Reader, wg *sync.WaitGroup) {
+	defer wg.Done()
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			run.appendOutput(string(buf[:n]))
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (r *kubectlCommandRunState) appendOutput(chunk string) {
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	r.Output += chunk
+}
+
+func (r *kubectlCommandRunState) finish(status, errText string) {
+	now := time.Now().UTC()
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	r.Status = status
+	r.Error = errText
+	r.FinishedAt = &now
+}
+
+func (r *kubectlCommandRunState) snapshot() KubectlCommandRun {
+	r.outputMu.RLock()
+	defer r.outputMu.RUnlock()
+	return KubectlCommandRun{
+		ID:         r.ID,
+		ClusterID:  r.ClusterID,
+		Command:    r.Command,
+		Status:     r.Status,
+		Output:     r.Output,
+		Error:      r.Error,
+		StartedAt:  r.StartedAt,
+		FinishedAt: r.FinishedAt,
+	}
+}
+
+func newKubectlRunID() (string, error) {
+	tokenBytes := make([]byte, 12)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("generate kubectl run id: %w", err)
+	}
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+func parseKubectlCommand(command string) ([]string, error) {
+	if command == "" {
+		return nil, errors.New("kubectl command is required")
+	}
+	parts, err := splitCommandFields(command)
+	if err != nil {
+		return nil, err
+	}
+	if len(parts) == 0 {
+		return nil, errors.New("kubectl command is required")
+	}
+	if parts[0] == "kubectl" {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return nil, errors.New("kubectl arguments are required")
+	}
+	for _, part := range parts {
+		if part == "--kubeconfig" || strings.HasPrefix(part, "--kubeconfig=") {
+			return nil, errors.New("do not include --kubeconfig; the cluster kubeconfig is selected automatically")
+		}
+	}
+	return parts, nil
+}
+
+func splitCommandFields(command string) ([]string, error) {
+	fields := []string{}
+	var current strings.Builder
+	var quote rune
+	escaped := false
+
+	for _, r := range command {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if current.Len() > 0 {
+				fields = append(fields, current.String())
+				current.Reset()
+			}
+			continue
+		}
+		current.WriteRune(r)
+	}
+	if escaped {
+		current.WriteRune('\\')
+	}
+	if quote != 0 {
+		return nil, errors.New("unterminated quote in kubectl command")
+	}
+	if current.Len() > 0 {
+		fields = append(fields, current.String())
+	}
+	return fields, nil
 }
 
 func (s *Service) GetMetalLB(clusterID int64) (MetalLBStatusResponse, error) {

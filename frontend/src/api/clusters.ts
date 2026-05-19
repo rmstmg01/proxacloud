@@ -20,6 +20,7 @@ import type {
   DeployAppResponse,
   ApplicationManifestRecord,
   ApplicationManifestRevisionRecord,
+  KubectlCommandRun,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
   EtcdSnapshotRecord,
@@ -287,6 +288,16 @@ export const redeployApplicationManifest = (
 ) =>
   client
     .post<DeployAppResponse>(`/clusters/${id}/apps/${appID}/redeploy`, body)
+    .then((r) => r.data);
+
+export const startKubectlCommand = (id: number, command: string) =>
+  client
+    .post<KubectlCommandRun>(`/clusters/${id}/kubectl-commands`, { command })
+    .then((r) => r.data);
+
+export const getKubectlCommandRun = (id: number, runID: string) =>
+  client
+    .get<KubectlCommandRun>(`/clusters/${id}/kubectl-commands/${runID}`)
     .then((r) => r.data);
 
 export const deployObservability = (

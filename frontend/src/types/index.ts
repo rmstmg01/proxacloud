@@ -337,6 +337,17 @@ export interface ApplicationManifestRevisionRecord {
   created_at: string;
 }
 
+export interface KubectlCommandRun {
+  id: string;
+  cluster_id: number;
+  command: string;
+  status: string;
+  output: string;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+}
+
 export interface DeployObservabilityResponse {
   cluster_id: number;
   status: string;

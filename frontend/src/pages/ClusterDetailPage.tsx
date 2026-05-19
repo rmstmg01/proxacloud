@@ -1,7 +1,7 @@
 import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Play, RefreshCw } from 'lucide-react';
 import {
   getCluster,
   getClusterRuns,
@@ -20,6 +20,8 @@ import {
   getApplicationManifestRevision,
   getApplicationManifestRevisions,
   redeployApplicationManifest,
+  startKubectlCommand,
+  getKubectlCommandRun,
   deployObservability,
   getObservability,
   createEtcdSnapshot,
@@ -788,6 +790,94 @@ spec:
                   number: 80
 `;
 
+function KubectlCommandPanel({ id }: { id: number }) {
+  const [command, setCommand] = useState('kubectl get pods -A');
+  const [runID, setRunID] = useState('');
+
+  const runQuery = useQuery({
+    queryKey: ['kubectl-command-run', id, runID],
+    queryFn: () => getKubectlCommandRun(id, runID),
+    enabled: Boolean(runID),
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
+  });
+
+  const runMut = useMutation({
+    mutationFn: (cmd: string) => startKubectlCommand(id, cmd),
+    onSuccess: (data) => setRunID(data.id),
+  });
+
+  const activeRun = runQuery.data ?? runMut.data;
+  const isRunning = activeRun?.status === 'running';
+
+  const runCommand = async (e?: FormEvent) => {
+    e?.preventDefault();
+    const trimmed = command.trim();
+    if (!trimmed) return;
+    await runMut.mutateAsync(trimmed);
+  };
+
+  return (
+    <div className="mt-4 border-t border-slate-200 pt-4">
+      <form onSubmit={runCommand} className="space-y-3">
+        <Input
+          label="Kubectl command"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder="kubectl get pods -A"
+          helperText="The cluster kubeconfig is selected automatically; use either kubectl get pods -A or get pods -A."
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="submit" loading={runMut.isPending}>
+            <Play className="h-4 w-4" />
+            Run
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => runCommand()}
+            loading={runMut.isPending}
+            disabled={!command.trim()}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh Output
+          </Button>
+          {runID && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => runQuery.refetch()}
+              loading={runQuery.isFetching && !isRunning}
+            >
+              <RefreshCw className={`h-4 w-4 ${isRunning ? 'animate-spin' : ''}`} />
+              Poll
+            </Button>
+          )}
+          {activeRun && (
+            <span className="text-sm text-slate-600">
+              Status: <span className="font-medium">{activeRun.status}</span>
+            </span>
+          )}
+        </div>
+      </form>
+      {runMut.error && <ErrorMessage error={runMut.error} />}
+      {runQuery.error && <ErrorMessage error={runQuery.error} />}
+      {activeRun && (
+        <Textarea
+          label="Command output"
+          value={[
+            `$ ${activeRun.command}`,
+            activeRun.output || (activeRun.status === 'running' ? 'Running...' : ''),
+            activeRun.error ? `error: ${activeRun.error}` : '',
+          ].filter(Boolean).join('\n')}
+          readOnly
+          rows={10}
+          className="mt-4 font-mono text-xs"
+        />
+      )}
+    </div>
+  );
+}
+
 function ApplicationsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
@@ -1098,6 +1188,7 @@ function ApplicationsTab({ id }: { id: number }) {
               className="mt-4 font-mono text-xs"
             />
           )}
+          <KubectlCommandPanel id={id} />
         </CardContent>
       </Card>
 
