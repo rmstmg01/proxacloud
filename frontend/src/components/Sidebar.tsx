@@ -7,6 +7,7 @@ import {
   Users,
   KeyRound,
   ShieldCheck,
+  FileText,
   GitBranch,
   LogOut,
 } from 'lucide-react';
@@ -21,6 +22,8 @@ const navItems = [
   { to: '/users', icon: Users, label: 'Users' },
   { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
   { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },
+  { to: '/secrets', icon: KeyRound, label: 'Secrets' },
+  { to: '/configmaps', icon: FileText, label: 'ConfigMaps' },
 ];
 
 export function Sidebar() {
