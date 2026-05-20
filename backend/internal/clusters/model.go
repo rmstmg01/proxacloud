@@ -3,8 +3,10 @@ package clusters
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -346,16 +348,18 @@ type DeployCertificateManagerResponse struct {
 }
 
 type DeployAppRequest struct {
-	Name             string `json:"name"`
-	Namespace        string `json:"namespace"`
-	Manifest         string `json:"manifest"`
-	Hostname         string `json:"hostname"`
-	IngressClass     string `json:"ingress_class"`
-	TLSSecretName    string `json:"tls_secret_name"`
-	TLSCertificateID int64  `json:"tls_certificate_id"`
-	TLSFullchainPEM  string `json:"tls_fullchain_pem"`
-	TLSPrivateKeyPEM string `json:"tls_private_key_pem"`
-	Apply            bool   `json:"apply"`
+	Name                 string  `json:"name"`
+	Namespace            string  `json:"namespace"`
+	Manifest             string  `json:"manifest"`
+	Hostname             string  `json:"hostname"`
+	IngressClass         string  `json:"ingress_class"`
+	TLSSecretName        string  `json:"tls_secret_name"`
+	TLSCertificateID     int64   `json:"tls_certificate_id"`
+	TLSFullchainPEM      string  `json:"tls_fullchain_pem"`
+	TLSPrivateKeyPEM     string  `json:"tls_private_key_pem"`
+	SelectedSecretIDs    []int64 `json:"selected_secret_ids"`
+	ApplySelectedSecrets bool    `json:"apply_selected_secrets"`
+	Apply                bool    `json:"apply"`
 }
 
 type DeployAppResponse struct {
@@ -369,8 +373,53 @@ type DeployAppResponse struct {
 	Hostname      string   `json:"hostname,omitempty"`
 	IngressClass  string   `json:"ingress_class,omitempty"`
 	TLSSecretName string   `json:"tls_secret_name,omitempty"`
+	SecretNames   []string `json:"secret_names,omitempty"`
 	Output        string   `json:"output,omitempty"`
 	Warnings      []string `json:"warnings"`
+}
+
+type ClusterSecretItem struct {
+	Key string `json:"key"`
+}
+
+type ClusterSecretRecord struct {
+	ID             int64                  `json:"id"`
+	ClusterID      int64                  `json:"cluster_id"`
+	Name           string                 `json:"name"`
+	Namespace      string                 `json:"namespace"`
+	Provider       string                 `json:"provider"`
+	Type           string                 `json:"type"`
+	Description    string                 `json:"description"`
+	ExternalRef    string                 `json:"external_ref,omitempty"`
+	ProviderConfig map[string]interface{} `json:"provider_config,omitempty"`
+	Immutable      bool                   `json:"immutable"`
+	Keys           []string               `json:"keys"`
+	LastAppliedAt  *time.Time             `json:"last_applied_at,omitempty"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+}
+
+type UpsertClusterSecretRequest struct {
+	Name           string                 `json:"name"`
+	Namespace      string                 `json:"namespace"`
+	Provider       string                 `json:"provider"`
+	Type           string                 `json:"type"`
+	Description    string                 `json:"description"`
+	ExternalRef    string                 `json:"external_ref"`
+	ProviderConfig map[string]interface{} `json:"provider_config"`
+	Immutable      bool                   `json:"immutable"`
+	Data           map[string]string      `json:"data"`
+}
+
+type ApplyClusterSecretResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	SecretID  int64    `json:"secret_id"`
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Provider  string   `json:"provider"`
+	Status    string   `json:"status"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings"`
 }
 
 type KubectlCommandRequest struct {
@@ -2304,6 +2353,150 @@ func (s *Service) DeployCertificateManager(clusterID int64, req DeployCertificat
 	}, nil
 }
 
+func (s *Service) ListClusterSecrets(clusterID int64) ([]ClusterSecretRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
+		        provider_config, immutable, last_applied_at, created_at, updated_at
+		 FROM cluster_secrets
+		 WHERE cluster_id = $1
+		 ORDER BY namespace ASC, name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster secrets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSecretRecord, 0)
+	for rows.Next() {
+		rec, scanErr := s.scanClusterSecret(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	req = normalizeClusterSecretRequest(req)
+	if err := validateClusterSecretRequest(req, true); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+
+	configJSON, err := json.Marshal(req.ProviderConfig)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("encode provider config: %w", err)
+	}
+	var id int64
+	err = s.db.QueryRow(
+		`INSERT INTO cluster_secrets
+		 (cluster_id, name, namespace, provider, type, description, external_ref, provider_config, immutable)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id`,
+		clusterID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable,
+	).Scan(&id)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("create cluster secret: %w", err)
+	}
+	if err := s.replaceClusterSecretItems(clusterID, id, req.Name, req.Data); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	return s.GetClusterSecret(clusterID, id)
+}
+
+func (s *Service) GetClusterSecret(clusterID, secretID int64) (ClusterSecretRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	row := s.db.QueryRow(
+		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
+		        provider_config, immutable, last_applied_at, created_at, updated_at
+		 FROM cluster_secrets
+		 WHERE cluster_id = $1 AND id = $2`,
+		clusterID,
+		secretID,
+	)
+	rec, err := s.scanClusterSecret(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterSecretRecord{}, ErrApplicationManifestNotFound
+		}
+		return ClusterSecretRecord{}, fmt.Errorf("get cluster secret: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) UpdateClusterSecret(clusterID, secretID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
+	if _, err := s.GetClusterSecret(clusterID, secretID); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	req = normalizeClusterSecretRequest(req)
+	if err := validateClusterSecretRequest(req, false); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	configJSON, err := json.Marshal(req.ProviderConfig)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("encode provider config: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE cluster_secrets
+		 SET name = $3, namespace = $4, provider = $5, type = $6, description = $7,
+		     external_ref = $8, provider_config = $9, immutable = $10, updated_at = NOW()
+		 WHERE cluster_id = $1 AND id = $2`,
+		clusterID, secretID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable,
+	)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("update cluster secret: %w", err)
+	}
+	if req.Data != nil {
+		if err := s.replaceClusterSecretItems(clusterID, secretID, req.Name, req.Data); err != nil {
+			return ClusterSecretRecord{}, err
+		}
+	}
+	return s.GetClusterSecret(clusterID, secretID)
+}
+
+func (s *Service) DeleteClusterSecret(clusterID, secretID int64) error {
+	res, err := s.db.Exec(`DELETE FROM cluster_secrets WHERE cluster_id = $1 AND id = $2`, clusterID, secretID)
+	if err != nil {
+		return fmt.Errorf("delete cluster secret: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrApplicationManifestNotFound
+	}
+	return nil
+}
+
+func (s *Service) ApplyClusterSecret(clusterID, secretID int64) (ApplyClusterSecretResponse, error) {
+	rec, err := s.GetClusterSecret(clusterID, secretID)
+	if err != nil {
+		return ApplyClusterSecretResponse{}, err
+	}
+	output, err := s.applyClusterSecretRecord(rec)
+	if err != nil {
+		return ApplyClusterSecretResponse{}, err
+	}
+	_, _ = s.db.Exec(`UPDATE cluster_secrets SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, secretID)
+	return ApplyClusterSecretResponse{
+		ClusterID: clusterID,
+		SecretID:  secretID,
+		Name:      rec.Name,
+		Namespace: rec.Namespace,
+		Provider:  rec.Provider,
+		Status:    "applied",
+		Output:    output,
+		Warnings:  providerWarnings(rec.Provider),
+	}, nil
+}
+
 func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return DeployAppResponse{}, err
@@ -2378,6 +2571,13 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if hostname != "" && !hasTLSPEMs {
 		warnings = append(warnings, fmt.Sprintf("no TLS PEMs were uploaded; ingress will reference existing secret %s", tlsSecretName))
 	}
+	selectedSecrets, err := s.resolveSelectedClusterSecrets(clusterID, namespace, req.SelectedSecretIDs)
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+	if len(selectedSecrets) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d predefined cluster secret(s) selected for this deployment", len(selectedSecrets)))
+	}
 	appID, revisionID, revisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
 		ClusterID:        clusterID,
 		Name:             name,
@@ -2394,6 +2594,9 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if err != nil {
 		return DeployAppResponse{}, err
 	}
+	if err := s.replaceApplicationManifestSecrets(appID, req.SelectedSecretIDs); err != nil {
+		return DeployAppResponse{}, err
+	}
 	if req.Apply {
 		status = "app-deployed"
 		applyOutput, err := s.executeAppManifestApply(namespace, renderedManifest, appTLSSecretSpec{
@@ -2401,7 +2604,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		})
+		}, selectedSecrets, req.ApplySelectedSecrets)
 		output = applyOutput
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(revisionID, "failed", output, err.Error())
@@ -2434,6 +2637,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 		Hostname:      hostname,
 		IngressClass:  ingressClass,
 		TLSSecretName: tlsSecretName,
+		SecretNames:   clusterSecretNames(selectedSecrets),
 		Output:        output,
 		Warnings:      warnings,
 	}, nil
@@ -2595,7 +2799,7 @@ func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req Redepl
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		})
+		}, nil, false)
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(newRevisionID, "failed", output, err.Error())
 			_ = s.insertProvisionRun(clusterID, "app-redeploy", "failed", app.Name, output)
@@ -2779,7 +2983,7 @@ type appTLSSecretSpec struct {
 	CreateFromUpload bool
 }
 
-func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec) (string, error) {
+func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -2806,6 +3010,16 @@ func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret 
 		outputs = append(outputs, secretOutput)
 		if err != nil {
 			return strings.Join(outputs, "\n"), err
+		}
+	}
+	if applySelectedSecrets {
+		for _, selected := range selectedSecrets {
+			secretOutput, err := s.applyClusterSecretRecordWithContext(ctx, kubeconfigPath, selected)
+			outputs = append(outputs, secretOutput)
+			if err != nil {
+				return strings.Join(outputs, "\n"), err
+			}
+			_, _ = s.db.Exec(`UPDATE cluster_secrets SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, selected.ID)
 		}
 	}
 
@@ -2877,6 +3091,340 @@ func (s *Service) applyTLSSecret(ctx context.Context, kubeconfigPath, namespace 
 	}
 
 	return string(output), nil
+}
+
+type clusterSecretScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func (s *Service) scanClusterSecret(row clusterSecretScanner) (ClusterSecretRecord, error) {
+	var rec ClusterSecretRecord
+	var configRaw []byte
+	var lastApplied sql.NullTime
+	err := row.Scan(
+		&rec.ID,
+		&rec.ClusterID,
+		&rec.Name,
+		&rec.Namespace,
+		&rec.Provider,
+		&rec.Type,
+		&rec.Description,
+		&rec.ExternalRef,
+		&configRaw,
+		&rec.Immutable,
+		&lastApplied,
+		&rec.CreatedAt,
+		&rec.UpdatedAt,
+	)
+	if err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	if len(configRaw) > 0 {
+		_ = json.Unmarshal(configRaw, &rec.ProviderConfig)
+	}
+	if rec.ProviderConfig == nil {
+		rec.ProviderConfig = map[string]interface{}{}
+	}
+	if lastApplied.Valid {
+		rec.LastAppliedAt = &lastApplied.Time
+	}
+	keys, err := s.clusterSecretKeys(rec.ID)
+	if err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	rec.Keys = keys
+	return rec, nil
+}
+
+func (s *Service) clusterSecretKeys(secretID int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT key FROM cluster_secret_items WHERE cluster_secret_id = $1 ORDER BY key ASC`, secretID)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster secret keys: %w", err)
+	}
+	defer rows.Close()
+	keys := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err == nil {
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
+}
+
+func (s *Service) replaceClusterSecretItems(clusterID, secretID int64, secretName string, data map[string]string) error {
+	if data == nil {
+		return nil
+	}
+	if s.secrets == nil {
+		return errors.New("secret store is not configured")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin cluster secret item update: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM cluster_secret_items WHERE cluster_secret_id = $1`, secretID); err != nil {
+		return fmt.Errorf("clear cluster secret items: %w", err)
+	}
+	for key, value := range data {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return errors.New("secret data keys must be non-empty")
+		}
+		ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", clusterID, secretID), key, []byte(value))
+		if err != nil {
+			return fmt.Errorf("store cluster secret item %s: %w", key, err)
+		}
+		sum := sha256.Sum256([]byte(value))
+		if _, err := tx.Exec(
+			`INSERT INTO cluster_secret_items (cluster_secret_id, key, secret_ref, value_sha256)
+			 VALUES ($1, $2, $3, $4)`,
+			secretID, key, ref, hex.EncodeToString(sum[:]),
+		); err != nil {
+			return fmt.Errorf("insert cluster secret item %s: %w", key, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Service) resolveSelectedClusterSecrets(clusterID int64, appNamespace string, ids []int64) ([]ClusterSecretRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]ClusterSecretRecord, 0, len(ids))
+	seen := map[int64]struct{}{}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		rec, err := s.GetClusterSecret(clusterID, id)
+		if err != nil {
+			return nil, err
+		}
+		if rec.Namespace != appNamespace {
+			return nil, fmt.Errorf("selected secret %s is in namespace %s, but app deployment namespace is %s", rec.Name, rec.Namespace, appNamespace)
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) replaceApplicationManifestSecrets(appID int64, secretIDs []int64) error {
+	_, err := s.db.Exec(`DELETE FROM application_manifest_secrets WHERE application_manifest_id = $1`, appID)
+	if err != nil {
+		return fmt.Errorf("clear application secret selections: %w", err)
+	}
+	for _, secretID := range secretIDs {
+		if secretID <= 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`INSERT INTO application_manifest_secrets (application_manifest_id, cluster_secret_id)
+			 VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			appID,
+			secretID,
+		); err != nil {
+			return fmt.Errorf("record application secret selection: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) applyClusterSecretRecord(rec ClusterSecretRecord) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+	return s.applyClusterSecretRecordWithContext(ctx, kubeconfigPath, rec)
+}
+
+func (s *Service) applyClusterSecretRecordWithContext(ctx context.Context, kubeconfigPath string, rec ClusterSecretRecord) (string, error) {
+	manifest, err := s.buildClusterSecretApplyManifest(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", rec.Namespace, "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("apply cluster secret %s/%s: %w\nOutput: %s", rec.Namespace, rec.Name, err, string(output))
+	}
+	return string(output), nil
+}
+
+func (s *Service) buildClusterSecretApplyManifest(ctx context.Context, rec ClusterSecretRecord) (string, error) {
+	switch rec.Provider {
+	case "native":
+		values, err := s.loadClusterSecretValues(ctx, rec.ID)
+		if err != nil {
+			return "", err
+		}
+		return buildNativeKubernetesSecretManifest(rec, values), nil
+	case "external-secrets-operator", "hashicorp-vault", "aws-secrets-manager", "azure-key-vault", "google-secret-manager":
+		return buildExternalSecretManifest(rec), nil
+	case "bitnami-sealed-secrets":
+		if strings.TrimSpace(rec.ExternalRef) == "" {
+			return "", errors.New("sealed secrets provider requires external_ref to contain a SealedSecret manifest")
+		}
+		return rec.ExternalRef, nil
+	default:
+		return "", fmt.Errorf("unsupported secret provider %q", rec.Provider)
+	}
+}
+
+func (s *Service) loadClusterSecretValues(ctx context.Context, secretID int64) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, COALESCE(secret_ref, '') FROM cluster_secret_items WHERE cluster_secret_id = $1 ORDER BY key ASC`, secretID)
+	if err != nil {
+		return nil, fmt.Errorf("load cluster secret items: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var key, ref string
+		if err := rows.Scan(&key, &ref); err != nil {
+			return nil, err
+		}
+		if ref == "" {
+			continue
+		}
+		value, err := s.secrets.Get(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("load cluster secret item %s: %w", key, err)
+		}
+		out[key] = string(value)
+	}
+	return out, nil
+}
+
+func normalizeClusterSecretRequest(req UpsertClusterSecretRequest) UpsertClusterSecretRequest {
+	req.Name = sanitizeKubernetesName(req.Name)
+	req.Namespace = sanitizeKubernetesName(req.Namespace)
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+	req.Provider = strings.TrimSpace(req.Provider)
+	if req.Provider == "" {
+		req.Provider = "native"
+	}
+	req.Type = strings.TrimSpace(req.Type)
+	if req.Type == "" {
+		req.Type = "Opaque"
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	req.ExternalRef = strings.TrimSpace(req.ExternalRef)
+	if req.ProviderConfig == nil {
+		req.ProviderConfig = map[string]interface{}{}
+	}
+	return req
+}
+
+func validateClusterSecretRequest(req UpsertClusterSecretRequest, requireData bool) error {
+	if req.Name == "" {
+		return errors.New("name is required")
+	}
+	if req.Namespace == "" {
+		return errors.New("namespace is required")
+	}
+	switch req.Provider {
+	case "native":
+		if requireData && len(req.Data) == 0 {
+			return errors.New("native secrets require at least one data key")
+		}
+	case "external-secrets-operator", "hashicorp-vault", "aws-secrets-manager", "azure-key-vault", "google-secret-manager":
+		if req.ExternalRef == "" {
+			return errors.New("external_ref is required for external secret providers")
+		}
+		if requireData && len(req.Data) == 0 {
+			return errors.New("external secret providers require key names in data")
+		}
+	case "bitnami-sealed-secrets":
+		if req.ExternalRef == "" {
+			return errors.New("bitnami sealed secrets provider requires external_ref to contain a SealedSecret manifest")
+		}
+	default:
+		return fmt.Errorf("unsupported secret provider %q", req.Provider)
+	}
+	return nil
+}
+
+func buildNativeKubernetesSecretManifest(rec ClusterSecretRecord, values map[string]string) string {
+	var b strings.Builder
+	b.WriteString("apiVersion: v1\nkind: Secret\nmetadata:\n")
+	b.WriteString(fmt.Sprintf("  name: %s\n  namespace: %s\ntype: %s\n", rec.Name, rec.Namespace, rec.Type))
+	if rec.Immutable {
+		b.WriteString("immutable: true\n")
+	}
+	b.WriteString("data:\n")
+	for _, key := range sortedMapKeys(values) {
+		b.WriteString(fmt.Sprintf("  %s: %s\n", key, base64.StdEncoding.EncodeToString([]byte(values[key]))))
+	}
+	return b.String()
+}
+
+func buildExternalSecretManifest(rec ClusterSecretRecord) string {
+	storeName := stringConfig(rec.ProviderConfig, "secret_store_name", "cluster-secret-store")
+	storeKind := stringConfig(rec.ProviderConfig, "secret_store_kind", "ClusterSecretStore")
+	refresh := stringConfig(rec.ProviderConfig, "refresh_interval", "1h")
+	var b strings.Builder
+	b.WriteString("apiVersion: external-secrets.io/v1beta1\nkind: ExternalSecret\nmetadata:\n")
+	b.WriteString(fmt.Sprintf("  name: %s\n  namespace: %s\nspec:\n", rec.Name, rec.Namespace))
+	b.WriteString(fmt.Sprintf("  refreshInterval: %s\n", refresh))
+	b.WriteString("  secretStoreRef:\n")
+	b.WriteString(fmt.Sprintf("    name: %s\n    kind: %s\n", storeName, storeKind))
+	b.WriteString("  target:\n")
+	b.WriteString(fmt.Sprintf("    name: %s\n    creationPolicy: Owner\n", rec.Name))
+	b.WriteString("  data:\n")
+	for _, key := range rec.Keys {
+		b.WriteString(fmt.Sprintf("    - secretKey: %s\n      remoteRef:\n        key: %s\n        property: %s\n", key, rec.ExternalRef, key))
+	}
+	return b.String()
+}
+
+func sortedMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func stringConfig(config map[string]interface{}, key, fallback string) string {
+	if raw, ok := config[key]; ok {
+		if val := strings.TrimSpace(fmt.Sprint(raw)); val != "" {
+			return val
+		}
+	}
+	return fallback
+}
+
+func clusterSecretNames(records []ClusterSecretRecord) []string {
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, fmt.Sprintf("%s/%s", rec.Namespace, rec.Name))
+	}
+	return out
+}
+
+func providerWarnings(provider string) []string {
+	switch provider {
+	case "native":
+		return nil
+	case "external-secrets-operator", "hashicorp-vault", "aws-secrets-manager", "azure-key-vault", "google-secret-manager":
+		return []string{"External Secrets Operator and the referenced SecretStore/ClusterSecretStore must already be installed in the cluster."}
+	case "bitnami-sealed-secrets":
+		return []string{"Bitnami Sealed Secrets requires the sealed-secrets controller and a pre-encrypted SealedSecret manifest."}
+	default:
+		return nil
+	}
 }
 
 func (s *Service) metalLBDiagnostics(kubeconfigPath, namespace string) string {
