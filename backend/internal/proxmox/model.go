@@ -1,11 +1,14 @@
 package proxmox
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"k8s-proxmox-manager/backend/internal/secrets"
 
 	"github.com/lib/pq"
 )
@@ -44,12 +47,13 @@ type Node struct {
 }
 
 type Service struct {
-	db     *sql.DB
-	client *Client
+	db      *sql.DB
+	client  *Client
+	secrets secrets.Store
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db, client: NewClient()}
+func NewService(db *sql.DB, secretStore secrets.Store) *Service {
+	return &Service{db: db, client: NewClient(), secrets: secretStore}
 }
 
 func (s *Service) CreateCredential(in Credential) (Credential, error) {
@@ -71,18 +75,23 @@ func (s *Service) CreateCredential(in Credential) (Credential, error) {
 		return Credential{}, errors.New("provide either username/password or api_token_id/api_token_secret")
 	}
 
+	passwordRef, tokenSecretRef, err := s.storeCredentialSecrets(context.Background(), 0, in)
+	if err != nil {
+		return Credential{}, err
+	}
+
 	var out Credential
-	err := s.db.QueryRow(
+	err = s.db.QueryRow(
 		`INSERT INTO proxmox_credentials
-		 (name, endpoint, username, password, api_token_id, api_token_secret, insecure_tls)
-		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7)
+		 (name, endpoint, username, password, password_secret_ref, api_token_id, api_token_secret, api_token_secret_ref, insecure_tls)
+		 VALUES ($1, $2, NULLIF($3, ''), NULL, NULLIF($4, ''), NULLIF($5, ''), NULL, NULLIF($6, ''), $7)
 		 RETURNING id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at`,
 		in.Name,
 		in.Endpoint,
 		in.Username,
-		in.Password,
+		passwordRef,
 		in.APITokenID,
-		in.APITokenSecret,
+		tokenSecretRef,
 		in.InsecureTLS,
 	).Scan(&out.ID, &out.Name, &out.Endpoint, &out.Username, &out.APITokenID, &out.InsecureTLS, &out.CreatedAt)
 	if err != nil {
@@ -119,15 +128,22 @@ func (s *Service) UpdateCredential(id int64, in Credential) (Credential, error) 
 		in.APITokenSecret = ""
 	}
 
+	passwordRef, tokenSecretRef, err := s.storeCredentialSecrets(context.Background(), id, in)
+	if err != nil {
+		return Credential{}, err
+	}
+
 	var out Credential
-	err := s.db.QueryRow(
+	err = s.db.QueryRow(
 		`UPDATE proxmox_credentials
 		 SET name = $2,
 		     endpoint = $3,
 		     username = NULLIF($4, ''),
-		     password = NULLIF($5, ''),
+		     password = NULL,
+		     password_secret_ref = NULLIF($5, ''),
 		     api_token_id = NULLIF($6, ''),
-		     api_token_secret = NULLIF($7, ''),
+		     api_token_secret = NULL,
+		     api_token_secret_ref = NULLIF($7, ''),
 		     insecure_tls = $8
 		 WHERE id = $1
 		 RETURNING id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at`,
@@ -135,9 +151,9 @@ func (s *Service) UpdateCredential(id int64, in Credential) (Credential, error) 
 		in.Name,
 		in.Endpoint,
 		in.Username,
-		in.Password,
+		passwordRef,
 		in.APITokenID,
-		in.APITokenSecret,
+		tokenSecretRef,
 		in.InsecureTLS,
 	).Scan(&out.ID, &out.Name, &out.Endpoint, &out.Username, &out.APITokenID, &out.InsecureTLS, &out.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -179,22 +195,28 @@ func (s *Service) DeleteCredential(id int64) error {
 // API token secret fields (normally omitted from list responses).
 func (s *Service) GetCredentialWithSecrets(id int64) (Credential, error) {
 	var c Credential
+	var passwordRef, tokenSecretRef string
 	err := s.db.QueryRow(
 		`SELECT id, name, endpoint,
 		        COALESCE(username, ''), COALESCE(password, ''),
+		        COALESCE(password_secret_ref, ''),
 		        COALESCE(api_token_id, ''), COALESCE(api_token_secret, ''),
+		        COALESCE(api_token_secret_ref, ''),
 		        insecure_tls
 		 FROM proxmox_credentials
 		 WHERE id = $1`, id,
 	).Scan(&c.ID, &c.Name, &c.Endpoint,
-		&c.Username, &c.Password,
-		&c.APITokenID, &c.APITokenSecret,
+		&c.Username, &c.Password, &passwordRef,
+		&c.APITokenID, &c.APITokenSecret, &tokenSecretRef,
 		&c.InsecureTLS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Credential{}, ErrCredentialNotFound
 	}
 	if err != nil {
 		return Credential{}, fmt.Errorf("get proxmox credential: %w", err)
+	}
+	if err := s.hydrateCredentialSecrets(context.Background(), &c, passwordRef, tokenSecretRef); err != nil {
+		return Credential{}, err
 	}
 	return c, nil
 }
@@ -389,19 +411,71 @@ func (s *Service) markCredentialNodesOffline(credentialID int64) error {
 
 func (s *Service) getCredentialForDiscovery(id int64) (Credential, error) {
 	var c Credential
+	var passwordRef, tokenSecretRef string
 	err := s.db.QueryRow(
-		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(password, ''), COALESCE(api_token_id, ''), COALESCE(api_token_secret, ''), insecure_tls, created_at
+		`SELECT id, name, endpoint,
+		        COALESCE(username, ''), COALESCE(password, ''),
+		        COALESCE(password_secret_ref, ''),
+		        COALESCE(api_token_id, ''), COALESCE(api_token_secret, ''),
+		        COALESCE(api_token_secret_ref, ''),
+		        insecure_tls, created_at
 		 FROM proxmox_credentials
 		 WHERE id = $1`,
 		id,
-	).Scan(&c.ID, &c.Name, &c.Endpoint, &c.Username, &c.Password, &c.APITokenID, &c.APITokenSecret, &c.InsecureTLS, &c.CreatedAt)
+	).Scan(&c.ID, &c.Name, &c.Endpoint, &c.Username, &c.Password, &passwordRef, &c.APITokenID, &c.APITokenSecret, &tokenSecretRef, &c.InsecureTLS, &c.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Credential{}, ErrCredentialNotFound
 		}
 		return Credential{}, fmt.Errorf("fetch proxmox credential: %w", err)
 	}
+	if err := s.hydrateCredentialSecrets(context.Background(), &c, passwordRef, tokenSecretRef); err != nil {
+		return Credential{}, err
+	}
 	return c, nil
+}
+
+func (s *Service) storeCredentialSecrets(ctx context.Context, id int64, in Credential) (string, string, error) {
+	if s.secrets == nil {
+		return "", "", errors.New("secret store is not configured")
+	}
+	scope := "proxmox/credentials"
+	if id > 0 {
+		scope = fmt.Sprintf("%s/%d", scope, id)
+	}
+	var passwordRef, tokenSecretRef string
+	var err error
+	if strings.TrimSpace(in.Password) != "" {
+		passwordRef, err = s.secrets.Put(ctx, scope, "password", []byte(strings.TrimSpace(in.Password)))
+		if err != nil {
+			return "", "", fmt.Errorf("store proxmox password: %w", err)
+		}
+	}
+	if strings.TrimSpace(in.APITokenSecret) != "" {
+		tokenSecretRef, err = s.secrets.Put(ctx, scope, "api-token-secret", []byte(strings.TrimSpace(in.APITokenSecret)))
+		if err != nil {
+			return "", "", fmt.Errorf("store proxmox api token secret: %w", err)
+		}
+	}
+	return passwordRef, tokenSecretRef, nil
+}
+
+func (s *Service) hydrateCredentialSecrets(ctx context.Context, c *Credential, passwordRef, tokenSecretRef string) error {
+	if strings.TrimSpace(passwordRef) != "" {
+		value, err := s.secrets.Get(ctx, passwordRef)
+		if err != nil {
+			return fmt.Errorf("load proxmox password secret: %w", err)
+		}
+		c.Password = string(value)
+	}
+	if strings.TrimSpace(tokenSecretRef) != "" {
+		value, err := s.secrets.Get(ctx, tokenSecretRef)
+		if err != nil {
+			return fmt.Errorf("load proxmox api token secret: %w", err)
+		}
+		c.APITokenSecret = string(value)
+	}
+	return nil
 }
 
 func (s *Service) listNodesByCredential(credentialID int64) ([]Node, error) {

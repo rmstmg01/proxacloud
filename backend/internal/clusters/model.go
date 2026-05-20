@@ -24,6 +24,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/ansible"
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
+	"k8s-proxmox-manager/backend/internal/secrets"
 	"k8s-proxmox-manager/backend/internal/sshkeys"
 	"k8s-proxmox-manager/backend/internal/sslcerts"
 	"k8s-proxmox-manager/backend/internal/terraform"
@@ -64,6 +65,7 @@ type Service struct {
 	proxmoxSvc      ProxmoxCredentialStore
 	sshKeys         SSHKeyPairStore
 	tlsCertificates TLSCertificateStore
+	secrets         secrets.Store
 	operationsDir   string
 	autoApply       bool
 	autoBootstrap   bool
@@ -604,6 +606,7 @@ func NewService(
 	proxmoxSvc ProxmoxCredentialStore,
 	sshKeys SSHKeyPairStore,
 	tlsCertificates TLSCertificateStore,
+	secretStore secrets.Store,
 	operationsDir string,
 	autoApply bool,
 	autoBootstrap bool,
@@ -622,6 +625,7 @@ func NewService(
 		proxmoxSvc:      proxmoxSvc,
 		sshKeys:         sshKeys,
 		tlsCertificates: tlsCertificates,
+		secrets:         secretStore,
 		operationsDir:   operationsDir,
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
@@ -4541,18 +4545,35 @@ func (s *Service) hydrateBootstrapSSHUser(req *BootstrapRequest) error {
 }
 
 func (s *Service) upsertBootstrapSSHKey(clusterID int64, keyName, privateKey string) (int64, error) {
+	keyName = strings.TrimSpace(keyName)
+	privateKey = strings.TrimSpace(privateKey)
+	if keyName == "" {
+		keyName = "default"
+	}
+	if privateKey == "" {
+		return 0, errors.New("bootstrap ssh private key is required")
+	}
+	if s.secrets == nil {
+		return 0, errors.New("secret store is not configured")
+	}
+	privateKeyRef, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/bootstrap-ssh", clusterID), keyName, []byte(privateKey))
+	if err != nil {
+		return 0, fmt.Errorf("store bootstrap ssh private key: %w", err)
+	}
+
 	var keyID int64
-	err := s.db.QueryRow(
-		`INSERT INTO cluster_bootstrap_ssh_keys (cluster_id, key_name, private_key)
-		 VALUES ($1, $2, $3)
+	err = s.db.QueryRow(
+		`INSERT INTO cluster_bootstrap_ssh_keys (cluster_id, key_name, private_key, private_key_secret_ref)
+		 VALUES ($1, $2, NULL, $3)
 		 ON CONFLICT (cluster_id, key_name)
 		 DO UPDATE SET
-		   private_key = EXCLUDED.private_key,
+		   private_key = NULL,
+		   private_key_secret_ref = EXCLUDED.private_key_secret_ref,
 		   updated_at = NOW()
 		 RETURNING id`,
 		clusterID,
-		strings.TrimSpace(keyName),
-		strings.TrimSpace(privateKey),
+		keyName,
+		privateKeyRef,
 	).Scan(&keyID)
 	if err != nil {
 		return 0, fmt.Errorf("upsert bootstrap ssh key: %w", err)
@@ -4562,14 +4583,14 @@ func (s *Service) upsertBootstrapSSHKey(clusterID int64, keyName, privateKey str
 }
 
 func (s *Service) getBootstrapSSHKeyByID(clusterID, keyID int64) (string, error) {
-	var privateKey string
+	var privateKey, privateKeyRef string
 	err := s.db.QueryRow(
-		`SELECT private_key
+		`SELECT COALESCE(private_key, ''), COALESCE(private_key_secret_ref, '')
 		 FROM cluster_bootstrap_ssh_keys
 		 WHERE id = $1 AND cluster_id = $2`,
 		keyID,
 		clusterID,
-	).Scan(&privateKey)
+	).Scan(&privateKey, &privateKeyRef)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", errors.New("selected bootstrap ssh key not found")
@@ -4577,6 +4598,16 @@ func (s *Service) getBootstrapSSHKeyByID(clusterID, keyID int64) (string, error)
 		return "", fmt.Errorf("query bootstrap ssh key: %w", err)
 	}
 
+	if strings.TrimSpace(privateKeyRef) != "" {
+		if s.secrets == nil {
+			return "", errors.New("secret store is not configured")
+		}
+		value, err := s.secrets.Get(context.Background(), privateKeyRef)
+		if err != nil {
+			return "", fmt.Errorf("load bootstrap ssh private key secret: %w", err)
+		}
+		privateKey = string(value)
+	}
 	privateKey = strings.TrimSpace(privateKey)
 	if privateKey == "" {
 		return "", errors.New("selected bootstrap ssh key is empty")

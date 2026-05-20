@@ -286,6 +286,7 @@ Important variables:
 | `DATABASE_URL` | local PostgreSQL URL | Backend PostgreSQL connection |
 | `AUTO_MIGRATE` | `true` | Run migrations on backend startup |
 | `JWT_SECRET` | `change-me-in-prod` | JWT signing secret |
+| `SECRET_ENCRYPTION_KEY` | `dev-only-change-me-secret-key` | Secret-store encryption key; set to a unique high-entropy value before non-local use |
 | `JWT_TTL_MINUTES` | `120` | JWT lifetime |
 | `SUPER_ADMIN_USERNAME` | `k8s-admin` | Seeded admin username |
 | `SUPER_ADMIN_PASSWORD` | `ChangeMeNow!` | Seeded admin password |
@@ -445,8 +446,9 @@ Replace `<cluster>` with the cluster slug shown in `manifest_dir`.
 
 ## Security Notes
 
-- Change `JWT_SECRET`, `SUPER_ADMIN_USERNAME`, and `SUPER_ADMIN_PASSWORD` before non-local use.
-- Proxmox credentials and SSH key material are sensitive. Limit database access and backups accordingly.
+- Change `JWT_SECRET`, `SECRET_ENCRYPTION_KEY`, `SUPER_ADMIN_USERNAME`, and `SUPER_ADMIN_PASSWORD` before non-local use.
+- Proxmox token secrets, SSH private keys, TLS private keys, and bootstrap keys are stored through the encrypted backend secret store. Existing legacy plaintext rows remain readable as migration fallback.
+- Use a 32-byte random `SECRET_ENCRYPTION_KEY`, preferably base64 encoded, and keep it outside Git and database backups.
 - Keep `TERRAFORM_AUTO_APPLY=false` and `ANSIBLE_AUTO_APPLY=false` until you are comfortable with the generated workspaces and operational flow.
 - Use least-privilege Proxmox API tokens where possible.
 - Review generated Terraform, Ansible, MetalLB, observability, and etcd operation files before applying them in production-like environments.

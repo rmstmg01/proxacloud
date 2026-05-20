@@ -1,6 +1,7 @@
 package sslcerts
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"k8s-proxmox-manager/backend/internal/secrets"
 )
 
 var ErrCertificateNotFound = errors.New("ssl certificate not found")
@@ -26,11 +29,12 @@ type Certificate struct {
 }
 
 type Service struct {
-	db *sql.DB
+	db      *sql.DB
+	secrets secrets.Store
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+func NewService(db *sql.DB, secretStore secrets.Store) *Service {
+	return &Service{db: db, secrets: secretStore}
 }
 
 func (s *Service) Create(in Certificate) (Certificate, error) {
@@ -51,14 +55,19 @@ func (s *Service) Create(in Certificate) (Certificate, error) {
 		return Certificate{}, fmt.Errorf("invalid TLS certificate/key pair: %w", err)
 	}
 
+	privateKeyRef, err := s.secrets.Put(context.Background(), "ssl-certificates", in.Name, []byte(in.PrivateKeyPEM))
+	if err != nil {
+		return Certificate{}, fmt.Errorf("store ssl private key: %w", err)
+	}
+
 	var out Certificate
-	err := s.db.QueryRow(
-		`INSERT INTO ssl_certificates (name, fullchain_pem, private_key_pem)
-		 VALUES ($1, $2, $3)
+	err = s.db.QueryRow(
+		`INSERT INTO ssl_certificates (name, fullchain_pem, private_key_pem, private_key_secret_ref)
+		 VALUES ($1, $2, NULL, $3)
 		 RETURNING id, name, fullchain_pem, created_at, updated_at`,
 		in.Name,
 		in.FullchainPEM,
-		in.PrivateKeyPEM,
+		privateKeyRef,
 	).Scan(&out.ID, &out.Name, &out.FullchainPEM, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return Certificate{}, fmt.Errorf("create ssl certificate: %w", err)
@@ -94,17 +103,25 @@ func (s *Service) List() []Certificate {
 
 func (s *Service) GetByID(id int64) (Certificate, error) {
 	var rec Certificate
+	var privateKeyRef string
 	err := s.db.QueryRow(
-		`SELECT id, name, fullchain_pem, private_key_pem, created_at, updated_at
+		`SELECT id, name, fullchain_pem, COALESCE(private_key_pem, ''), COALESCE(private_key_secret_ref, ''), created_at, updated_at
 		 FROM ssl_certificates
 		 WHERE id = $1`,
 		id,
-	).Scan(&rec.ID, &rec.Name, &rec.FullchainPEM, &rec.PrivateKeyPEM, &rec.CreatedAt, &rec.UpdatedAt)
+	).Scan(&rec.ID, &rec.Name, &rec.FullchainPEM, &rec.PrivateKeyPEM, &privateKeyRef, &rec.CreatedAt, &rec.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Certificate{}, ErrCertificateNotFound
 		}
 		return Certificate{}, fmt.Errorf("get ssl certificate: %w", err)
+	}
+	if strings.TrimSpace(privateKeyRef) != "" {
+		value, err := s.secrets.Get(context.Background(), privateKeyRef)
+		if err != nil {
+			return Certificate{}, fmt.Errorf("load ssl private key secret: %w", err)
+		}
+		rec.PrivateKeyPEM = string(value)
 	}
 	enrichCertificateSummary(&rec)
 	return rec, nil

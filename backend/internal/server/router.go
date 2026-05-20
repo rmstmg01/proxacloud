@@ -18,6 +18,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
 	"k8s-proxmox-manager/backend/internal/rbac"
+	"k8s-proxmox-manager/backend/internal/secrets"
 	"k8s-proxmox-manager/backend/internal/sshkeys"
 	"k8s-proxmox-manager/backend/internal/sslcerts"
 	"k8s-proxmox-manager/backend/internal/terraform"
@@ -54,9 +55,14 @@ func NewApp() (*App, error) {
 	}
 
 	networkService := networks.NewService(database)
-	proxmoxService := proxmox.NewService(database)
-	sshKeyService := sshkeys.NewService(database)
-	sslCertService := sslcerts.NewService(database)
+	secretStore, err := secrets.NewDBStore(database, cfg.SecretEncryptionKey)
+	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	proxmoxService := proxmox.NewService(database, secretStore)
+	sshKeyService := sshkeys.NewService(database, secretStore)
+	sslCertService := sslcerts.NewService(database, secretStore)
 	topologyService := topology.NewService(proxmoxService)
 	terraformRunner := terraform.NewRunner(cfg.TerraformBinary, cfg.TerraformWorkDir, cfg.TerraformPluginDir)
 	ansibleRunner := ansible.NewRunner(cfg.AnsibleBinary, cfg.AnsibleWorkDir)
@@ -69,6 +75,7 @@ func NewApp() (*App, error) {
 		proxmoxService,
 		sshKeyService,
 		sslCertService,
+		secretStore,
 		cfg.OperationsWorkDir,
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,

@@ -1,11 +1,14 @@
 package sshkeys
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"k8s-proxmox-manager/backend/internal/secrets"
 )
 
 var ErrKeyPairNotFound = errors.New("ssh key pair not found")
@@ -21,11 +24,12 @@ type KeyPair struct {
 }
 
 type Service struct {
-	db *sql.DB
+	db      *sql.DB
+	secrets secrets.Store
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+func NewService(db *sql.DB, secretStore secrets.Store) *Service {
+	return &Service{db: db, secrets: secretStore}
 }
 
 func (s *Service) Create(in KeyPair) (KeyPair, error) {
@@ -47,15 +51,20 @@ func (s *Service) Create(in KeyPair) (KeyPair, error) {
 		return KeyPair{}, errors.New("private_key is required")
 	}
 
+	privateKeyRef, err := s.secrets.Put(context.Background(), "ssh-key-pairs", in.Name, []byte(in.PrivateKey))
+	if err != nil {
+		return KeyPair{}, fmt.Errorf("store ssh private key: %w", err)
+	}
+
 	var out KeyPair
-	err := s.db.QueryRow(
-		`INSERT INTO ssh_key_pairs (name, ssh_user, public_key, private_key)
-		 VALUES ($1, $2, $3, $4)
+	err = s.db.QueryRow(
+		`INSERT INTO ssh_key_pairs (name, ssh_user, public_key, private_key, private_key_secret_ref)
+		 VALUES ($1, $2, $3, NULL, $4)
 		 RETURNING id, name, ssh_user, public_key, created_at, updated_at`,
 		in.Name,
 		in.SSHUser,
 		in.PublicKey,
-		in.PrivateKey,
+		privateKeyRef,
 	).Scan(&out.ID, &out.Name, &out.SSHUser, &out.PublicKey, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return KeyPair{}, fmt.Errorf("create ssh key pair: %w", err)
@@ -88,17 +97,25 @@ func (s *Service) List() []KeyPair {
 
 func (s *Service) GetByID(id int64) (KeyPair, error) {
 	var rec KeyPair
+	var privateKeyRef string
 	err := s.db.QueryRow(
-		`SELECT id, name, ssh_user, public_key, private_key, created_at, updated_at
+		`SELECT id, name, ssh_user, public_key, COALESCE(private_key, ''), COALESCE(private_key_secret_ref, ''), created_at, updated_at
 		 FROM ssh_key_pairs
 		 WHERE id = $1`,
 		id,
-	).Scan(&rec.ID, &rec.Name, &rec.SSHUser, &rec.PublicKey, &rec.PrivateKey, &rec.CreatedAt, &rec.UpdatedAt)
+	).Scan(&rec.ID, &rec.Name, &rec.SSHUser, &rec.PublicKey, &rec.PrivateKey, &privateKeyRef, &rec.CreatedAt, &rec.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return KeyPair{}, ErrKeyPairNotFound
 		}
 		return KeyPair{}, fmt.Errorf("get ssh key pair: %w", err)
+	}
+	if strings.TrimSpace(privateKeyRef) != "" {
+		value, err := s.secrets.Get(context.Background(), privateKeyRef)
+		if err != nil {
+			return KeyPair{}, fmt.Errorf("load ssh private key secret: %w", err)
+		}
+		rec.PrivateKey = string(value)
 	}
 	return rec, nil
 }

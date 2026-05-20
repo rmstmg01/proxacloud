@@ -8,21 +8,23 @@ import (
 )
 
 type Config struct {
-	Address            string
-	DatabaseURL        string
-	AutoMigrate        bool
-	TerraformBinary    string
-	TerraformWorkDir   string
-	TerraformPluginDir string
-	TerraformAutoApply bool
-	AnsibleBinary      string
-	AnsibleWorkDir     string
-	AnsibleAutoApply   bool
-	OperationsWorkDir  string
-	JWTSecret          string
-	JWTTTLMinutes      int
-	SuperAdminUsername string
-	SuperAdminPassword string
+	AppEnv              string
+	Address             string
+	DatabaseURL         string
+	AutoMigrate         bool
+	TerraformBinary     string
+	TerraformWorkDir    string
+	TerraformPluginDir  string
+	TerraformAutoApply  bool
+	AnsibleBinary       string
+	AnsibleWorkDir      string
+	AnsibleAutoApply    bool
+	OperationsWorkDir   string
+	JWTSecret           string
+	SecretEncryptionKey string
+	JWTTTLMinutes       int
+	SuperAdminUsername  string
+	SuperAdminPassword  string
 
 	DefaultNetworkName    string
 	DefaultNetworkCIDR    string
@@ -34,6 +36,7 @@ type Config struct {
 
 func Load() Config {
 	return Config{
+		AppEnv:                getenv("APP_ENV", "dev"),
 		Address:               getenv("APP_ADDR", ":8080"),
 		DatabaseURL:           getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/k8s_proxmox?sslmode=disable"),
 		AutoMigrate:           getenvBool("AUTO_MIGRATE", true),
@@ -46,6 +49,7 @@ func Load() Config {
 		AnsibleAutoApply:      getenvBool("ANSIBLE_AUTO_APPLY", false),
 		OperationsWorkDir:     getenv("OPERATIONS_WORKDIR", filepath.Join("data", "operations", "runs")),
 		JWTSecret:             getenv("JWT_SECRET", "change-me-in-prod"),
+		SecretEncryptionKey:   getenv("SECRET_ENCRYPTION_KEY", "dev-only-change-me-secret-key"),
 		JWTTTLMinutes:         getenvInt("JWT_TTL_MINUTES", 120),
 		SuperAdminUsername:    getenv("SUPER_ADMIN_USERNAME", "k8s-admin"),
 		SuperAdminPassword:    getenv("SUPER_ADMIN_PASSWORD", "ChangeMeNow!"),

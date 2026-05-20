@@ -39,6 +39,8 @@ venv/
 .terraform/
 *.tfstate
 *.tfstate.*
+*.tfvars
+*.tfvars.json
 crash.log
 override.tf
 override.tf.json
@@ -48,6 +50,18 @@ override.tf.json
 
 # Ansible
 *.retry
+
+# Secrets and credentials
+certs/*.pem
+*.key
+*.pem
+id_rsa
+id_ed25519
+*.kubeconfig
+kubeconfig*
+data/operations/runs/
+infra/ansible/runs/
+infra/terraform/runs/
 
 # Misc
 tmp/
