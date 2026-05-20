@@ -1445,8 +1445,8 @@ function ApplicationsTab({ id }: { id: number }) {
   };
 
   const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
-  const namespaceSecrets = clusterSecrets?.filter((secret) => secret.namespace === (appForm.namespace.trim() || 'default')) ?? [];
-  const namespaceConfigMaps = clusterConfigMaps?.filter((configMap) => configMap.namespace === (appForm.namespace.trim() || 'default')) ?? [];
+  const availableSecrets = clusterSecrets ?? [];
+  const availableConfigMaps = clusterConfigMaps ?? [];
   const toggleAppSecret = (secretID: number) => {
     setAppForm((prev) => ({
       ...prev,
@@ -1602,11 +1602,11 @@ function ApplicationsTab({ id }: { id: number }) {
                   <span className="text-sm text-slate-700">Apply selected secrets</span>
                 </label>
               </div>
-              {!namespaceSecrets.length ? (
-                <p className="text-sm text-slate-400">No predefined secrets found for namespace {appForm.namespace.trim() || 'default'}.</p>
+              {!availableSecrets.length ? (
+                <p className="text-sm text-slate-400">No predefined secrets found.</p>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  {namespaceSecrets.map((secret) => (
+                  {availableSecrets.map((secret) => (
                     <label key={secret.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
                       <input
                         type="checkbox"
@@ -1616,7 +1616,9 @@ function ApplicationsTab({ id }: { id: number }) {
                       />
                       <span>
                         <span className="block text-sm font-medium text-slate-900">{secret.name}</span>
-                        <span className="block text-xs text-slate-500">{secret.provider} · {secret.keys.join(', ') || 'no keys'}</span>
+                        <span className="block text-xs text-slate-500">
+                          {secret.provider} · source namespace: {secret.namespace} · {secret.keys.join(', ') || 'no keys'}
+                        </span>
                       </span>
                     </label>
                   ))}
@@ -1639,11 +1641,11 @@ function ApplicationsTab({ id }: { id: number }) {
                   <span className="text-sm text-slate-700">Apply selected ConfigMaps</span>
                 </label>
               </div>
-              {!namespaceConfigMaps.length ? (
-                <p className="text-sm text-slate-400">No predefined ConfigMaps found for namespace {appForm.namespace.trim() || 'default'}.</p>
+              {!availableConfigMaps.length ? (
+                <p className="text-sm text-slate-400">No predefined ConfigMaps found.</p>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                  {namespaceConfigMaps.map((configMap) => (
+                  {availableConfigMaps.map((configMap) => (
                     <label key={configMap.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
                       <input
                         type="checkbox"
@@ -1653,7 +1655,9 @@ function ApplicationsTab({ id }: { id: number }) {
                       />
                       <span>
                         <span className="block text-sm font-medium text-slate-900">{configMap.name}</span>
-                        <span className="block text-xs text-slate-500">{Object.keys(configMap.data || {}).join(', ') || 'no keys'}</span>
+                        <span className="block text-xs text-slate-500">
+                          source namespace: {configMap.namespace} · {Object.keys(configMap.data || {}).join(', ') || 'no keys'}
+                        </span>
                       </span>
                     </label>
                   ))}

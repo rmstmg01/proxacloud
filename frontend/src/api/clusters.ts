@@ -300,6 +300,21 @@ export const createClusterSecret = (
   },
 ) => client.post<ClusterSecretRecord>(`/clusters/${id}/secrets`, body).then((r) => r.data);
 
+export const createGlobalSecret = (
+  body: {
+    name: string;
+    namespace: string;
+    provider: ClusterSecretProvider;
+    type: string;
+    description: string;
+    external_ref: string;
+    provider_config: Record<string, unknown>;
+    immutable: boolean;
+    is_global: boolean;
+    data: Record<string, string>;
+  },
+) => client.post<ClusterSecretRecord>('/secrets', body).then((r) => r.data);
+
 export const updateClusterSecret = (
   id: number,
   secretID: number,
@@ -342,6 +357,17 @@ export const createClusterConfigMap = (
     data: Record<string, string>;
   },
 ) => client.post<ClusterConfigMapRecord>(`/clusters/${id}/config-maps`, body).then((r) => r.data);
+
+export const createGlobalConfigMap = (
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    immutable: boolean;
+    is_global: boolean;
+    data: Record<string, string>;
+  },
+) => client.post<ClusterConfigMapRecord>('/config-maps', body).then((r) => r.data);
 
 export const updateClusterConfigMap = (
   id: number,

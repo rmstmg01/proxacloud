@@ -571,6 +571,20 @@ func (h *Handler) CreateClusterSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+func (h *Handler) CreateGlobalSecret(w http.ResponseWriter, r *http.Request) {
+	var req UpsertClusterSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateGlobalSecret(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
 func (h *Handler) UpdateClusterSecret(w http.ResponseWriter, r *http.Request) {
 	clusterID, secretID, ok := parseClusterAndSecretIDs(w, r)
 	if !ok {
@@ -658,6 +672,20 @@ func (h *Handler) CreateClusterConfigMap(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	resp, err := h.service.CreateClusterConfigMap(clusterID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) CreateGlobalConfigMap(w http.ResponseWriter, r *http.Request) {
+	var req UpsertClusterConfigMapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateGlobalConfigMap(req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

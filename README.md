@@ -442,6 +442,10 @@ The cluster ConfigMaps tab manages reusable non-sensitive application configurat
 
 Secrets and ConfigMaps can be marked global so they are available for deployment selection from other clusters. Global entries keep their original owning cluster for edits and deletes, and individual keys can be updated without replacing the full Secret or ConfigMap.
 
+Secrets and ConfigMaps can also be created from the left navigation without choosing a target cluster. Those entries are stored as unattached global catalog items and can be selected later from any cluster's application deployment flow when the namespace matches.
+
+During application deployment, selected predefined Secrets and ConfigMaps are copied into the app deployment namespace before the manifest is applied. This lets teams reuse global or cross-namespace catalog entries without manually recreating them for each namespace.
+
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
 PowerShell example:

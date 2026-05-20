@@ -2431,6 +2431,15 @@ func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRe
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return ClusterSecretRecord{}, err
 	}
+	return s.createClusterSecret(clusterID, req)
+}
+
+func (s *Service) CreateGlobalSecret(req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
+	req.IsGlobal = true
+	return s.createClusterSecret(0, req)
+}
+
+func (s *Service) createClusterSecret(clusterID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
 	req = normalizeClusterSecretRequest(req)
 	if err := validateClusterSecretRequest(req, true); err != nil {
 		return ClusterSecretRecord{}, err
@@ -2441,12 +2450,13 @@ func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRe
 		return ClusterSecretRecord{}, fmt.Errorf("encode provider config: %w", err)
 	}
 	var id int64
+	clusterIDValue := sql.NullInt64{Int64: clusterID, Valid: clusterID > 0}
 	err = s.db.QueryRow(
 		`INSERT INTO cluster_secrets
 		 (cluster_id, name, namespace, provider, type, description, external_ref, provider_config, immutable, is_global)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
-		clusterID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable, req.IsGlobal,
+		clusterIDValue, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable, req.IsGlobal,
 	).Scan(&id)
 	if err != nil {
 		return ClusterSecretRecord{}, fmt.Errorf("create cluster secret: %w", err)
@@ -2458,14 +2468,16 @@ func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRe
 }
 
 func (s *Service) GetClusterSecret(clusterID, secretID int64) (ClusterSecretRecord, error) {
-	if _, err := s.getClusterSummary(clusterID); err != nil {
-		return ClusterSecretRecord{}, err
+	if clusterID > 0 {
+		if _, err := s.getClusterSummary(clusterID); err != nil {
+			return ClusterSecretRecord{}, err
+		}
 	}
 	row := s.db.QueryRow(
 		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
 		        provider_config, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_secrets
-		 WHERE id = $2 AND (cluster_id = $1 OR is_global = TRUE)`,
+		 WHERE id = $2 AND (($1 > 0 AND cluster_id = $1) OR is_global = TRUE)`,
 		clusterID,
 		secretID,
 	)
@@ -2611,6 +2623,15 @@ func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfi
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return ClusterConfigMapRecord{}, err
 	}
+	return s.createClusterConfigMap(clusterID, req)
+}
+
+func (s *Service) CreateGlobalConfigMap(req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
+	req.IsGlobal = true
+	return s.createClusterConfigMap(0, req)
+}
+
+func (s *Service) createClusterConfigMap(clusterID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
 	req = normalizeClusterConfigMapRequest(req)
 	if err := validateClusterConfigMapRequest(req); err != nil {
 		return ClusterConfigMapRecord{}, err
@@ -2620,11 +2641,12 @@ func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfi
 		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
 	}
 	var id int64
+	clusterIDValue := sql.NullInt64{Int64: clusterID, Valid: clusterID > 0}
 	err = s.db.QueryRow(
 		`INSERT INTO cluster_config_maps (cluster_id, name, namespace, description, data, immutable, is_global)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
-		clusterID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable, req.IsGlobal,
+		clusterIDValue, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable, req.IsGlobal,
 	).Scan(&id)
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("create cluster config map: %w", err)
@@ -2633,13 +2655,15 @@ func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfi
 }
 
 func (s *Service) GetClusterConfigMap(clusterID, configMapID int64) (ClusterConfigMapRecord, error) {
-	if _, err := s.getClusterSummary(clusterID); err != nil {
-		return ClusterConfigMapRecord{}, err
+	if clusterID > 0 {
+		if _, err := s.getClusterSummary(clusterID); err != nil {
+			return ClusterConfigMapRecord{}, err
+		}
 	}
 	row := s.db.QueryRow(
 		`SELECT id, cluster_id, name, namespace, description, data, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_config_maps
-		 WHERE id = $2 AND (cluster_id = $1 OR is_global = TRUE)`,
+		 WHERE id = $2 AND (($1 > 0 AND cluster_id = $1) OR is_global = TRUE)`,
 		clusterID,
 		configMapID,
 	)
@@ -2818,6 +2842,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 	if len(selectedSecrets) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d predefined cluster secret(s) selected for this deployment", len(selectedSecrets)))
+		warnings = append(warnings, fmt.Sprintf("selected secrets will be applied into namespace %s for this app deployment", namespace))
 	}
 	selectedConfigMaps, err := s.resolveSelectedClusterConfigMaps(clusterID, namespace, req.SelectedConfigMapIDs)
 	if err != nil {
@@ -2825,6 +2850,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 	if len(selectedConfigMaps) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d predefined cluster config map(s) selected for this deployment", len(selectedConfigMaps)))
+		warnings = append(warnings, fmt.Sprintf("selected ConfigMaps will be applied into namespace %s for this app deployment", namespace))
 	}
 	appID, revisionID, revisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
 		ClusterID:        clusterID,
@@ -3365,11 +3391,12 @@ type clusterConfigMapScanner interface {
 
 func scanClusterConfigMap(row clusterConfigMapScanner) (ClusterConfigMapRecord, error) {
 	var rec ClusterConfigMapRecord
+	var clusterID sql.NullInt64
 	var dataRaw []byte
 	var lastApplied sql.NullTime
 	err := row.Scan(
 		&rec.ID,
-		&rec.ClusterID,
+		&clusterID,
 		&rec.Name,
 		&rec.Namespace,
 		&rec.Description,
@@ -3382,6 +3409,9 @@ func scanClusterConfigMap(row clusterConfigMapScanner) (ClusterConfigMapRecord, 
 	)
 	if err != nil {
 		return ClusterConfigMapRecord{}, err
+	}
+	if clusterID.Valid {
+		rec.ClusterID = clusterID.Int64
 	}
 	if len(dataRaw) > 0 {
 		_ = json.Unmarshal(dataRaw, &rec.Data)
@@ -3397,11 +3427,12 @@ func scanClusterConfigMap(row clusterConfigMapScanner) (ClusterConfigMapRecord, 
 
 func (s *Service) scanClusterSecret(row clusterSecretScanner) (ClusterSecretRecord, error) {
 	var rec ClusterSecretRecord
+	var clusterID sql.NullInt64
 	var configRaw []byte
 	var lastApplied sql.NullTime
 	err := row.Scan(
 		&rec.ID,
-		&rec.ClusterID,
+		&clusterID,
 		&rec.Name,
 		&rec.Namespace,
 		&rec.Provider,
@@ -3417,6 +3448,9 @@ func (s *Service) scanClusterSecret(row clusterSecretScanner) (ClusterSecretReco
 	)
 	if err != nil {
 		return ClusterSecretRecord{}, err
+	}
+	if clusterID.Valid {
+		rec.ClusterID = clusterID.Int64
 	}
 	if len(configRaw) > 0 {
 		_ = json.Unmarshal(configRaw, &rec.ProviderConfig)
@@ -3509,9 +3543,7 @@ func (s *Service) resolveSelectedClusterSecrets(clusterID int64, appNamespace st
 		if err != nil {
 			return nil, err
 		}
-		if rec.Namespace != appNamespace {
-			return nil, fmt.Errorf("selected secret %s is in namespace %s, but app deployment namespace is %s", rec.Name, rec.Namespace, appNamespace)
-		}
+		rec.Namespace = appNamespace
 		out = append(out, rec)
 	}
 	return out, nil
@@ -3535,9 +3567,7 @@ func (s *Service) resolveSelectedClusterConfigMaps(clusterID int64, appNamespace
 		if err != nil {
 			return nil, err
 		}
-		if rec.Namespace != appNamespace {
-			return nil, fmt.Errorf("selected config map %s is in namespace %s, but app deployment namespace is %s", rec.Name, rec.Namespace, appNamespace)
-		}
+		rec.Namespace = appNamespace
 		out = append(out, rec)
 	}
 	return out, nil

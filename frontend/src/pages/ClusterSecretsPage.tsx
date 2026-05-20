@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, KeyRound } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { createClusterSecret, getClusters } from '../api/clusters';
+import { createClusterSecret, createGlobalSecret, getClusters } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
@@ -61,7 +61,7 @@ export function ClusterSecretsPage() {
   const createMut = useMutation({
     mutationFn: async () => {
       const provider_config = JSON.parse(form.provider_config_raw || '{}');
-      return createClusterSecret(form.cluster_id, {
+      const body = {
         name: form.name.trim(),
         namespace: form.namespace.trim() || 'default',
         provider: form.provider,
@@ -70,9 +70,10 @@ export function ClusterSecretsPage() {
         external_ref: form.external_ref.trim(),
         provider_config,
         immutable: form.immutable,
-        is_global: form.is_global,
+        is_global: form.is_global || form.cluster_id <= 0,
         data: parseKeyValues(form.data_raw),
-      });
+      };
+      return form.cluster_id > 0 ? createClusterSecret(form.cluster_id, body) : createGlobalSecret(body);
     },
   });
 
@@ -96,8 +97,8 @@ export function ClusterSecretsPage() {
             <CardContent>
               <form onSubmit={(e) => { e.preventDefault(); createMut.mutate(); }} className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
-                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })} required>
-                    <option value={0}>-- Select cluster --</option>
+                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })}>
+                    <option value={0}>No target cluster yet</option>
                     {clusters.map((cluster) => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}
                   </Select>
                   <Input label="Secret name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
@@ -146,12 +147,16 @@ export function ClusterSecretsPage() {
                   <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
                   <span className="text-sm text-slate-700">Make available to all clusters</span>
                 </label>
-                <Button type="submit" loading={createMut.isPending} disabled={form.cluster_id <= 0}>Create Secret</Button>
+                <Button type="submit" loading={createMut.isPending}>Create Secret</Button>
                 {createMut.data && (
                   <Alert variant="success" title="Secret created">
-                    <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${createMut.data.cluster_id}?tab=secrets`}>
-                      Open {createMut.data.name} in cluster secrets
-                    </Link>
+                    {createMut.data.cluster_id ? (
+                      <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${createMut.data.cluster_id}?tab=secrets`}>
+                        Open {createMut.data.name} in cluster secrets
+                      </Link>
+                    ) : (
+                      <span>{createMut.data.name} is available globally and can be selected during app deployment.</span>
+                    )}
                   </Alert>
                 )}
                 {createMut.error && <ErrorMessage error={createMut.error} />}
