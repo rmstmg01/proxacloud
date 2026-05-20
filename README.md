@@ -267,6 +267,11 @@ Authenticated endpoints include:
 - `PUT /api/v1/clusters/{id}/secrets/{secretID}`
 - `DELETE /api/v1/clusters/{id}/secrets/{secretID}`
 - `POST /api/v1/clusters/{id}/secrets/{secretID}/apply`
+- `GET /api/v1/clusters/{id}/config-maps`
+- `POST /api/v1/clusters/{id}/config-maps`
+- `PUT /api/v1/clusters/{id}/config-maps/{configMapID}`
+- `DELETE /api/v1/clusters/{id}/config-maps/{configMapID}`
+- `POST /api/v1/clusters/{id}/config-maps/{configMapID}/apply`
 - `POST /api/v1/clusters/{id}/apps/deploy`
 - `POST /api/v1/clusters/{id}/observability/deploy`
 - `GET /api/v1/clusters/{id}/observability`
@@ -432,6 +437,8 @@ The cluster detail Applications tab can deploy Traefik as the ingress controller
 The Applications tab can also deploy cert-manager and a Let's Encrypt `ClusterIssuer` for Traefik HTTP-01 certificates. Public DNS for each app hostname must resolve to Traefik's external IP, and ports 80/443 must be reachable by Let's Encrypt. Private-only addresses such as `192.168.x.x` require public port forwarding or a future DNS-01 issuer.
 
 The cluster Secrets tab manages reusable application secrets per cluster and namespace. Native secrets store values through the encrypted backend secret store, while HashiCorp Vault, External Secrets Operator, AWS Secrets Manager, Azure Key Vault, Google Secret Manager, and Bitnami Sealed Secrets can be registered as provider-backed references. Application deployments can select predefined secrets in the target namespace and apply them before the app manifest.
+
+The cluster ConfigMaps tab manages reusable non-sensitive application configuration per cluster and namespace. Application deployments can select predefined ConfigMaps in the target namespace and apply them before the app manifest. Credentials, tokens, private keys, kubeconfigs, and database passwords should use Secrets rather than ConfigMaps.
 
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 

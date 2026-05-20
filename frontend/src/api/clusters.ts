@@ -22,6 +22,8 @@ import type {
   ClusterSecretRecord,
   ClusterSecretProvider,
   ApplyClusterSecretResponse,
+  ClusterConfigMapRecord,
+  ApplyClusterConfigMapResponse,
   ApplicationManifestRecord,
   ApplicationManifestRevisionRecord,
   KubectlCommandRun,
@@ -270,6 +272,8 @@ export const deployApp = (
     tls_private_key_pem: string;
     selected_secret_ids: number[];
     apply_selected_secrets: boolean;
+    selected_config_map_ids: number[];
+    apply_config_maps: boolean;
     apply: boolean;
   },
 ) =>
@@ -316,6 +320,38 @@ export const deleteClusterSecret = (id: number, secretID: number) =>
 
 export const applyClusterSecret = (id: number, secretID: number) =>
   client.post<ApplyClusterSecretResponse>(`/clusters/${id}/secrets/${secretID}/apply`).then((r) => r.data);
+
+export const getClusterConfigMaps = (id: number) =>
+  client.get<ClusterConfigMapRecord[]>(`/clusters/${id}/config-maps`).then((r) => r.data);
+
+export const createClusterConfigMap = (
+  id: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    immutable: boolean;
+    data: Record<string, string>;
+  },
+) => client.post<ClusterConfigMapRecord>(`/clusters/${id}/config-maps`, body).then((r) => r.data);
+
+export const updateClusterConfigMap = (
+  id: number,
+  configMapID: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    immutable: boolean;
+    data: Record<string, string>;
+  },
+) => client.put<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}`, body).then((r) => r.data);
+
+export const deleteClusterConfigMap = (id: number, configMapID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}/config-maps/${configMapID}`).then((r) => r.data);
+
+export const applyClusterConfigMap = (id: number, configMapID: number) =>
+  client.post<ApplyClusterConfigMapResponse>(`/clusters/${id}/config-maps/${configMapID}/apply`).then((r) => r.data);
 
 export const getApplicationManifests = (id: number) =>
   client.get<ApplicationManifestRecord[]>(`/clusters/${id}/apps`).then((r) => r.data);

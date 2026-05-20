@@ -35,6 +35,11 @@ import {
   updateClusterSecret,
   deleteClusterSecret,
   applyClusterSecret,
+  getClusterConfigMaps,
+  createClusterConfigMap,
+  updateClusterConfigMap,
+  deleteClusterConfigMap,
+  applyClusterConfigMap,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
 import { getSSLCertificates } from '../api/sslCertificates';
@@ -46,9 +51,9 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
-import type { ClusterSecretProvider, ClusterSecretRecord } from '../types';
+import type { ClusterConfigMapRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'configmaps' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -57,6 +62,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'day2', label: 'Day-2 Ops' },
   { key: 'metallb', label: 'MetalLB' },
   { key: 'secrets', label: 'Secrets' },
+  { key: 'configmaps', label: 'ConfigMaps' },
   { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
@@ -909,6 +915,10 @@ function parseSecretData(raw: string): Record<string, string> {
   return out;
 }
 
+function stringifyKeyValues(data: Record<string, string>): string {
+  return Object.entries(data).map(([key, value]) => `${key}=${value}`).join('\n');
+}
+
 function providerDefaults(provider: ClusterSecretProvider): Record<string, unknown> {
   if (provider === 'native' || provider === 'bitnami-sealed-secrets') return {};
   return {
@@ -1112,10 +1122,152 @@ function SecretsTab({ id }: { id: number }) {
   );
 }
 
+function ConfigMapsTab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const { data: configMaps } = useQuery({ queryKey: ['cluster-config-maps', id], queryFn: () => getClusterConfigMaps(id) });
+  const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
+  const [form, setForm] = useState({
+    name: '',
+    namespace: 'default',
+    description: '',
+    immutable: false,
+    data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
+  });
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      name: '',
+      namespace: 'default',
+      description: '',
+      immutable: false,
+      data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
+    });
+  };
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name: form.name.trim(),
+        namespace: form.namespace.trim() || 'default',
+        description: form.description.trim(),
+        immutable: form.immutable,
+        data: parseSecretData(form.data_raw),
+      };
+      return editing
+        ? updateClusterConfigMap(id, editing.id, body)
+        : createClusterConfigMap(id, body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] });
+      resetForm();
+    },
+  });
+
+  const applyMut = useMutation({
+    mutationFn: (configMapID: number) => applyClusterConfigMap(id, configMapID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (configMapID: number) => deleteClusterConfigMap(id, configMapID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }),
+  });
+
+  const startEdit = (configMap: ClusterConfigMapRecord) => {
+    setEditing(configMap);
+    setForm({
+      name: configMap.name,
+      namespace: configMap.namespace,
+      description: configMap.description || '',
+      immutable: configMap.immutable,
+      data_raw: stringifyKeyValues(configMap.data || {}),
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>{editing ? 'Edit ConfigMap' : 'Create ConfigMap'}</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
+              <Input label="ConfigMap name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Input label="Namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required />
+              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </div>
+            <Textarea
+              label="Config data"
+              value={form.data_raw}
+              onChange={(e) => setForm({ ...form, data_raw: e.target.value })}
+              rows={8}
+              className="font-mono text-xs"
+              helperText="Use KEY=value per line. ConfigMaps are for non-sensitive application configuration only."
+              required
+            />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.immutable} onChange={(e) => setForm({ ...form, immutable: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Immutable Kubernetes ConfigMap</span>
+            </label>
+            <div className="flex gap-3">
+              <Button type="submit" loading={saveMut.isPending}>{editing ? 'Update ConfigMap' : 'Create ConfigMap'}</Button>
+              {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+            </div>
+            {saveMut.error && <ErrorMessage error={saveMut.error} />}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Cluster ConfigMaps</CardTitle></CardHeader>
+        <CardContent>
+          {!configMaps?.length ? (
+            <p className="text-sm text-slate-400">No cluster ConfigMaps yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Keys</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
+                    <th className="px-4 py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {configMaps.map((configMap) => (
+                    <tr key={configMap.id}>
+                      <td className="px-4 py-2 font-medium text-slate-900">{configMap.name}</td>
+                      <td className="px-4 py-2 text-slate-600">{configMap.namespace}</td>
+                      <td className="px-4 py-2 text-slate-600">{Object.keys(configMap.data || {}).join(', ') || '-'}</td>
+                      <td className="px-4 py-2 text-slate-500">{configMap.last_applied_at ? new Date(configMap.last_applied_at).toLocaleString() : '-'}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(configMap)}>Edit</Button>
+                          <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === configMap.id} onClick={() => applyMut.mutate(configMap.id)}>Apply</Button>
+                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === configMap.id} onClick={() => deleteMut.mutate(configMap.id)}>Delete</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {applyMut.error && <ErrorMessage error={applyMut.error} />}
+          {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function ApplicationsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
   const { data: clusterSecrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
+  const { data: clusterConfigMaps } = useQuery({ queryKey: ['cluster-config-maps', id], queryFn: () => getClusterConfigMaps(id) });
   const { data: appHistory } = useQuery({ queryKey: ['application-manifests', id], queryFn: () => getApplicationManifests(id) });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
   const appMut = useMutation({
@@ -1166,6 +1318,8 @@ function ApplicationsTab({ id }: { id: number }) {
     tls_private_key_pem: '',
     selected_secret_ids: [] as number[],
     apply_selected_secrets: true,
+    selected_config_map_ids: [] as number[],
+    apply_config_maps: true,
     manifest: SAMPLE_APP_MANIFEST,
     apply: true,
   });
@@ -1195,6 +1349,8 @@ function ApplicationsTab({ id }: { id: number }) {
       tls_private_key_pem: '',
       selected_secret_ids: [],
       apply_selected_secrets: true,
+      selected_config_map_ids: [],
+      apply_config_maps: true,
       manifest: revision.raw_manifest,
       apply: true,
     });
@@ -1223,6 +1379,8 @@ function ApplicationsTab({ id }: { id: number }) {
       tls_private_key_pem: appForm.tls_private_key_pem.trim(),
       selected_secret_ids: appForm.selected_secret_ids,
       apply_selected_secrets: appForm.apply_selected_secrets,
+      selected_config_map_ids: appForm.selected_config_map_ids,
+      apply_config_maps: appForm.apply_config_maps,
       manifest: appForm.manifest,
       apply: appForm.apply,
     });
@@ -1230,12 +1388,21 @@ function ApplicationsTab({ id }: { id: number }) {
 
   const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
   const namespaceSecrets = clusterSecrets?.filter((secret) => secret.namespace === (appForm.namespace.trim() || 'default')) ?? [];
+  const namespaceConfigMaps = clusterConfigMaps?.filter((configMap) => configMap.namespace === (appForm.namespace.trim() || 'default')) ?? [];
   const toggleAppSecret = (secretID: number) => {
     setAppForm((prev) => ({
       ...prev,
       selected_secret_ids: prev.selected_secret_ids.includes(secretID)
         ? prev.selected_secret_ids.filter((id) => id !== secretID)
         : [...prev.selected_secret_ids, secretID],
+    }));
+  };
+  const toggleAppConfigMap = (configMapID: number) => {
+    setAppForm((prev) => ({
+      ...prev,
+      selected_config_map_ids: prev.selected_config_map_ids.includes(configMapID)
+        ? prev.selected_config_map_ids.filter((id) => id !== configMapID)
+        : [...prev.selected_config_map_ids, configMapID],
     }));
   };
 
@@ -1398,6 +1565,43 @@ function ApplicationsTab({ id }: { id: number }) {
                 </div>
               )}
             </div>
+            <div className="border border-slate-200 rounded-md p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">Predefined ConfigMaps</p>
+                  <p className="text-xs text-slate-500">Select non-sensitive config in the same namespace to apply before the manifest.</p>
+                </div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={appForm.apply_config_maps}
+                    onChange={(e) => setAppForm({ ...appForm, apply_config_maps: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  <span className="text-sm text-slate-700">Apply selected ConfigMaps</span>
+                </label>
+              </div>
+              {!namespaceConfigMaps.length ? (
+                <p className="text-sm text-slate-400">No predefined ConfigMaps found for namespace {appForm.namespace.trim() || 'default'}.</p>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {namespaceConfigMaps.map((configMap) => (
+                    <label key={configMap.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
+                      <input
+                        type="checkbox"
+                        checked={appForm.selected_config_map_ids.includes(configMap.id)}
+                        onChange={() => toggleAppConfigMap(configMap.id)}
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-900">{configMap.name}</span>
+                        <span className="block text-xs text-slate-500">{Object.keys(configMap.data || {}).join(', ') || 'no keys'}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Input
@@ -1462,6 +1666,7 @@ function ApplicationsTab({ id }: { id: number }) {
                   {appMut.data.hostname && <p>Hostname: {appMut.data.hostname}</p>}
                   {appMut.data.tls_secret_name && <p>TLS secret: {appMut.data.tls_secret_name}</p>}
                   {appMut.data.secret_names?.length ? <p>Secrets: {appMut.data.secret_names.join(', ')}</p> : null}
+                  {appMut.data.config_map_names?.length ? <p>ConfigMaps: {appMut.data.config_map_names.join(', ')}</p> : null}
                 </div>
               </Alert>
             )}
@@ -1791,6 +1996,7 @@ export function ClusterDetailPage() {
       {activeTab === 'day2' && <Day2Tab id={clusterId} />}
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
       {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
+      {activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
       {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
       {activeTab === 'etcd' && <EtcdTab id={clusterId} />}

@@ -312,6 +312,7 @@ export interface DeployAppResponse {
   ingress_class?: string;
   tls_secret_name?: string;
   secret_names?: string[];
+  config_map_names?: string[];
   output?: string;
   warnings: string[];
 }
@@ -348,6 +349,29 @@ export interface ApplyClusterSecretResponse {
   name: string;
   namespace: string;
   provider: ClusterSecretProvider;
+  status: string;
+  output?: string;
+  warnings: string[];
+}
+
+export interface ClusterConfigMapRecord {
+  id: number;
+  cluster_id: number;
+  name: string;
+  namespace: string;
+  description: string;
+  data: Record<string, string>;
+  immutable: boolean;
+  last_applied_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplyClusterConfigMapResponse {
+  cluster_id: number;
+  config_map_id: number;
+  name: string;
+  namespace: string;
   status: string;
   output?: string;
   warnings: string[];

@@ -614,6 +614,82 @@ func (h *Handler) ApplyClusterSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListClusterConfigMaps(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	resp, err := h.service.ListClusterConfigMaps(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) CreateClusterConfigMap(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	var req UpsertClusterConfigMapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateClusterConfigMap(clusterID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateClusterConfigMap(w http.ResponseWriter, r *http.Request) {
+	clusterID, configMapID, ok := parseClusterAndConfigMapIDs(w, r)
+	if !ok {
+		return
+	}
+	var req UpsertClusterConfigMapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterConfigMap(clusterID, configMapID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteClusterConfigMap(w http.ResponseWriter, r *http.Request) {
+	clusterID, configMapID, ok := parseClusterAndConfigMapIDs(w, r)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteClusterConfigMap(clusterID, configMapID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": configMapID, "deleted": true})
+}
+
+func (h *Handler) ApplyClusterConfigMap(w http.ResponseWriter, r *http.Request) {
+	clusterID, configMapID, ok := parseClusterAndConfigMapIDs(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ApplyClusterConfigMap(clusterID, configMapID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListApplicationManifests(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -759,6 +835,20 @@ func parseClusterAndSecretIDs(w http.ResponseWriter, r *http.Request) (int64, in
 		return 0, 0, false
 	}
 	return clusterID, secretID, true
+}
+
+func parseClusterAndConfigMapIDs(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return 0, 0, false
+	}
+	configMapID, err := strconv.ParseInt(chi.URLParam(r, "configMapID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid config map id"})
+		return 0, 0, false
+	}
+	return clusterID, configMapID, true
 }
 
 func (h *Handler) CreateEtcdSnapshot(w http.ResponseWriter, r *http.Request) {

@@ -359,23 +359,26 @@ type DeployAppRequest struct {
 	TLSPrivateKeyPEM     string  `json:"tls_private_key_pem"`
 	SelectedSecretIDs    []int64 `json:"selected_secret_ids"`
 	ApplySelectedSecrets bool    `json:"apply_selected_secrets"`
+	SelectedConfigMapIDs []int64 `json:"selected_config_map_ids"`
+	ApplyConfigMaps      bool    `json:"apply_config_maps"`
 	Apply                bool    `json:"apply"`
 }
 
 type DeployAppResponse struct {
-	ClusterID     int64    `json:"cluster_id"`
-	Status        string   `json:"status"`
-	Name          string   `json:"name"`
-	Namespace     string   `json:"namespace"`
-	AppID         int64    `json:"app_id,omitempty"`
-	RevisionID    int64    `json:"revision_id,omitempty"`
-	Revision      int      `json:"revision,omitempty"`
-	Hostname      string   `json:"hostname,omitempty"`
-	IngressClass  string   `json:"ingress_class,omitempty"`
-	TLSSecretName string   `json:"tls_secret_name,omitempty"`
-	SecretNames   []string `json:"secret_names,omitempty"`
-	Output        string   `json:"output,omitempty"`
-	Warnings      []string `json:"warnings"`
+	ClusterID      int64    `json:"cluster_id"`
+	Status         string   `json:"status"`
+	Name           string   `json:"name"`
+	Namespace      string   `json:"namespace"`
+	AppID          int64    `json:"app_id,omitempty"`
+	RevisionID     int64    `json:"revision_id,omitempty"`
+	Revision       int      `json:"revision,omitempty"`
+	Hostname       string   `json:"hostname,omitempty"`
+	IngressClass   string   `json:"ingress_class,omitempty"`
+	TLSSecretName  string   `json:"tls_secret_name,omitempty"`
+	SecretNames    []string `json:"secret_names,omitempty"`
+	ConfigMapNames []string `json:"config_map_names,omitempty"`
+	Output         string   `json:"output,omitempty"`
+	Warnings       []string `json:"warnings"`
 }
 
 type ClusterSecretItem struct {
@@ -420,6 +423,37 @@ type ApplyClusterSecretResponse struct {
 	Status    string   `json:"status"`
 	Output    string   `json:"output,omitempty"`
 	Warnings  []string `json:"warnings"`
+}
+
+type ClusterConfigMapRecord struct {
+	ID            int64             `json:"id"`
+	ClusterID     int64             `json:"cluster_id"`
+	Name          string            `json:"name"`
+	Namespace     string            `json:"namespace"`
+	Description   string            `json:"description"`
+	Data          map[string]string `json:"data"`
+	Immutable     bool              `json:"immutable"`
+	LastAppliedAt *time.Time        `json:"last_applied_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
+}
+
+type UpsertClusterConfigMapRequest struct {
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Description string            `json:"description"`
+	Data        map[string]string `json:"data"`
+	Immutable   bool              `json:"immutable"`
+}
+
+type ApplyClusterConfigMapResponse struct {
+	ClusterID   int64    `json:"cluster_id"`
+	ConfigMapID int64    `json:"config_map_id"`
+	Name        string   `json:"name"`
+	Namespace   string   `json:"namespace"`
+	Status      string   `json:"status"`
+	Output      string   `json:"output,omitempty"`
+	Warnings    []string `json:"warnings"`
 }
 
 type KubectlCommandRequest struct {
@@ -2497,6 +2531,135 @@ func (s *Service) ApplyClusterSecret(clusterID, secretID int64) (ApplyClusterSec
 	}, nil
 }
 
+func (s *Service) ListClusterConfigMaps(clusterID int64) ([]ClusterConfigMapRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, description, data, immutable, last_applied_at, created_at, updated_at
+		 FROM cluster_config_maps
+		 WHERE cluster_id = $1
+		 ORDER BY namespace ASC, name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster config maps: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterConfigMapRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterConfigMap(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	req = normalizeClusterConfigMapRequest(req)
+	if err := validateClusterConfigMapRequest(req); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	dataJSON, err := json.Marshal(req.Data)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
+	}
+	var id int64
+	err = s.db.QueryRow(
+		`INSERT INTO cluster_config_maps (cluster_id, name, namespace, description, data, immutable)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id`,
+		clusterID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable,
+	).Scan(&id)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("create cluster config map: %w", err)
+	}
+	return s.GetClusterConfigMap(clusterID, id)
+}
+
+func (s *Service) GetClusterConfigMap(clusterID, configMapID int64) (ClusterConfigMapRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	row := s.db.QueryRow(
+		`SELECT id, cluster_id, name, namespace, description, data, immutable, last_applied_at, created_at, updated_at
+		 FROM cluster_config_maps
+		 WHERE cluster_id = $1 AND id = $2`,
+		clusterID,
+		configMapID,
+	)
+	rec, err := scanClusterConfigMap(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterConfigMapRecord{}, ErrApplicationManifestNotFound
+		}
+		return ClusterConfigMapRecord{}, fmt.Errorf("get cluster config map: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) UpdateClusterConfigMap(clusterID, configMapID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
+	if _, err := s.GetClusterConfigMap(clusterID, configMapID); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	req = normalizeClusterConfigMapRequest(req)
+	if err := validateClusterConfigMapRequest(req); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	dataJSON, err := json.Marshal(req.Data)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE cluster_config_maps
+		 SET name = $3, namespace = $4, description = $5, data = $6, immutable = $7, updated_at = NOW()
+		 WHERE cluster_id = $1 AND id = $2`,
+		clusterID, configMapID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable,
+	)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("update cluster config map: %w", err)
+	}
+	return s.GetClusterConfigMap(clusterID, configMapID)
+}
+
+func (s *Service) DeleteClusterConfigMap(clusterID, configMapID int64) error {
+	res, err := s.db.Exec(`DELETE FROM cluster_config_maps WHERE cluster_id = $1 AND id = $2`, clusterID, configMapID)
+	if err != nil {
+		return fmt.Errorf("delete cluster config map: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrApplicationManifestNotFound
+	}
+	return nil
+}
+
+func (s *Service) ApplyClusterConfigMap(clusterID, configMapID int64) (ApplyClusterConfigMapResponse, error) {
+	rec, err := s.GetClusterConfigMap(clusterID, configMapID)
+	if err != nil {
+		return ApplyClusterConfigMapResponse{}, err
+	}
+	output, err := s.applyClusterConfigMapRecord(rec)
+	if err != nil {
+		return ApplyClusterConfigMapResponse{}, err
+	}
+	_, _ = s.db.Exec(`UPDATE cluster_config_maps SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, configMapID)
+	return ApplyClusterConfigMapResponse{
+		ClusterID:   clusterID,
+		ConfigMapID: configMapID,
+		Name:        rec.Name,
+		Namespace:   rec.Namespace,
+		Status:      "applied",
+		Output:      output,
+	}, nil
+}
+
 func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return DeployAppResponse{}, err
@@ -2578,6 +2741,13 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if len(selectedSecrets) > 0 {
 		warnings = append(warnings, fmt.Sprintf("%d predefined cluster secret(s) selected for this deployment", len(selectedSecrets)))
 	}
+	selectedConfigMaps, err := s.resolveSelectedClusterConfigMaps(clusterID, namespace, req.SelectedConfigMapIDs)
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+	if len(selectedConfigMaps) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d predefined cluster config map(s) selected for this deployment", len(selectedConfigMaps)))
+	}
 	appID, revisionID, revisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
 		ClusterID:        clusterID,
 		Name:             name,
@@ -2597,6 +2767,9 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if err := s.replaceApplicationManifestSecrets(appID, req.SelectedSecretIDs); err != nil {
 		return DeployAppResponse{}, err
 	}
+	if err := s.replaceApplicationManifestConfigMaps(appID, req.SelectedConfigMapIDs); err != nil {
+		return DeployAppResponse{}, err
+	}
 	if req.Apply {
 		status = "app-deployed"
 		applyOutput, err := s.executeAppManifestApply(namespace, renderedManifest, appTLSSecretSpec{
@@ -2604,7 +2777,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		}, selectedSecrets, req.ApplySelectedSecrets)
+		}, selectedSecrets, req.ApplySelectedSecrets, selectedConfigMaps, req.ApplyConfigMaps)
 		output = applyOutput
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(revisionID, "failed", output, err.Error())
@@ -2627,19 +2800,20 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 
 	return DeployAppResponse{
-		ClusterID:     clusterID,
-		Status:        status,
-		Name:          name,
-		Namespace:     namespace,
-		AppID:         appID,
-		RevisionID:    revisionID,
-		Revision:      revisionNumber,
-		Hostname:      hostname,
-		IngressClass:  ingressClass,
-		TLSSecretName: tlsSecretName,
-		SecretNames:   clusterSecretNames(selectedSecrets),
-		Output:        output,
-		Warnings:      warnings,
+		ClusterID:      clusterID,
+		Status:         status,
+		Name:           name,
+		Namespace:      namespace,
+		AppID:          appID,
+		RevisionID:     revisionID,
+		Revision:       revisionNumber,
+		Hostname:       hostname,
+		IngressClass:   ingressClass,
+		TLSSecretName:  tlsSecretName,
+		SecretNames:    clusterSecretNames(selectedSecrets),
+		ConfigMapNames: clusterConfigMapNames(selectedConfigMaps),
+		Output:         output,
+		Warnings:       warnings,
 	}, nil
 }
 
@@ -2799,7 +2973,7 @@ func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req Redepl
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		}, nil, false)
+		}, nil, false, nil, false)
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(newRevisionID, "failed", output, err.Error())
 			_ = s.insertProvisionRun(clusterID, "app-redeploy", "failed", app.Name, output)
@@ -2983,7 +3157,7 @@ type appTLSSecretSpec struct {
 	CreateFromUpload bool
 }
 
-func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool) (string, error) {
+func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool, selectedConfigMaps []ClusterConfigMapRecord, applyConfigMaps bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -3020,6 +3194,16 @@ func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret 
 				return strings.Join(outputs, "\n"), err
 			}
 			_, _ = s.db.Exec(`UPDATE cluster_secrets SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, selected.ID)
+		}
+	}
+	if applyConfigMaps {
+		for _, selected := range selectedConfigMaps {
+			configMapOutput, err := s.applyClusterConfigMapRecordWithContext(ctx, kubeconfigPath, selected)
+			outputs = append(outputs, configMapOutput)
+			if err != nil {
+				return strings.Join(outputs, "\n"), err
+			}
+			_, _ = s.db.Exec(`UPDATE cluster_config_maps SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, selected.ID)
 		}
 	}
 
@@ -3097,6 +3281,41 @@ type clusterSecretScanner interface {
 	Scan(dest ...interface{}) error
 }
 
+type clusterConfigMapScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanClusterConfigMap(row clusterConfigMapScanner) (ClusterConfigMapRecord, error) {
+	var rec ClusterConfigMapRecord
+	var dataRaw []byte
+	var lastApplied sql.NullTime
+	err := row.Scan(
+		&rec.ID,
+		&rec.ClusterID,
+		&rec.Name,
+		&rec.Namespace,
+		&rec.Description,
+		&dataRaw,
+		&rec.Immutable,
+		&lastApplied,
+		&rec.CreatedAt,
+		&rec.UpdatedAt,
+	)
+	if err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	if len(dataRaw) > 0 {
+		_ = json.Unmarshal(dataRaw, &rec.Data)
+	}
+	if rec.Data == nil {
+		rec.Data = map[string]string{}
+	}
+	if lastApplied.Valid {
+		rec.LastAppliedAt = &lastApplied.Time
+	}
+	return rec, nil
+}
+
 func (s *Service) scanClusterSecret(row clusterSecretScanner) (ClusterSecretRecord, error) {
 	var rec ClusterSecretRecord
 	var configRaw []byte
@@ -3172,11 +3391,15 @@ func (s *Service) replaceClusterSecretItems(clusterID, secretID int64, secretNam
 		if key == "" {
 			return errors.New("secret data keys must be non-empty")
 		}
-		ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", clusterID, secretID), key, []byte(value))
-		if err != nil {
-			return fmt.Errorf("store cluster secret item %s: %w", key, err)
-		}
+		ref := ""
 		sum := sha256.Sum256([]byte(value))
+		if value != "" {
+			var err error
+			ref, err = s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", clusterID, secretID), key, []byte(value))
+			if err != nil {
+				return fmt.Errorf("store cluster secret item %s: %w", key, err)
+			}
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO cluster_secret_items (cluster_secret_id, key, secret_ref, value_sha256)
 			 VALUES ($1, $2, $3, $4)`,
@@ -3214,6 +3437,32 @@ func (s *Service) resolveSelectedClusterSecrets(clusterID int64, appNamespace st
 	return out, nil
 }
 
+func (s *Service) resolveSelectedClusterConfigMaps(clusterID int64, appNamespace string, ids []int64) ([]ClusterConfigMapRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]ClusterConfigMapRecord, 0, len(ids))
+	seen := map[int64]struct{}{}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		rec, err := s.GetClusterConfigMap(clusterID, id)
+		if err != nil {
+			return nil, err
+		}
+		if rec.Namespace != appNamespace {
+			return nil, fmt.Errorf("selected config map %s is in namespace %s, but app deployment namespace is %s", rec.Name, rec.Namespace, appNamespace)
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 func (s *Service) replaceApplicationManifestSecrets(appID int64, secretIDs []int64) error {
 	_, err := s.db.Exec(`DELETE FROM application_manifest_secrets WHERE application_manifest_id = $1`, appID)
 	if err != nil {
@@ -3234,6 +3483,49 @@ func (s *Service) replaceApplicationManifestSecrets(appID int64, secretIDs []int
 		}
 	}
 	return nil
+}
+
+func (s *Service) replaceApplicationManifestConfigMaps(appID int64, configMapIDs []int64) error {
+	_, err := s.db.Exec(`DELETE FROM application_manifest_config_maps WHERE application_manifest_id = $1`, appID)
+	if err != nil {
+		return fmt.Errorf("clear application config map selections: %w", err)
+	}
+	for _, configMapID := range configMapIDs {
+		if configMapID <= 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`INSERT INTO application_manifest_config_maps (application_manifest_id, cluster_config_map_id)
+			 VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			appID,
+			configMapID,
+		); err != nil {
+			return fmt.Errorf("record application config map selection: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) applyClusterConfigMapRecord(rec ClusterConfigMapRecord) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+	return s.applyClusterConfigMapRecordWithContext(ctx, kubeconfigPath, rec)
+}
+
+func (s *Service) applyClusterConfigMapRecordWithContext(ctx context.Context, kubeconfigPath string, rec ClusterConfigMapRecord) (string, error) {
+	manifest := buildNativeKubernetesConfigMapManifest(rec)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", rec.Namespace, "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("apply cluster config map %s/%s: %w\nOutput: %s", rec.Namespace, rec.Name, err, string(output))
+	}
+	return string(output), nil
 }
 
 func (s *Service) applyClusterSecretRecord(rec ClusterSecretRecord) (string, error) {
@@ -3326,6 +3618,37 @@ func normalizeClusterSecretRequest(req UpsertClusterSecretRequest) UpsertCluster
 	return req
 }
 
+func normalizeClusterConfigMapRequest(req UpsertClusterConfigMapRequest) UpsertClusterConfigMapRequest {
+	req.Name = sanitizeKubernetesName(req.Name)
+	req.Namespace = sanitizeKubernetesName(req.Namespace)
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Data == nil {
+		req.Data = map[string]string{}
+	}
+	return req
+}
+
+func validateClusterConfigMapRequest(req UpsertClusterConfigMapRequest) error {
+	if req.Name == "" {
+		return errors.New("name is required")
+	}
+	if req.Namespace == "" {
+		return errors.New("namespace is required")
+	}
+	if len(req.Data) == 0 {
+		return errors.New("config map requires at least one data key")
+	}
+	for key := range req.Data {
+		if strings.TrimSpace(key) == "" {
+			return errors.New("config map data keys must be non-empty")
+		}
+	}
+	return nil
+}
+
 func validateClusterSecretRequest(req UpsertClusterSecretRequest, requireData bool) error {
 	if req.Name == "" {
 		return errors.New("name is required")
@@ -3365,6 +3688,20 @@ func buildNativeKubernetesSecretManifest(rec ClusterSecretRecord, values map[str
 	b.WriteString("data:\n")
 	for _, key := range sortedMapKeys(values) {
 		b.WriteString(fmt.Sprintf("  %s: %s\n", key, base64.StdEncoding.EncodeToString([]byte(values[key]))))
+	}
+	return b.String()
+}
+
+func buildNativeKubernetesConfigMapManifest(rec ClusterConfigMapRecord) string {
+	var b strings.Builder
+	b.WriteString("apiVersion: v1\nkind: ConfigMap\nmetadata:\n")
+	b.WriteString(fmt.Sprintf("  name: %s\n  namespace: %s\n", rec.Name, rec.Namespace))
+	if rec.Immutable {
+		b.WriteString("immutable: true\n")
+	}
+	b.WriteString("data:\n")
+	for _, key := range sortedMapKeys(rec.Data) {
+		b.WriteString(fmt.Sprintf("  %s: %s\n", key, quoteYAMLString(rec.Data[key])))
 	}
 	return b.String()
 }
@@ -3412,6 +3749,19 @@ func clusterSecretNames(records []ClusterSecretRecord) []string {
 		out = append(out, fmt.Sprintf("%s/%s", rec.Namespace, rec.Name))
 	}
 	return out
+}
+
+func clusterConfigMapNames(records []ClusterConfigMapRecord) []string {
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, fmt.Sprintf("%s/%s", rec.Namespace, rec.Name))
+	}
+	return out
+}
+
+func quoteYAMLString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }
 
 func providerWarnings(provider string) []string {
