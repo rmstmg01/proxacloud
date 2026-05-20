@@ -19,6 +19,9 @@ import type {
   MetalLBStatusResponse,
   DeployIngressControllerResponse,
   DeployAppResponse,
+  ClusterSecretRecord,
+  ClusterSecretProvider,
+  ApplyClusterSecretResponse,
   ApplicationManifestRecord,
   ApplicationManifestRevisionRecord,
   KubectlCommandRun,
@@ -265,12 +268,54 @@ export const deployApp = (
     tls_certificate_id: number;
     tls_fullchain_pem: string;
     tls_private_key_pem: string;
+    selected_secret_ids: number[];
+    apply_selected_secrets: boolean;
     apply: boolean;
   },
 ) =>
   client
     .post<DeployAppResponse>(`/clusters/${id}/apps/deploy`, body)
     .then((r) => r.data);
+
+export const getClusterSecrets = (id: number) =>
+  client.get<ClusterSecretRecord[]>(`/clusters/${id}/secrets`).then((r) => r.data);
+
+export const createClusterSecret = (
+  id: number,
+  body: {
+    name: string;
+    namespace: string;
+    provider: ClusterSecretProvider;
+    type: string;
+    description: string;
+    external_ref: string;
+    provider_config: Record<string, unknown>;
+    immutable: boolean;
+    data: Record<string, string>;
+  },
+) => client.post<ClusterSecretRecord>(`/clusters/${id}/secrets`, body).then((r) => r.data);
+
+export const updateClusterSecret = (
+  id: number,
+  secretID: number,
+  body: {
+    name: string;
+    namespace: string;
+    provider: ClusterSecretProvider;
+    type: string;
+    description: string;
+    external_ref: string;
+    provider_config: Record<string, unknown>;
+    immutable: boolean;
+    data?: Record<string, string>;
+  },
+) => client.put<ClusterSecretRecord>(`/clusters/${id}/secrets/${secretID}`, body).then((r) => r.data);
+
+export const deleteClusterSecret = (id: number, secretID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}/secrets/${secretID}`).then((r) => r.data);
+
+export const applyClusterSecret = (id: number, secretID: number) =>
+  client.post<ApplyClusterSecretResponse>(`/clusters/${id}/secrets/${secretID}/apply`).then((r) => r.data);
 
 export const getApplicationManifests = (id: number) =>
   client.get<ApplicationManifestRecord[]>(`/clusters/${id}/apps`).then((r) => r.data);

@@ -30,6 +30,11 @@ import {
   getClusterNodes,
   getBootstrapConfig,
   getBootstrapKeys,
+  getClusterSecrets,
+  createClusterSecret,
+  updateClusterSecret,
+  deleteClusterSecret,
+  applyClusterSecret,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
 import { getSSLCertificates } from '../api/sslCertificates';
@@ -41,8 +46,9 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
+import type { ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -50,6 +56,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'bootstrap', label: 'Bootstrap' },
   { key: 'day2', label: 'Day-2 Ops' },
   { key: 'metallb', label: 'MetalLB' },
+  { key: 'secrets', label: 'Secrets' },
   { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
@@ -880,9 +887,235 @@ function KubectlCommandPanel({ id }: { id: number }) {
   );
 }
 
+const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
+  { value: 'native', label: 'Native encrypted DB' },
+  { value: 'hashicorp-vault', label: 'HashiCorp Vault' },
+  { value: 'external-secrets-operator', label: 'External Secrets Operator' },
+  { value: 'aws-secrets-manager', label: 'AWS Secrets Manager' },
+  { value: 'azure-key-vault', label: 'Azure Key Vault' },
+  { value: 'google-secret-manager', label: 'Google Secret Manager' },
+  { value: 'bitnami-sealed-secrets', label: 'Bitnami Sealed Secrets' },
+];
+
+function parseSecretData(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const idx = trimmed.indexOf('=');
+    if (idx <= 0) continue;
+    out[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1);
+  }
+  return out;
+}
+
+function providerDefaults(provider: ClusterSecretProvider): Record<string, unknown> {
+  if (provider === 'native' || provider === 'bitnami-sealed-secrets') return {};
+  return {
+    secret_store_name: 'cluster-secret-store',
+    secret_store_kind: 'ClusterSecretStore',
+    refresh_interval: '1h',
+  };
+}
+
+function SecretsTab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const { data: secrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
+  const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
+  const [form, setForm] = useState({
+    name: '',
+    namespace: 'default',
+    provider: 'native' as ClusterSecretProvider,
+    type: 'Opaque',
+    description: '',
+    external_ref: '',
+    provider_config_raw: '{}',
+    immutable: false,
+    data_raw: 'USERNAME=\nPASSWORD=',
+  });
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      name: '',
+      namespace: 'default',
+      provider: 'native',
+      type: 'Opaque',
+      description: '',
+      external_ref: '',
+      provider_config_raw: '{}',
+      immutable: false,
+      data_raw: 'USERNAME=\nPASSWORD=',
+    });
+  };
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const provider_config = JSON.parse(form.provider_config_raw || '{}');
+      const parsedData = parseSecretData(form.data_raw);
+      const hasReplacementValues = Object.values(parsedData).some((value) => value.length > 0);
+      const body = {
+        name: form.name.trim(),
+        namespace: form.namespace.trim() || 'default',
+        provider: form.provider,
+        type: form.type.trim() || 'Opaque',
+        description: form.description.trim(),
+        external_ref: form.external_ref.trim(),
+        provider_config,
+        immutable: form.immutable,
+      };
+      return editing
+        ? updateClusterSecret(id, editing.id, { ...body, data: hasReplacementValues ? parsedData : undefined })
+        : createClusterSecret(id, { ...body, data: parsedData });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-secrets', id] });
+      resetForm();
+    },
+  });
+
+  const applyMut = useMutation({
+    mutationFn: (secretID: number) => applyClusterSecret(id, secretID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (secretID: number) => deleteClusterSecret(id, secretID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }),
+  });
+
+  const startEdit = (secret: ClusterSecretRecord) => {
+    setEditing(secret);
+    setForm({
+      name: secret.name,
+      namespace: secret.namespace,
+      provider: secret.provider,
+      type: secret.type,
+      description: secret.description || '',
+      external_ref: secret.external_ref || '',
+      provider_config_raw: JSON.stringify(secret.provider_config || providerDefaults(secret.provider), null, 2),
+      immutable: secret.immutable,
+      data_raw: secret.keys.map((key) => `${key}=`).join('\n'),
+    });
+  };
+
+  const onProviderChange = (provider: ClusterSecretProvider) => {
+    setForm((prev) => ({
+      ...prev,
+      provider,
+      provider_config_raw: JSON.stringify(providerDefaults(provider), null, 2),
+    }));
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>{editing ? 'Edit Cluster Secret' : 'Create Cluster Secret'}</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
+              <Input label="Secret name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Input label="Namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required />
+              <Select label="Provider" value={form.provider} onChange={(e) => onProviderChange(e.target.value as ClusterSecretProvider)}>
+                {SECRET_PROVIDERS.map((provider) => <option key={provider.value} value={provider.value}>{provider.label}</option>)}
+              </Select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-4xl">
+              <Input label="Kubernetes type" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} placeholder="Opaque" />
+              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </div>
+            {form.provider !== 'native' && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <Textarea
+                  label={form.provider === 'bitnami-sealed-secrets' ? 'SealedSecret manifest' : 'External secret reference'}
+                  value={form.external_ref}
+                  onChange={(e) => setForm({ ...form, external_ref: e.target.value })}
+                  rows={6}
+                  className="font-mono text-xs"
+                  required
+                />
+                <Textarea
+                  label="Provider config JSON"
+                  value={form.provider_config_raw}
+                  onChange={(e) => setForm({ ...form, provider_config_raw: e.target.value })}
+                  rows={6}
+                  className="font-mono text-xs"
+                />
+              </div>
+            )}
+            <Textarea
+              label={form.provider === 'native' ? 'Secret data' : 'Secret keys'}
+              value={form.data_raw}
+              onChange={(e) => setForm({ ...form, data_raw: e.target.value })}
+              rows={7}
+              className="font-mono text-xs"
+              helperText="Use KEY=value per line. Existing values are never displayed; leave a key blank only when intentionally replacing it."
+              required
+            />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.immutable} onChange={(e) => setForm({ ...form, immutable: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Immutable Kubernetes Secret</span>
+            </label>
+            <div className="flex gap-3">
+              <Button type="submit" loading={saveMut.isPending}>{editing ? 'Update Secret' : 'Create Secret'}</Button>
+              {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+            </div>
+            {saveMut.error && <ErrorMessage error={saveMut.error} />}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Cluster Secrets</CardTitle></CardHeader>
+        <CardContent>
+          {!secrets?.length ? (
+            <p className="text-sm text-slate-400">No cluster secrets yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Provider</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Keys</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
+                    <th className="px-4 py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {secrets.map((secret) => (
+                    <tr key={secret.id}>
+                      <td className="px-4 py-2 font-medium text-slate-900">{secret.name}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.namespace}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.provider}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.keys.join(', ') || '-'}</td>
+                      <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
+                          <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === secret.id} onClick={() => applyMut.mutate(secret.id)}>Apply</Button>
+                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => deleteMut.mutate(secret.id)}>Delete</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {applyMut.error && <ErrorMessage error={applyMut.error} />}
+          {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 function ApplicationsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
+  const { data: clusterSecrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
   const { data: appHistory } = useQuery({ queryKey: ['application-manifests', id], queryFn: () => getApplicationManifests(id) });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
   const appMut = useMutation({
@@ -931,6 +1164,8 @@ function ApplicationsTab({ id }: { id: number }) {
     tls_certificate_id: 0,
     tls_fullchain_pem: '',
     tls_private_key_pem: '',
+    selected_secret_ids: [] as number[],
+    apply_selected_secrets: true,
     manifest: SAMPLE_APP_MANIFEST,
     apply: true,
   });
@@ -958,6 +1193,8 @@ function ApplicationsTab({ id }: { id: number }) {
       tls_certificate_id: app.tls_certificate_id || 0,
       tls_fullchain_pem: '',
       tls_private_key_pem: '',
+      selected_secret_ids: [],
+      apply_selected_secrets: true,
       manifest: revision.raw_manifest,
       apply: true,
     });
@@ -984,12 +1221,23 @@ function ApplicationsTab({ id }: { id: number }) {
       tls_certificate_id: appForm.tls_certificate_id,
       tls_fullchain_pem: appForm.tls_fullchain_pem.trim(),
       tls_private_key_pem: appForm.tls_private_key_pem.trim(),
+      selected_secret_ids: appForm.selected_secret_ids,
+      apply_selected_secrets: appForm.apply_selected_secrets,
       manifest: appForm.manifest,
       apply: appForm.apply,
     });
   };
 
   const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
+  const namespaceSecrets = clusterSecrets?.filter((secret) => secret.namespace === (appForm.namespace.trim() || 'default')) ?? [];
+  const toggleAppSecret = (secretID: number) => {
+    setAppForm((prev) => ({
+      ...prev,
+      selected_secret_ids: prev.selected_secret_ids.includes(secretID)
+        ? prev.selected_secret_ids.filter((id) => id !== secretID)
+        : [...prev.selected_secret_ids, secretID],
+    }));
+  };
 
   return (
     <div className="space-y-6">
@@ -1113,6 +1361,43 @@ function ApplicationsTab({ id }: { id: number }) {
             <Alert variant="info" title="Existing certificate upload">
               Select a saved certificate or choose your Let&apos;s Encrypt fullchain.pem and privkey.pem to create/update the Kubernetes TLS secret before the app manifest is applied.
             </Alert>
+            <div className="border border-slate-200 rounded-md p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">Predefined application secrets</p>
+                  <p className="text-xs text-slate-500">Select cluster secrets in the same namespace to apply before the manifest.</p>
+                </div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={appForm.apply_selected_secrets}
+                    onChange={(e) => setAppForm({ ...appForm, apply_selected_secrets: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  <span className="text-sm text-slate-700">Apply selected secrets</span>
+                </label>
+              </div>
+              {!namespaceSecrets.length ? (
+                <p className="text-sm text-slate-400">No predefined secrets found for namespace {appForm.namespace.trim() || 'default'}.</p>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {namespaceSecrets.map((secret) => (
+                    <label key={secret.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
+                      <input
+                        type="checkbox"
+                        checked={appForm.selected_secret_ids.includes(secret.id)}
+                        onChange={() => toggleAppSecret(secret.id)}
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-900">{secret.name}</span>
+                        <span className="block text-xs text-slate-500">{secret.provider} · {secret.keys.join(', ') || 'no keys'}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Input
@@ -1176,6 +1461,7 @@ function ApplicationsTab({ id }: { id: number }) {
                   <p>Namespace: {appMut.data.namespace}</p>
                   {appMut.data.hostname && <p>Hostname: {appMut.data.hostname}</p>}
                   {appMut.data.tls_secret_name && <p>TLS secret: {appMut.data.tls_secret_name}</p>}
+                  {appMut.data.secret_names?.length ? <p>Secrets: {appMut.data.secret_names.join(', ')}</p> : null}
                 </div>
               </Alert>
             )}
@@ -1504,6 +1790,7 @@ export function ClusterDetailPage() {
       {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
       {activeTab === 'day2' && <Day2Tab id={clusterId} />}
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
+      {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
       {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
       {activeTab === 'etcd' && <EtcdTab id={clusterId} />}

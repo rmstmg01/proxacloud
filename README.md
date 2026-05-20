@@ -262,6 +262,11 @@ Authenticated endpoints include:
 - `GET /api/v1/clusters/{id}/metallb`
 - `POST /api/v1/clusters/{id}/ingress-controller/deploy`
 - `POST /api/v1/clusters/{id}/cert-manager/deploy`
+- `GET /api/v1/clusters/{id}/secrets`
+- `POST /api/v1/clusters/{id}/secrets`
+- `PUT /api/v1/clusters/{id}/secrets/{secretID}`
+- `DELETE /api/v1/clusters/{id}/secrets/{secretID}`
+- `POST /api/v1/clusters/{id}/secrets/{secretID}/apply`
 - `POST /api/v1/clusters/{id}/apps/deploy`
 - `POST /api/v1/clusters/{id}/observability/deploy`
 - `GET /api/v1/clusters/{id}/observability`
@@ -425,6 +430,8 @@ The automated deploy waits up to 10 minutes for the MetalLB controller rollout. 
 The cluster detail Applications tab can deploy Traefik as the ingress controller. It creates a `traefik` namespace, RBAC, default `IngressClass`, Traefik deployment, and a `LoadBalancer` service so MetalLB can assign an external IP. The same tab can apply application YAML manifests through the backend kubeconfig.
 
 The Applications tab can also deploy cert-manager and a Let's Encrypt `ClusterIssuer` for Traefik HTTP-01 certificates. Public DNS for each app hostname must resolve to Traefik's external IP, and ports 80/443 must be reachable by Let's Encrypt. Private-only addresses such as `192.168.x.x` require public port forwarding or a future DNS-01 issuer.
+
+The cluster Secrets tab manages reusable application secrets per cluster and namespace. Native secrets store values through the encrypted backend secret store, while HashiCorp Vault, External Secrets Operator, AWS Secrets Manager, Azure Key Vault, Google Secret Manager, and Bitnami Sealed Secrets can be registered as provider-backed references. Application deployments can select predefined secrets in the target namespace and apply them before the app manifest.
 
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 

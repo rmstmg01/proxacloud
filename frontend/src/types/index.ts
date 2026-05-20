@@ -311,6 +311,44 @@ export interface DeployAppResponse {
   hostname?: string;
   ingress_class?: string;
   tls_secret_name?: string;
+  secret_names?: string[];
+  output?: string;
+  warnings: string[];
+}
+
+export type ClusterSecretProvider =
+  | 'native'
+  | 'hashicorp-vault'
+  | 'external-secrets-operator'
+  | 'aws-secrets-manager'
+  | 'azure-key-vault'
+  | 'google-secret-manager'
+  | 'bitnami-sealed-secrets';
+
+export interface ClusterSecretRecord {
+  id: number;
+  cluster_id: number;
+  name: string;
+  namespace: string;
+  provider: ClusterSecretProvider;
+  type: string;
+  description: string;
+  external_ref?: string;
+  provider_config?: Record<string, unknown>;
+  immutable: boolean;
+  keys: string[];
+  last_applied_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplyClusterSecretResponse {
+  cluster_id: number;
+  secret_id: number;
+  name: string;
+  namespace: string;
+  provider: ClusterSecretProvider;
+  status: string;
   output?: string;
   warnings: string[];
 }
