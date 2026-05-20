@@ -295,6 +295,7 @@ export const createClusterSecret = (
     external_ref: string;
     provider_config: Record<string, unknown>;
     immutable: boolean;
+    is_global: boolean;
     data: Record<string, string>;
   },
 ) => client.post<ClusterSecretRecord>(`/clusters/${id}/secrets`, body).then((r) => r.data);
@@ -311,6 +312,7 @@ export const updateClusterSecret = (
     external_ref: string;
     provider_config: Record<string, unknown>;
     immutable: boolean;
+    is_global: boolean;
     data?: Record<string, string>;
   },
 ) => client.put<ClusterSecretRecord>(`/clusters/${id}/secrets/${secretID}`, body).then((r) => r.data);
@@ -320,6 +322,11 @@ export const deleteClusterSecret = (id: number, secretID: number) =>
 
 export const applyClusterSecret = (id: number, secretID: number) =>
   client.post<ApplyClusterSecretResponse>(`/clusters/${id}/secrets/${secretID}/apply`).then((r) => r.data);
+
+export const updateClusterSecretKey = (id: number, secretID: number, key: string, value: string) =>
+  client
+    .put<ClusterSecretRecord>(`/clusters/${id}/secrets/${secretID}/keys/${encodeURIComponent(key)}`, { value })
+    .then((r) => r.data);
 
 export const getClusterConfigMaps = (id: number) =>
   client.get<ClusterConfigMapRecord[]>(`/clusters/${id}/config-maps`).then((r) => r.data);
@@ -331,6 +338,7 @@ export const createClusterConfigMap = (
     namespace: string;
     description: string;
     immutable: boolean;
+    is_global: boolean;
     data: Record<string, string>;
   },
 ) => client.post<ClusterConfigMapRecord>(`/clusters/${id}/config-maps`, body).then((r) => r.data);
@@ -343,6 +351,7 @@ export const updateClusterConfigMap = (
     namespace: string;
     description: string;
     immutable: boolean;
+    is_global: boolean;
     data: Record<string, string>;
   },
 ) => client.put<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}`, body).then((r) => r.data);
@@ -352,6 +361,11 @@ export const deleteClusterConfigMap = (id: number, configMapID: number) =>
 
 export const applyClusterConfigMap = (id: number, configMapID: number) =>
   client.post<ApplyClusterConfigMapResponse>(`/clusters/${id}/config-maps/${configMapID}/apply`).then((r) => r.data);
+
+export const updateClusterConfigMapKey = (id: number, configMapID: number, key: string, value: string) =>
+  client
+    .put<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}/keys/${encodeURIComponent(key)}`, { value })
+    .then((r) => r.data);
 
 export const getApplicationManifests = (id: number) =>
   client.get<ApplicationManifestRecord[]>(`/clusters/${id}/apps`).then((r) => r.data);

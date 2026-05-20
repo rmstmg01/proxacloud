@@ -440,6 +440,8 @@ The cluster Secrets tab manages reusable application secrets per cluster and nam
 
 The cluster ConfigMaps tab manages reusable non-sensitive application configuration per cluster and namespace. Application deployments can select predefined ConfigMaps in the target namespace and apply them before the app manifest. Credentials, tokens, private keys, kubeconfigs, and database passwords should use Secrets rather than ConfigMaps.
 
+Secrets and ConfigMaps can be marked global so they are available for deployment selection from other clusters. Global entries keep their original owning cluster for edits and deletes, and individual keys can be updated without replacing the full Secret or ConfigMap.
+
 After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
 
 PowerShell example:

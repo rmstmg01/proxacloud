@@ -337,6 +337,7 @@ export interface ClusterSecretRecord {
   external_ref?: string;
   provider_config?: Record<string, unknown>;
   immutable: boolean;
+  is_global: boolean;
   keys: string[];
   last_applied_at?: string;
   created_at: string;
@@ -362,6 +363,7 @@ export interface ClusterConfigMapRecord {
   description: string;
   data: Record<string, string>;
   immutable: boolean;
+  is_global: boolean;
   last_applied_at?: string;
   created_at: string;
   updated_at: string;

@@ -601,6 +601,24 @@ func (h *Handler) DeleteClusterSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": secretID, "deleted": true})
 }
 
+func (h *Handler) UpdateClusterSecretKey(w http.ResponseWriter, r *http.Request) {
+	clusterID, secretID, ok := parseClusterAndSecretIDs(w, r)
+	if !ok {
+		return
+	}
+	var req UpdateSecretKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterSecretKey(clusterID, secretID, chi.URLParam(r, "key"), req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ApplyClusterSecret(w http.ResponseWriter, r *http.Request) {
 	clusterID, secretID, ok := parseClusterAndSecretIDs(w, r)
 	if !ok {
@@ -675,6 +693,24 @@ func (h *Handler) DeleteClusterConfigMap(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": configMapID, "deleted": true})
+}
+
+func (h *Handler) UpdateClusterConfigMapKey(w http.ResponseWriter, r *http.Request) {
+	clusterID, configMapID, ok := parseClusterAndConfigMapIDs(w, r)
+	if !ok {
+		return
+	}
+	var req UpdateConfigMapKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterConfigMapKey(clusterID, configMapID, chi.URLParam(r, "key"), req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) ApplyClusterConfigMap(w http.ResponseWriter, r *http.Request) {

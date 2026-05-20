@@ -35,11 +35,13 @@ import {
   updateClusterSecret,
   deleteClusterSecret,
   applyClusterSecret,
+  updateClusterSecretKey,
   getClusterConfigMaps,
   createClusterConfigMap,
   updateClusterConfigMap,
   deleteClusterConfigMap,
   applyClusterConfigMap,
+  updateClusterConfigMapKey,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
 import { getSSLCertificates } from '../api/sslCertificates';
@@ -941,6 +943,7 @@ function SecretsTab({ id }: { id: number }) {
     external_ref: '',
     provider_config_raw: '{}',
     immutable: false,
+    is_global: false,
     data_raw: 'USERNAME=\nPASSWORD=',
   });
 
@@ -955,6 +958,7 @@ function SecretsTab({ id }: { id: number }) {
       external_ref: '',
       provider_config_raw: '{}',
       immutable: false,
+      is_global: false,
       data_raw: 'USERNAME=\nPASSWORD=',
     });
   };
@@ -973,6 +977,7 @@ function SecretsTab({ id }: { id: number }) {
         external_ref: form.external_ref.trim(),
         provider_config,
         immutable: form.immutable,
+        is_global: form.is_global,
       };
       return editing
         ? updateClusterSecret(id, editing.id, { ...body, data: hasReplacementValues ? parsedData : undefined })
@@ -1005,6 +1010,7 @@ function SecretsTab({ id }: { id: number }) {
       external_ref: secret.external_ref || '',
       provider_config_raw: JSON.stringify(secret.provider_config || providerDefaults(secret.provider), null, 2),
       immutable: secret.immutable,
+      is_global: secret.is_global,
       data_raw: secret.keys.map((key) => `${key}=`).join('\n'),
     });
   };
@@ -1066,6 +1072,10 @@ function SecretsTab({ id }: { id: number }) {
               <input type="checkbox" checked={form.immutable} onChange={(e) => setForm({ ...form, immutable: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
               <span className="text-sm text-slate-700">Immutable Kubernetes Secret</span>
             </label>
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Make available to all clusters</span>
+            </label>
             <div className="flex gap-3">
               <Button type="submit" loading={saveMut.isPending}>{editing ? 'Update Secret' : 'Create Secret'}</Button>
               {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
@@ -1088,6 +1098,7 @@ function SecretsTab({ id }: { id: number }) {
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Provider</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Scope</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Keys</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
                     <th className="px-4 py-2" />
@@ -1099,7 +1110,26 @@ function SecretsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 font-medium text-slate-900">{secret.name}</td>
                       <td className="px-4 py-2 text-slate-600">{secret.namespace}</td>
                       <td className="px-4 py-2 text-slate-600">{secret.provider}</td>
-                      <td className="px-4 py-2 text-slate-600">{secret.keys.join(', ') || '-'}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.is_global ? 'Global' : 'Cluster'}</td>
+                      <td className="px-4 py-2 text-slate-600">
+                        <div className="flex flex-wrap gap-1">
+                          {secret.keys.length ? secret.keys.map((key) => (
+                            <Button
+                              key={key}
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={secret.cluster_id !== id}
+                              onClick={() => {
+                                const value = window.prompt(`Enter new value for ${key}`);
+                                if (value !== null) updateClusterSecretKey(id, secret.id, key, value).then(() => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }));
+                              }}
+                            >
+                              {key}
+                            </Button>
+                          )) : '-'}
+                        </div>
+                      </td>
                       <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
                         <div className="flex justify-end gap-2">
@@ -1131,6 +1161,7 @@ function ConfigMapsTab({ id }: { id: number }) {
     namespace: 'default',
     description: '',
     immutable: false,
+    is_global: false,
     data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
   });
 
@@ -1141,6 +1172,7 @@ function ConfigMapsTab({ id }: { id: number }) {
       namespace: 'default',
       description: '',
       immutable: false,
+      is_global: false,
       data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
     });
   };
@@ -1152,6 +1184,7 @@ function ConfigMapsTab({ id }: { id: number }) {
         namespace: form.namespace.trim() || 'default',
         description: form.description.trim(),
         immutable: form.immutable,
+        is_global: form.is_global,
         data: parseSecretData(form.data_raw),
       };
       return editing
@@ -1181,6 +1214,7 @@ function ConfigMapsTab({ id }: { id: number }) {
       namespace: configMap.namespace,
       description: configMap.description || '',
       immutable: configMap.immutable,
+      is_global: configMap.is_global,
       data_raw: stringifyKeyValues(configMap.data || {}),
     });
   };
@@ -1209,6 +1243,10 @@ function ConfigMapsTab({ id }: { id: number }) {
               <input type="checkbox" checked={form.immutable} onChange={(e) => setForm({ ...form, immutable: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
               <span className="text-sm text-slate-700">Immutable Kubernetes ConfigMap</span>
             </label>
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Make available to all clusters</span>
+            </label>
             <div className="flex gap-3">
               <Button type="submit" loading={saveMut.isPending}>{editing ? 'Update ConfigMap' : 'Create ConfigMap'}</Button>
               {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
@@ -1230,6 +1268,7 @@ function ConfigMapsTab({ id }: { id: number }) {
                   <tr className="border-b border-slate-200 bg-slate-50">
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Scope</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Keys</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
                     <th className="px-4 py-2" />
@@ -1240,7 +1279,26 @@ function ConfigMapsTab({ id }: { id: number }) {
                     <tr key={configMap.id}>
                       <td className="px-4 py-2 font-medium text-slate-900">{configMap.name}</td>
                       <td className="px-4 py-2 text-slate-600">{configMap.namespace}</td>
-                      <td className="px-4 py-2 text-slate-600">{Object.keys(configMap.data || {}).join(', ') || '-'}</td>
+                      <td className="px-4 py-2 text-slate-600">{configMap.is_global ? 'Global' : 'Cluster'}</td>
+                      <td className="px-4 py-2 text-slate-600">
+                        <div className="flex flex-wrap gap-1">
+                          {Object.keys(configMap.data || {}).length ? Object.keys(configMap.data || {}).map((key) => (
+                            <Button
+                              key={key}
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={configMap.cluster_id !== id}
+                              onClick={() => {
+                                const value = window.prompt(`Enter new value for ${key}`, configMap.data[key] || '');
+                                if (value !== null) updateClusterConfigMapKey(id, configMap.id, key, value).then(() => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }));
+                              }}
+                            >
+                              {key}
+                            </Button>
+                          )) : '-'}
+                        </div>
+                      </td>
                       <td className="px-4 py-2 text-slate-500">{configMap.last_applied_at ? new Date(configMap.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
                         <div className="flex justify-end gap-2">

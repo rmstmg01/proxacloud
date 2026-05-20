@@ -396,6 +396,7 @@ type ClusterSecretRecord struct {
 	ExternalRef    string                 `json:"external_ref,omitempty"`
 	ProviderConfig map[string]interface{} `json:"provider_config,omitempty"`
 	Immutable      bool                   `json:"immutable"`
+	IsGlobal       bool                   `json:"is_global"`
 	Keys           []string               `json:"keys"`
 	LastAppliedAt  *time.Time             `json:"last_applied_at,omitempty"`
 	CreatedAt      time.Time              `json:"created_at"`
@@ -411,6 +412,7 @@ type UpsertClusterSecretRequest struct {
 	ExternalRef    string                 `json:"external_ref"`
 	ProviderConfig map[string]interface{} `json:"provider_config"`
 	Immutable      bool                   `json:"immutable"`
+	IsGlobal       bool                   `json:"is_global"`
 	Data           map[string]string      `json:"data"`
 }
 
@@ -433,6 +435,7 @@ type ClusterConfigMapRecord struct {
 	Description   string            `json:"description"`
 	Data          map[string]string `json:"data"`
 	Immutable     bool              `json:"immutable"`
+	IsGlobal      bool              `json:"is_global"`
 	LastAppliedAt *time.Time        `json:"last_applied_at,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
@@ -444,6 +447,15 @@ type UpsertClusterConfigMapRequest struct {
 	Description string            `json:"description"`
 	Data        map[string]string `json:"data"`
 	Immutable   bool              `json:"immutable"`
+	IsGlobal    bool              `json:"is_global"`
+}
+
+type UpdateSecretKeyRequest struct {
+	Value string `json:"value"`
+}
+
+type UpdateConfigMapKeyRequest struct {
+	Value string `json:"value"`
 }
 
 type ApplyClusterConfigMapResponse struct {
@@ -2393,10 +2405,10 @@ func (s *Service) ListClusterSecrets(clusterID int64) ([]ClusterSecretRecord, er
 	}
 	rows, err := s.db.Query(
 		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
-		        provider_config, immutable, last_applied_at, created_at, updated_at
+		        provider_config, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_secrets
-		 WHERE cluster_id = $1
-		 ORDER BY namespace ASC, name ASC`,
+		 WHERE cluster_id = $1 OR is_global = TRUE
+		 ORDER BY is_global DESC, namespace ASC, name ASC`,
 		clusterID,
 	)
 	if err != nil {
@@ -2431,10 +2443,10 @@ func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRe
 	var id int64
 	err = s.db.QueryRow(
 		`INSERT INTO cluster_secrets
-		 (cluster_id, name, namespace, provider, type, description, external_ref, provider_config, immutable)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 (cluster_id, name, namespace, provider, type, description, external_ref, provider_config, immutable, is_global)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
-		clusterID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable,
+		clusterID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable, req.IsGlobal,
 	).Scan(&id)
 	if err != nil {
 		return ClusterSecretRecord{}, fmt.Errorf("create cluster secret: %w", err)
@@ -2451,9 +2463,9 @@ func (s *Service) GetClusterSecret(clusterID, secretID int64) (ClusterSecretReco
 	}
 	row := s.db.QueryRow(
 		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
-		        provider_config, immutable, last_applied_at, created_at, updated_at
+		        provider_config, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_secrets
-		 WHERE cluster_id = $1 AND id = $2`,
+		 WHERE id = $2 AND (cluster_id = $1 OR is_global = TRUE)`,
 		clusterID,
 		secretID,
 	)
@@ -2482,9 +2494,9 @@ func (s *Service) UpdateClusterSecret(clusterID, secretID int64, req UpsertClust
 	_, err = s.db.Exec(
 		`UPDATE cluster_secrets
 		 SET name = $3, namespace = $4, provider = $5, type = $6, description = $7,
-		     external_ref = $8, provider_config = $9, immutable = $10, updated_at = NOW()
+		     external_ref = $8, provider_config = $9, immutable = $10, is_global = $11, updated_at = NOW()
 		 WHERE cluster_id = $1 AND id = $2`,
-		clusterID, secretID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable,
+		clusterID, secretID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable, req.IsGlobal,
 	)
 	if err != nil {
 		return ClusterSecretRecord{}, fmt.Errorf("update cluster secret: %w", err)
@@ -2507,6 +2519,43 @@ func (s *Service) DeleteClusterSecret(clusterID, secretID int64) error {
 		return ErrApplicationManifestNotFound
 	}
 	return nil
+}
+
+func (s *Service) UpdateClusterSecretKey(clusterID, secretID int64, key string, req UpdateSecretKeyRequest) (ClusterSecretRecord, error) {
+	rec, err := s.GetClusterSecret(clusterID, secretID)
+	if err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	if rec.ClusterID != clusterID {
+		return ClusterSecretRecord{}, errors.New("global secret can only be edited from its owning cluster")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ClusterSecretRecord{}, errors.New("secret key is required")
+	}
+	if s.secrets == nil {
+		return ClusterSecretRecord{}, errors.New("secret store is not configured")
+	}
+	ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", rec.ClusterID, secretID), key, []byte(req.Value))
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("store cluster secret key %s: %w", key, err)
+	}
+	sum := sha256.Sum256([]byte(req.Value))
+	_, err = s.db.Exec(
+		`INSERT INTO cluster_secret_items (cluster_secret_id, key, secret_ref, value_sha256)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (cluster_secret_id, key)
+		 DO UPDATE SET secret_ref = EXCLUDED.secret_ref, value_sha256 = EXCLUDED.value_sha256, updated_at = NOW()`,
+		secretID,
+		key,
+		ref,
+		hex.EncodeToString(sum[:]),
+	)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("update cluster secret key: %w", err)
+	}
+	_, _ = s.db.Exec(`UPDATE cluster_secrets SET updated_at = NOW() WHERE id = $1`, secretID)
+	return s.GetClusterSecret(clusterID, secretID)
 }
 
 func (s *Service) ApplyClusterSecret(clusterID, secretID int64) (ApplyClusterSecretResponse, error) {
@@ -2536,10 +2585,10 @@ func (s *Service) ListClusterConfigMaps(clusterID int64) ([]ClusterConfigMapReco
 		return nil, err
 	}
 	rows, err := s.db.Query(
-		`SELECT id, cluster_id, name, namespace, description, data, immutable, last_applied_at, created_at, updated_at
+		`SELECT id, cluster_id, name, namespace, description, data, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_config_maps
-		 WHERE cluster_id = $1
-		 ORDER BY namespace ASC, name ASC`,
+		 WHERE cluster_id = $1 OR is_global = TRUE
+		 ORDER BY is_global DESC, namespace ASC, name ASC`,
 		clusterID,
 	)
 	if err != nil {
@@ -2572,10 +2621,10 @@ func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfi
 	}
 	var id int64
 	err = s.db.QueryRow(
-		`INSERT INTO cluster_config_maps (cluster_id, name, namespace, description, data, immutable)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO cluster_config_maps (cluster_id, name, namespace, description, data, immutable, is_global)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id`,
-		clusterID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable,
+		clusterID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable, req.IsGlobal,
 	).Scan(&id)
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("create cluster config map: %w", err)
@@ -2588,9 +2637,9 @@ func (s *Service) GetClusterConfigMap(clusterID, configMapID int64) (ClusterConf
 		return ClusterConfigMapRecord{}, err
 	}
 	row := s.db.QueryRow(
-		`SELECT id, cluster_id, name, namespace, description, data, immutable, last_applied_at, created_at, updated_at
+		`SELECT id, cluster_id, name, namespace, description, data, immutable, is_global, last_applied_at, created_at, updated_at
 		 FROM cluster_config_maps
-		 WHERE cluster_id = $1 AND id = $2`,
+		 WHERE id = $2 AND (cluster_id = $1 OR is_global = TRUE)`,
 		clusterID,
 		configMapID,
 	)
@@ -2618,9 +2667,9 @@ func (s *Service) UpdateClusterConfigMap(clusterID, configMapID int64, req Upser
 	}
 	_, err = s.db.Exec(
 		`UPDATE cluster_config_maps
-		 SET name = $3, namespace = $4, description = $5, data = $6, immutable = $7, updated_at = NOW()
+		 SET name = $3, namespace = $4, description = $5, data = $6, immutable = $7, is_global = $8, updated_at = NOW()
 		 WHERE cluster_id = $1 AND id = $2`,
-		clusterID, configMapID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable,
+		clusterID, configMapID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable, req.IsGlobal,
 	)
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("update cluster config map: %w", err)
@@ -2638,6 +2687,35 @@ func (s *Service) DeleteClusterConfigMap(clusterID, configMapID int64) error {
 		return ErrApplicationManifestNotFound
 	}
 	return nil
+}
+
+func (s *Service) UpdateClusterConfigMapKey(clusterID, configMapID int64, key string, req UpdateConfigMapKeyRequest) (ClusterConfigMapRecord, error) {
+	rec, err := s.GetClusterConfigMap(clusterID, configMapID)
+	if err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	if rec.ClusterID != clusterID {
+		return ClusterConfigMapRecord{}, errors.New("global config map can only be edited from its owning cluster")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ClusterConfigMapRecord{}, errors.New("config map key is required")
+	}
+	rec.Data[key] = req.Value
+	dataJSON, err := json.Marshal(rec.Data)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
+		clusterID,
+		configMapID,
+		dataJSON,
+	)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("update cluster config map key: %w", err)
+	}
+	return s.GetClusterConfigMap(clusterID, configMapID)
 }
 
 func (s *Service) ApplyClusterConfigMap(clusterID, configMapID int64) (ApplyClusterConfigMapResponse, error) {
@@ -3297,6 +3375,7 @@ func scanClusterConfigMap(row clusterConfigMapScanner) (ClusterConfigMapRecord, 
 		&rec.Description,
 		&dataRaw,
 		&rec.Immutable,
+		&rec.IsGlobal,
 		&lastApplied,
 		&rec.CreatedAt,
 		&rec.UpdatedAt,
@@ -3331,6 +3410,7 @@ func (s *Service) scanClusterSecret(row clusterSecretScanner) (ClusterSecretReco
 		&rec.ExternalRef,
 		&configRaw,
 		&rec.Immutable,
+		&rec.IsGlobal,
 		&lastApplied,
 		&rec.CreatedAt,
 		&rec.UpdatedAt,
