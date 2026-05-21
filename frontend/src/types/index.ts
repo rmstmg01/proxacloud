@@ -379,6 +379,55 @@ export interface ApplyClusterConfigMapResponse {
   warnings: string[];
 }
 
+export interface ClusterSavedManifestRecord {
+  id: number;
+  cluster_id: number;
+  name: string;
+  namespace: string;
+  description: string;
+  raw_manifest: string;
+  is_global: boolean;
+  latest_revision_id?: number;
+  latest_revision?: number;
+  last_status?: string;
+  last_applied_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ClusterSavedManifestRevisionRecord {
+  id: number;
+  manifest_id: number;
+  cluster_id: number;
+  revision_number: number;
+  raw_manifest: string;
+  created_at: string;
+}
+
+export interface ClusterSavedManifestApplyRunRecord {
+  id: number;
+  manifest_id: number;
+  revision_id: number;
+  cluster_id: number;
+  status: string;
+  kubectl_output: string;
+  error_message: string;
+  applied_at: string;
+  created_at: string;
+}
+
+export interface ApplyClusterSavedManifestResponse {
+  cluster_id: number;
+  manifest_id: number;
+  revision_id: number;
+  run_id: number;
+  name: string;
+  namespace: string;
+  status: string;
+  output?: string;
+  warnings: string[];
+}
+
 export interface ApplicationManifestRecord {
   id: number;
   cluster_id: number;

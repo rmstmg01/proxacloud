@@ -15,6 +15,7 @@ import { SSHKeysPage } from './pages/SSHKeysPage';
 import { SSLCertificatesPage } from './pages/SSLCertificatesPage';
 import { ClusterSecretsPage } from './pages/ClusterSecretsPage';
 import { ClusterConfigMapsPage } from './pages/ClusterConfigMapsPage';
+import { ClusterManifestsPage } from './pages/ClusterManifestsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -118,6 +119,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <ClusterConfigMapsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/manifests"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ClusterManifestsPage />
                 </ProtectedRoute>
               }
             />

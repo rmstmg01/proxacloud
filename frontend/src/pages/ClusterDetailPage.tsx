@@ -44,6 +44,13 @@ import {
   applyClusterConfigMap,
   updateClusterConfigMapKey,
   deleteClusterConfigMapKey,
+  getClusterSavedManifests,
+  createClusterSavedManifest,
+  updateClusterSavedManifest,
+  deleteClusterSavedManifest,
+  applyClusterSavedManifest,
+  getClusterSavedManifestRevisions,
+  getClusterSavedManifestRuns,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
 import { getSSLCertificates } from '../api/sslCertificates';
@@ -55,9 +62,9 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
-import type { ClusterConfigMapRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
+import type { ClusterConfigMapRecord, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'configmaps' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'configmaps' | 'manifests' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -67,6 +74,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'metallb', label: 'MetalLB' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'configmaps', label: 'ConfigMaps' },
+  { key: 'manifests', label: 'Manifests' },
   { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
@@ -1432,6 +1440,242 @@ function ConfigMapsTab({ id }: { id: number }) {
   );
 }
 
+const DEFAULT_SAVED_MANIFEST = `apiVersion: v1
+kind: Namespace
+metadata:
+  name: example`;
+
+function ManifestsTab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const { data: manifests } = useQuery({ queryKey: ['cluster-saved-manifests', id], queryFn: () => getClusterSavedManifests(id) });
+  const [editing, setEditing] = useState<ClusterSavedManifestRecord | null>(null);
+  const [selectedManifestID, setSelectedManifestID] = useState(0);
+  const [selectedRunID, setSelectedRunID] = useState(0);
+  const [form, setForm] = useState({
+    name: '',
+    namespace: 'default',
+    description: '',
+    raw_manifest: DEFAULT_SAVED_MANIFEST,
+    is_global: false,
+  });
+
+  const { data: revisions } = useQuery({
+    queryKey: ['cluster-saved-manifest-revisions', id, selectedManifestID],
+    queryFn: () => getClusterSavedManifestRevisions(id, selectedManifestID),
+    enabled: selectedManifestID > 0,
+  });
+  const { data: runs } = useQuery({
+    queryKey: ['cluster-saved-manifest-runs', id, selectedManifestID],
+    queryFn: () => getClusterSavedManifestRuns(id, selectedManifestID),
+    enabled: selectedManifestID > 0,
+  });
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      name: '',
+      namespace: 'default',
+      description: '',
+      raw_manifest: DEFAULT_SAVED_MANIFEST,
+      is_global: false,
+    });
+  };
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name: form.name.trim(),
+        namespace: form.namespace.trim() || 'default',
+        description: form.description.trim(),
+        raw_manifest: form.raw_manifest,
+        is_global: form.is_global,
+      };
+      return editing
+        ? updateClusterSavedManifest(id, editing.id, body)
+        : createClusterSavedManifest(id, body);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifest-revisions', id, data.id] });
+      setSelectedManifestID(data.id);
+      resetForm();
+    },
+  });
+
+  const applyMut = useMutation({
+    mutationFn: (body: { manifestID: number; revisionID?: number }) => applyClusterSavedManifest(id, body.manifestID, body.revisionID),
+    onSettled: (_data, _error, variables) => {
+      if (!variables) return;
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifest-runs', id, variables.manifestID] });
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (manifestID: number) => deleteClusterSavedManifest(id, manifestID),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
+      setSelectedManifestID(0);
+      setSelectedRunID(0);
+    },
+  });
+
+  const startEdit = (manifest: ClusterSavedManifestRecord) => {
+    setEditing(manifest);
+    setForm({
+      name: manifest.name,
+      namespace: manifest.namespace,
+      description: manifest.description || '',
+      raw_manifest: manifest.raw_manifest,
+      is_global: manifest.is_global,
+    });
+  };
+
+  const selectedRun = runs?.find((run) => run.id === selectedRunID);
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>{editing ? 'Edit Manifest' : 'Create Manifest'}</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
+              <Input label="Manifest name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required disabled={Boolean(editing?.is_global)} />
+              <Input label="Default namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required disabled={Boolean(editing?.is_global)} />
+              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} disabled={Boolean(editing?.is_global)} />
+            </div>
+            <Textarea
+              label="Manifest YAML"
+              value={form.raw_manifest}
+              onChange={(e) => setForm({ ...form, raw_manifest: e.target.value })}
+              rows={16}
+              className="font-mono text-xs"
+              required
+              disabled={Boolean(editing?.is_global)}
+            />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} disabled={Boolean(editing)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Make available to all clusters</span>
+            </label>
+            <div className="flex gap-3">
+              <Button type="submit" loading={saveMut.isPending} disabled={Boolean(editing?.is_global)}>{editing ? 'Update Manifest' : 'Save Manifest'}</Button>
+              {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+            </div>
+            {editing?.is_global && <Alert variant="info">Global manifests can be applied from this cluster. Edit them from the main Manifests page.</Alert>}
+            {saveMut.error && <ErrorMessage error={saveMut.error} />}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Saved Manifests</CardTitle></CardHeader>
+        <CardContent>
+          {!manifests?.length ? (
+            <p className="text-sm text-slate-400">No saved manifests yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Scope</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Revision</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
+                    <th className="px-4 py-2" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {manifests.map((manifest) => (
+                    <tr key={manifest.id}>
+                      <td className="px-4 py-2 font-medium text-slate-900">{manifest.name}</td>
+                      <td className="px-4 py-2 text-slate-600">{manifest.namespace}</td>
+                      <td className="px-4 py-2 text-slate-600">{manifest.is_global ? 'Global' : 'Cluster'}</td>
+                      <td className="px-4 py-2 text-slate-600">rev {manifest.latest_revision || 1}</td>
+                      <td className="px-4 py-2 text-slate-500">{manifest.last_applied_at ? new Date(manifest.last_applied_at).toLocaleString() : '-'}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={() => { setSelectedManifestID(manifest.id); setSelectedRunID(0); }}>History</Button>
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(manifest)}>Edit</Button>
+                          <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables?.manifestID === manifest.id} onClick={() => applyMut.mutate({ manifestID: manifest.id })}>Apply</Button>
+                          {!manifest.is_global && <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === manifest.id} onClick={() => deleteMut.mutate(manifest.id)}>Delete</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {applyMut.error && <ErrorMessage error={applyMut.error} />}
+          {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+        </CardContent>
+      </Card>
+
+      {selectedManifestID > 0 && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <Card>
+            <CardHeader><CardTitle>Revisions</CardTitle></CardHeader>
+            <CardContent>
+              {!revisions?.length ? (
+                <p className="text-sm text-slate-400">No revisions recorded.</p>
+              ) : (
+                <div className="space-y-3">
+                  {revisions.map((revision) => (
+                    <div key={revision.id} className="rounded-md border border-slate-200 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">Revision {revision.revision_number}</p>
+                          <p className="text-xs text-slate-500">{new Date(revision.created_at).toLocaleString()}</p>
+                        </div>
+                        <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables?.revisionID === revision.id} onClick={() => applyMut.mutate({ manifestID: selectedManifestID, revisionID: revision.id })}>Apply revision</Button>
+                      </div>
+                      <pre className="mt-3 max-h-48 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{revision.raw_manifest}</pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Apply Logs</CardTitle></CardHeader>
+            <CardContent>
+              {!runs?.length ? (
+                <p className="text-sm text-slate-400">No apply runs recorded for this cluster.</p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {runs.map((run) => (
+                      <button
+                        key={run.id}
+                        type="button"
+                        onClick={() => setSelectedRunID(run.id)}
+                        className={`rounded-md border px-3 py-2 text-left text-xs ${selectedRunID === run.id ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'}`}
+                      >
+                        <span className="font-medium">Run {run.id}</span>
+                        <span className="block">{run.status} - {new Date(run.applied_at).toLocaleString()}</span>
+                      </button>
+                    ))}
+                  </div>
+                  {selectedRun ? (
+                    <div className="space-y-3">
+                      {selectedRun.error_message && <Alert variant="error">{selectedRun.error_message}</Alert>}
+                      <pre className="max-h-96 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100">{selectedRun.kubectl_output || 'No kubectl output recorded.'}</pre>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">Select a run to view kubectl output.</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApplicationsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
@@ -2170,6 +2414,7 @@ export function ClusterDetailPage() {
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
       {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
       {activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
+      {activeTab === 'manifests' && <ManifestsTab id={clusterId} />}
       {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
       {activeTab === 'etcd' && <EtcdTab id={clusterId} />}

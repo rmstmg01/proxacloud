@@ -79,6 +79,7 @@ var ErrClusterExists = errors.New("cluster already exists")
 var ErrClusterNotFound = errors.New("cluster not found")
 var ErrOperationNotFound = errors.New("cluster operation not found")
 var ErrApplicationManifestNotFound = errors.New("application manifest not found")
+var ErrSavedManifestNotFound = errors.New("saved manifest not found")
 
 type ProvisionRequest struct {
 	Name                string `json:"name"`
@@ -466,6 +467,67 @@ type ApplyClusterConfigMapResponse struct {
 	Status      string   `json:"status"`
 	Output      string   `json:"output,omitempty"`
 	Warnings    []string `json:"warnings"`
+}
+
+type ClusterSavedManifestRecord struct {
+	ID               int64      `json:"id"`
+	ClusterID        int64      `json:"cluster_id"`
+	Name             string     `json:"name"`
+	Namespace        string     `json:"namespace"`
+	Description      string     `json:"description"`
+	RawManifest      string     `json:"raw_manifest"`
+	IsGlobal         bool       `json:"is_global"`
+	LatestRevisionID int64      `json:"latest_revision_id,omitempty"`
+	LatestRevision   int        `json:"latest_revision,omitempty"`
+	LastStatus       string     `json:"last_status,omitempty"`
+	LastAppliedAt    *time.Time `json:"last_applied_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+type UpsertClusterSavedManifestRequest struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Description string `json:"description"`
+	RawManifest string `json:"raw_manifest"`
+	IsGlobal    bool   `json:"is_global"`
+}
+
+type ApplyClusterSavedManifestRequest struct {
+	RevisionID int64 `json:"revision_id,omitempty"`
+}
+
+type ApplyClusterSavedManifestResponse struct {
+	ClusterID  int64    `json:"cluster_id"`
+	ManifestID int64    `json:"manifest_id"`
+	RevisionID int64    `json:"revision_id"`
+	RunID      int64    `json:"run_id"`
+	Name       string   `json:"name"`
+	Namespace  string   `json:"namespace"`
+	Status     string   `json:"status"`
+	Output     string   `json:"output,omitempty"`
+	Warnings   []string `json:"warnings"`
+}
+
+type ClusterSavedManifestRevisionRecord struct {
+	ID             int64     `json:"id"`
+	ManifestID     int64     `json:"manifest_id"`
+	ClusterID      int64     `json:"cluster_id"`
+	RevisionNumber int       `json:"revision_number"`
+	RawManifest    string    `json:"raw_manifest"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type ClusterSavedManifestApplyRunRecord struct {
+	ID            int64     `json:"id"`
+	ManifestID    int64     `json:"manifest_id"`
+	RevisionID    int64     `json:"revision_id"`
+	ClusterID     int64     `json:"cluster_id"`
+	Status        string    `json:"status"`
+	KubectlOutput string    `json:"kubectl_output"`
+	ErrorMessage  string    `json:"error_message"`
+	AppliedAt     time.Time `json:"applied_at"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type KubectlCommandRequest struct {
@@ -2830,6 +2892,292 @@ func (s *Service) ApplyClusterConfigMap(clusterID, configMapID int64) (ApplyClus
 	}, nil
 }
 
+func (s *Service) ListGlobalSavedManifests() ([]ClusterSavedManifestRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT m.id, COALESCE(m.cluster_id, 0), m.name, m.namespace, m.description, m.raw_manifest, m.is_global,
+		        COALESCE(m.latest_revision_id, 0), COALESCE(r.revision_number, 0),
+		        COALESCE(ar.status, ''), m.last_applied_at, m.created_at, m.updated_at
+		 FROM cluster_saved_manifests m
+		 LEFT JOIN cluster_saved_manifest_revisions r ON r.id = m.latest_revision_id
+		 LEFT JOIN LATERAL (
+		   SELECT status
+		   FROM cluster_saved_manifest_apply_runs
+		   WHERE manifest_id = m.id
+		   ORDER BY applied_at DESC, id DESC
+		   LIMIT 1
+		 ) ar ON TRUE
+		 WHERE m.is_global = TRUE
+		 ORDER BY m.namespace ASC, m.name ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list global saved manifests: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSavedManifestRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterSavedManifest(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) ListClusterSavedManifests(clusterID int64) ([]ClusterSavedManifestRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT m.id, COALESCE(m.cluster_id, 0), m.name, m.namespace, m.description, m.raw_manifest, m.is_global,
+		        COALESCE(m.latest_revision_id, 0), COALESCE(r.revision_number, 0),
+		        COALESCE(ar.status, ''), m.last_applied_at, m.created_at, m.updated_at
+		 FROM cluster_saved_manifests m
+		 LEFT JOIN cluster_saved_manifest_revisions r ON r.id = m.latest_revision_id
+		 LEFT JOIN LATERAL (
+		   SELECT status
+		   FROM cluster_saved_manifest_apply_runs
+		   WHERE manifest_id = m.id AND cluster_id = $1
+		   ORDER BY applied_at DESC, id DESC
+		   LIMIT 1
+		 ) ar ON TRUE
+		 WHERE m.cluster_id = $1 OR m.is_global = TRUE
+		 ORDER BY m.is_global DESC, m.namespace ASC, m.name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster saved manifests: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSavedManifestRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterSavedManifest(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) CreateClusterSavedManifest(clusterID int64, req UpsertClusterSavedManifestRequest) (ClusterSavedManifestRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	return s.createClusterSavedManifest(clusterID, req)
+}
+
+func (s *Service) CreateGlobalSavedManifest(req UpsertClusterSavedManifestRequest) (ClusterSavedManifestRecord, error) {
+	req.IsGlobal = true
+	return s.createClusterSavedManifest(0, req)
+}
+
+func (s *Service) createClusterSavedManifest(clusterID int64, req UpsertClusterSavedManifestRequest) (ClusterSavedManifestRecord, error) {
+	req = normalizeClusterSavedManifestRequest(req)
+	if err := validateClusterSavedManifestRequest(req); err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	clusterIDValue := sql.NullInt64{Int64: clusterID, Valid: clusterID > 0 && !req.IsGlobal}
+	var manifestID int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_saved_manifests (cluster_id, name, namespace, description, raw_manifest, is_global)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id`,
+		clusterIDValue,
+		req.Name,
+		req.Namespace,
+		req.Description,
+		req.RawManifest,
+		req.IsGlobal,
+	).Scan(&manifestID)
+	if err != nil {
+		return ClusterSavedManifestRecord{}, fmt.Errorf("create saved manifest: %w", err)
+	}
+	if _, _, err := s.createClusterSavedManifestRevision(manifestID, clusterIDValue, req.RawManifest); err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	return s.GetClusterSavedManifest(clusterID, manifestID)
+}
+
+func (s *Service) GetClusterSavedManifest(clusterID, manifestID int64) (ClusterSavedManifestRecord, error) {
+	if clusterID > 0 {
+		if _, err := s.getClusterSummary(clusterID); err != nil {
+			return ClusterSavedManifestRecord{}, err
+		}
+	}
+	row := s.db.QueryRow(
+		`SELECT m.id, COALESCE(m.cluster_id, 0), m.name, m.namespace, m.description, m.raw_manifest, m.is_global,
+		        COALESCE(m.latest_revision_id, 0), COALESCE(r.revision_number, 0),
+		        COALESCE(ar.status, ''), m.last_applied_at, m.created_at, m.updated_at
+		 FROM cluster_saved_manifests m
+		 LEFT JOIN cluster_saved_manifest_revisions r ON r.id = m.latest_revision_id
+		 LEFT JOIN LATERAL (
+		   SELECT status
+		   FROM cluster_saved_manifest_apply_runs
+		   WHERE manifest_id = m.id AND ($1 <= 0 OR cluster_id = $1)
+		   ORDER BY applied_at DESC, id DESC
+		   LIMIT 1
+		 ) ar ON TRUE
+		 WHERE m.id = $2 AND (($1 > 0 AND m.cluster_id = $1) OR m.is_global = TRUE OR ($1 <= 0 AND m.is_global = TRUE))`,
+		clusterID,
+		manifestID,
+	)
+	rec, err := scanClusterSavedManifest(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterSavedManifestRecord{}, ErrSavedManifestNotFound
+		}
+		return ClusterSavedManifestRecord{}, fmt.Errorf("get saved manifest: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) UpdateClusterSavedManifest(clusterID, manifestID int64, req UpsertClusterSavedManifestRequest) (ClusterSavedManifestRecord, error) {
+	rec, err := s.GetClusterSavedManifest(clusterID, manifestID)
+	if err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	if rec.IsGlobal && clusterID > 0 {
+		return ClusterSavedManifestRecord{}, errors.New("global manifest can only be edited from the global manifests page")
+	}
+	req = normalizeClusterSavedManifestRequest(req)
+	if err := validateClusterSavedManifestRequest(req); err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	req.IsGlobal = rec.IsGlobal
+	clusterIDValue := sql.NullInt64{Int64: rec.ClusterID, Valid: rec.ClusterID > 0 && !rec.IsGlobal}
+	_, err = s.db.Exec(
+		`UPDATE cluster_saved_manifests
+		 SET name = $2, namespace = $3, description = $4, raw_manifest = $5, updated_at = NOW()
+		 WHERE id = $1`,
+		manifestID,
+		req.Name,
+		req.Namespace,
+		req.Description,
+		req.RawManifest,
+	)
+	if err != nil {
+		return ClusterSavedManifestRecord{}, fmt.Errorf("update saved manifest: %w", err)
+	}
+	if _, _, err := s.createClusterSavedManifestRevision(manifestID, clusterIDValue, req.RawManifest); err != nil {
+		return ClusterSavedManifestRecord{}, err
+	}
+	return s.GetClusterSavedManifest(clusterID, manifestID)
+}
+
+func (s *Service) DeleteClusterSavedManifest(clusterID, manifestID int64) error {
+	rec, err := s.GetClusterSavedManifest(clusterID, manifestID)
+	if err != nil {
+		return err
+	}
+	if rec.IsGlobal && clusterID > 0 {
+		return errors.New("global manifest can only be deleted from the global manifests page")
+	}
+	res, err := s.db.Exec(`DELETE FROM cluster_saved_manifests WHERE id = $1`, manifestID)
+	if err != nil {
+		return fmt.Errorf("delete saved manifest: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrSavedManifestNotFound
+	}
+	return nil
+}
+
+func (s *Service) ApplyClusterSavedManifest(clusterID, manifestID int64, req ApplyClusterSavedManifestRequest) (ApplyClusterSavedManifestResponse, error) {
+	rec, err := s.GetClusterSavedManifest(clusterID, manifestID)
+	if err != nil {
+		return ApplyClusterSavedManifestResponse{}, err
+	}
+	revision, err := s.getClusterSavedManifestRevision(clusterID, manifestID, req.RevisionID)
+	if err != nil {
+		return ApplyClusterSavedManifestResponse{}, err
+	}
+	output, applyErr := s.executeSavedManifestApply(rec.Namespace, revision.RawManifest)
+	status := "applied"
+	errorMessage := ""
+	if applyErr != nil {
+		status = "failed"
+		errorMessage = applyErr.Error()
+	}
+	runID, logErr := s.createClusterSavedManifestApplyRun(manifestID, revision.ID, clusterID, status, output, errorMessage)
+	if logErr != nil && applyErr == nil {
+		return ApplyClusterSavedManifestResponse{}, logErr
+	}
+	if applyErr == nil {
+		_, _ = s.db.Exec(`UPDATE cluster_saved_manifests SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, manifestID)
+	} else {
+		return ApplyClusterSavedManifestResponse{}, applyErr
+	}
+	return ApplyClusterSavedManifestResponse{
+		ClusterID:  clusterID,
+		ManifestID: manifestID,
+		RevisionID: revision.ID,
+		RunID:      runID,
+		Name:       rec.Name,
+		Namespace:  rec.Namespace,
+		Status:     status,
+		Output:     output,
+	}, nil
+}
+
+func (s *Service) ListClusterSavedManifestRevisions(clusterID, manifestID int64) ([]ClusterSavedManifestRevisionRecord, error) {
+	if _, err := s.GetClusterSavedManifest(clusterID, manifestID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, manifest_id, COALESCE(cluster_id, 0), revision_number, raw_manifest, created_at
+		 FROM cluster_saved_manifest_revisions
+		 WHERE manifest_id = $1
+		 ORDER BY revision_number DESC`,
+		manifestID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list saved manifest revisions: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSavedManifestRevisionRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterSavedManifestRevision(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) ListClusterSavedManifestApplyRuns(clusterID, manifestID int64) ([]ClusterSavedManifestApplyRunRecord, error) {
+	if _, err := s.GetClusterSavedManifest(clusterID, manifestID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, manifest_id, revision_id, cluster_id, status, kubectl_output, error_message, applied_at, created_at
+		 FROM cluster_saved_manifest_apply_runs
+		 WHERE cluster_id = $1 AND manifest_id = $2
+		 ORDER BY applied_at DESC, id DESC`,
+		clusterID,
+		manifestID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list saved manifest apply runs: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSavedManifestApplyRunRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterSavedManifestApplyRun(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return DeployAppResponse{}, err
@@ -3399,6 +3747,45 @@ func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret 
 	outputs = append(outputs, string(output))
 	if err != nil {
 		outputs = append(outputs, fmt.Sprintf("describe ingress warning: %v", err))
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
+func (s *Service) executeSavedManifestApply(namespace, manifest string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	outputs := make([]string, 0, 3)
+	if strings.TrimSpace(namespace) != "" {
+		cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "namespace", namespace)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			createCmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "create", "namespace", namespace)
+			createOutput, createErr := createCmd.CombinedOutput()
+			outputs = append(outputs, string(output), string(createOutput))
+			if createErr != nil {
+				return strings.Join(outputs, "\n"), fmt.Errorf("ensure namespace %s: %w\nOutput: %s", namespace, createErr, string(createOutput))
+			}
+		} else {
+			outputs = append(outputs, string(output))
+		}
+	}
+
+	args := []string{"--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false"}
+	if strings.TrimSpace(namespace) != "" {
+		args = append([]string{"--kubeconfig", kubeconfigPath, "apply", "--namespace", namespace}, "-f", "-", "--validate=false")
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply saved manifest: %w\nOutput: %s", err, string(output))
 	}
 
 	return strings.Join(outputs, "\n"), nil
@@ -5156,8 +5543,171 @@ func (s *Service) updateApplicationManifestRevision(revisionID int64, status, ou
 	return nil
 }
 
+func (s *Service) createClusterSavedManifestRevision(manifestID int64, clusterID sql.NullInt64, rawManifest string) (int64, int, error) {
+	revisionNumber := 1
+	if err := s.db.QueryRow(
+		`SELECT COALESCE(MAX(revision_number), 0) + 1
+		 FROM cluster_saved_manifest_revisions
+		 WHERE manifest_id = $1`,
+		manifestID,
+	).Scan(&revisionNumber); err != nil {
+		return 0, 0, fmt.Errorf("calculate saved manifest revision: %w", err)
+	}
+
+	var revisionID int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_saved_manifest_revisions (manifest_id, cluster_id, revision_number, raw_manifest)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id`,
+		manifestID,
+		clusterID,
+		revisionNumber,
+		rawManifest,
+	).Scan(&revisionID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("insert saved manifest revision: %w", err)
+	}
+
+	if _, err := s.db.Exec(
+		`UPDATE cluster_saved_manifests
+		 SET latest_revision_id = $2, updated_at = NOW()
+		 WHERE id = $1`,
+		manifestID,
+		revisionID,
+	); err != nil {
+		return 0, 0, fmt.Errorf("update latest saved manifest revision: %w", err)
+	}
+
+	return revisionID, revisionNumber, nil
+}
+
+func (s *Service) getClusterSavedManifestRevision(clusterID, manifestID, revisionID int64) (ClusterSavedManifestRevisionRecord, error) {
+	if _, err := s.GetClusterSavedManifest(clusterID, manifestID); err != nil {
+		return ClusterSavedManifestRevisionRecord{}, err
+	}
+	if revisionID <= 0 {
+		var latestID int64
+		if err := s.db.QueryRow(`SELECT COALESCE(latest_revision_id, 0) FROM cluster_saved_manifests WHERE id = $1`, manifestID).Scan(&latestID); err != nil {
+			return ClusterSavedManifestRevisionRecord{}, fmt.Errorf("get latest saved manifest revision: %w", err)
+		}
+		revisionID = latestID
+	}
+	row := s.db.QueryRow(
+		`SELECT id, manifest_id, COALESCE(cluster_id, 0), revision_number, raw_manifest, created_at
+		 FROM cluster_saved_manifest_revisions
+		 WHERE manifest_id = $1 AND id = $2`,
+		manifestID,
+		revisionID,
+	)
+	rec, err := scanClusterSavedManifestRevision(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterSavedManifestRevisionRecord{}, ErrSavedManifestNotFound
+		}
+		return ClusterSavedManifestRevisionRecord{}, fmt.Errorf("get saved manifest revision: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) createClusterSavedManifestApplyRun(manifestID, revisionID, clusterID int64, status, output, errorMessage string) (int64, error) {
+	var runID int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_saved_manifest_apply_runs
+		   (manifest_id, revision_id, cluster_id, status, kubectl_output, error_message)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id`,
+		manifestID,
+		revisionID,
+		clusterID,
+		status,
+		output,
+		errorMessage,
+	).Scan(&runID)
+	if err != nil {
+		return 0, fmt.Errorf("create saved manifest apply run: %w", err)
+	}
+	return runID, nil
+}
+
+func normalizeClusterSavedManifestRequest(req UpsertClusterSavedManifestRequest) UpsertClusterSavedManifestRequest {
+	req.Name = sanitizeKubernetesName(req.Name)
+	req.Namespace = sanitizeKubernetesName(req.Namespace)
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	req.RawManifest = strings.TrimSpace(req.RawManifest)
+	return req
+}
+
+func validateClusterSavedManifestRequest(req UpsertClusterSavedManifestRequest) error {
+	if req.Name == "" {
+		return errors.New("manifest name is required")
+	}
+	if req.Namespace == "" {
+		return errors.New("namespace is required")
+	}
+	if req.RawManifest == "" {
+		return errors.New("manifest YAML is required")
+	}
+	return nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+func scanClusterSavedManifest(row scanner) (ClusterSavedManifestRecord, error) {
+	var rec ClusterSavedManifestRecord
+	var lastApplied sql.NullTime
+	err := row.Scan(
+		&rec.ID,
+		&rec.ClusterID,
+		&rec.Name,
+		&rec.Namespace,
+		&rec.Description,
+		&rec.RawManifest,
+		&rec.IsGlobal,
+		&rec.LatestRevisionID,
+		&rec.LatestRevision,
+		&rec.LastStatus,
+		&lastApplied,
+		&rec.CreatedAt,
+		&rec.UpdatedAt,
+	)
+	if lastApplied.Valid {
+		rec.LastAppliedAt = &lastApplied.Time
+	}
+	return rec, err
+}
+
+func scanClusterSavedManifestRevision(row scanner) (ClusterSavedManifestRevisionRecord, error) {
+	var rec ClusterSavedManifestRevisionRecord
+	err := row.Scan(
+		&rec.ID,
+		&rec.ManifestID,
+		&rec.ClusterID,
+		&rec.RevisionNumber,
+		&rec.RawManifest,
+		&rec.CreatedAt,
+	)
+	return rec, err
+}
+
+func scanClusterSavedManifestApplyRun(row scanner) (ClusterSavedManifestApplyRunRecord, error) {
+	var rec ClusterSavedManifestApplyRunRecord
+	err := row.Scan(
+		&rec.ID,
+		&rec.ManifestID,
+		&rec.RevisionID,
+		&rec.ClusterID,
+		&rec.Status,
+		&rec.KubectlOutput,
+		&rec.ErrorMessage,
+		&rec.AppliedAt,
+		&rec.CreatedAt,
+	)
+	return rec, err
 }
 
 func scanApplicationManifestRevision(row scanner) (ApplicationManifestRevisionRecord, error) {

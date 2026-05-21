@@ -780,6 +780,167 @@ func (h *Handler) ApplyClusterConfigMap(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListGlobalSavedManifests(w http.ResponseWriter, _ *http.Request) {
+	resp, err := h.service.ListGlobalSavedManifests()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) CreateGlobalSavedManifest(w http.ResponseWriter, r *http.Request) {
+	var req UpsertClusterSavedManifestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateGlobalSavedManifest(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateGlobalSavedManifest(w http.ResponseWriter, r *http.Request) {
+	manifestID, err := strconv.ParseInt(chi.URLParam(r, "manifestID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid manifest id"})
+		return
+	}
+	var req UpsertClusterSavedManifestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterSavedManifest(0, manifestID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteGlobalSavedManifest(w http.ResponseWriter, r *http.Request) {
+	manifestID, err := strconv.ParseInt(chi.URLParam(r, "manifestID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid manifest id"})
+		return
+	}
+	if err := h.service.DeleteClusterSavedManifest(0, manifestID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": manifestID, "deleted": true})
+}
+
+func (h *Handler) ListClusterSavedManifests(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	resp, err := h.service.ListClusterSavedManifests(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) CreateClusterSavedManifest(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	var req UpsertClusterSavedManifestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateClusterSavedManifest(clusterID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateClusterSavedManifest(w http.ResponseWriter, r *http.Request) {
+	clusterID, manifestID, ok := parseClusterAndManifestIDs(w, r)
+	if !ok {
+		return
+	}
+	var req UpsertClusterSavedManifestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterSavedManifest(clusterID, manifestID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteClusterSavedManifest(w http.ResponseWriter, r *http.Request) {
+	clusterID, manifestID, ok := parseClusterAndManifestIDs(w, r)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteClusterSavedManifest(clusterID, manifestID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": manifestID, "deleted": true})
+}
+
+func (h *Handler) ApplyClusterSavedManifest(w http.ResponseWriter, r *http.Request) {
+	clusterID, manifestID, ok := parseClusterAndManifestIDs(w, r)
+	if !ok {
+		return
+	}
+	var req ApplyClusterSavedManifestRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	resp, err := h.service.ApplyClusterSavedManifest(clusterID, manifestID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ListClusterSavedManifestRevisions(w http.ResponseWriter, r *http.Request) {
+	clusterID, manifestID, ok := parseClusterAndManifestIDs(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ListClusterSavedManifestRevisions(clusterID, manifestID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ListClusterSavedManifestApplyRuns(w http.ResponseWriter, r *http.Request) {
+	clusterID, manifestID, ok := parseClusterAndManifestIDs(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ListClusterSavedManifestApplyRuns(clusterID, manifestID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListApplicationManifests(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -939,6 +1100,20 @@ func parseClusterAndConfigMapIDs(w http.ResponseWriter, r *http.Request) (int64,
 		return 0, 0, false
 	}
 	return clusterID, configMapID, true
+}
+
+func parseClusterAndManifestIDs(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return 0, 0, false
+	}
+	manifestID, err := strconv.ParseInt(chi.URLParam(r, "manifestID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid manifest id"})
+		return 0, 0, false
+	}
+	return clusterID, manifestID, true
 }
 
 func (h *Handler) CreateEtcdSnapshot(w http.ResponseWriter, r *http.Request) {

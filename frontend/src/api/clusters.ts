@@ -24,6 +24,10 @@ import type {
   ApplyClusterSecretResponse,
   ClusterConfigMapRecord,
   ApplyClusterConfigMapResponse,
+  ClusterSavedManifestRecord,
+  ClusterSavedManifestRevisionRecord,
+  ClusterSavedManifestApplyRunRecord,
+  ApplyClusterSavedManifestResponse,
   ApplicationManifestRecord,
   ApplicationManifestRevisionRecord,
   KubectlCommandRun,
@@ -401,6 +405,79 @@ export const updateClusterConfigMapKey = (id: number, configMapID: number, key: 
 export const deleteClusterConfigMapKey = (id: number, configMapID: number, key: string) =>
   client
     .delete<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}/keys/${encodeURIComponent(key)}`)
+    .then((r) => r.data);
+
+export const getGlobalSavedManifests = () =>
+  client.get<ClusterSavedManifestRecord[]>('/manifests').then((r) => r.data);
+
+export const createGlobalSavedManifest = (
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    raw_manifest: string;
+    is_global: boolean;
+  },
+) => client.post<ClusterSavedManifestRecord>('/manifests', body).then((r) => r.data);
+
+export const updateGlobalSavedManifest = (
+  manifestID: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    raw_manifest: string;
+    is_global: boolean;
+  },
+) => client.put<ClusterSavedManifestRecord>(`/manifests/${manifestID}`, body).then((r) => r.data);
+
+export const deleteGlobalSavedManifest = (manifestID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/manifests/${manifestID}`).then((r) => r.data);
+
+export const getClusterSavedManifests = (id: number) =>
+  client.get<ClusterSavedManifestRecord[]>(`/clusters/${id}/manifests`).then((r) => r.data);
+
+export const createClusterSavedManifest = (
+  id: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    raw_manifest: string;
+    is_global: boolean;
+  },
+) => client.post<ClusterSavedManifestRecord>(`/clusters/${id}/manifests`, body).then((r) => r.data);
+
+export const updateClusterSavedManifest = (
+  id: number,
+  manifestID: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    raw_manifest: string;
+    is_global: boolean;
+  },
+) => client.put<ClusterSavedManifestRecord>(`/clusters/${id}/manifests/${manifestID}`, body).then((r) => r.data);
+
+export const deleteClusterSavedManifest = (id: number, manifestID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}/manifests/${manifestID}`).then((r) => r.data);
+
+export const applyClusterSavedManifest = (id: number, manifestID: number, revisionID?: number) =>
+  client
+    .post<ApplyClusterSavedManifestResponse>(`/clusters/${id}/manifests/${manifestID}/apply`, {
+      revision_id: revisionID ?? 0,
+    })
+    .then((r) => r.data);
+
+export const getClusterSavedManifestRevisions = (id: number, manifestID: number) =>
+  client
+    .get<ClusterSavedManifestRevisionRecord[]>(`/clusters/${id}/manifests/${manifestID}/revisions`)
+    .then((r) => r.data);
+
+export const getClusterSavedManifestRuns = (id: number, manifestID: number) =>
+  client
+    .get<ClusterSavedManifestApplyRunRecord[]>(`/clusters/${id}/manifests/${manifestID}/runs`)
     .then((r) => r.data);
 
 export const getApplicationManifests = (id: number) =>

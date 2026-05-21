@@ -8,6 +8,7 @@ import {
   KeyRound,
   ShieldCheck,
   FileText,
+  FileCode,
   GitBranch,
   LogOut,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },
   { to: '/secrets', icon: KeyRound, label: 'Secrets' },
   { to: '/configmaps', icon: FileText, label: 'ConfigMaps' },
+  { to: '/manifests', icon: FileCode, label: 'Manifests' },
 ];
 
 export function Sidebar() {
