@@ -1681,6 +1681,7 @@ function ApplicationsTab({ id }: { id: number }) {
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
   const { data: clusterSecrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
   const { data: clusterConfigMaps } = useQuery({ queryKey: ['cluster-config-maps', id], queryFn: () => getClusterConfigMaps(id) });
+  const { data: clusterSavedManifests } = useQuery({ queryKey: ['cluster-saved-manifests', id], queryFn: () => getClusterSavedManifests(id) });
   const { data: appHistory } = useQuery({ queryKey: ['application-manifests', id], queryFn: () => getApplicationManifests(id) });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
   const appMut = useMutation({
@@ -1733,6 +1734,7 @@ function ApplicationsTab({ id }: { id: number }) {
     apply_selected_secrets: true,
     selected_config_map_ids: [] as number[],
     apply_config_maps: true,
+    selected_saved_manifest_id: 0,
     manifest: SAMPLE_APP_MANIFEST,
     apply: true,
   });
@@ -1764,6 +1766,7 @@ function ApplicationsTab({ id }: { id: number }) {
       apply_selected_secrets: true,
       selected_config_map_ids: [],
       apply_config_maps: true,
+      selected_saved_manifest_id: 0,
       manifest: revision.raw_manifest,
       apply: true,
     });
@@ -1802,6 +1805,7 @@ function ApplicationsTab({ id }: { id: number }) {
   const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
   const availableSecrets = clusterSecrets ?? [];
   const availableConfigMaps = clusterConfigMaps ?? [];
+  const availableSavedManifests = clusterSavedManifests ?? [];
   const toggleAppSecret = (secretID: number) => {
     setAppForm((prev) => ({
       ...prev,
@@ -1816,6 +1820,15 @@ function ApplicationsTab({ id }: { id: number }) {
       selected_config_map_ids: prev.selected_config_map_ids.includes(configMapID)
         ? prev.selected_config_map_ids.filter((id) => id !== configMapID)
         : [...prev.selected_config_map_ids, configMapID],
+    }));
+  };
+  const loadSavedManifestIntoAppForm = (manifest: ClusterSavedManifestRecord) => {
+    setAppForm((prev) => ({
+      ...prev,
+      name: manifest.name || prev.name,
+      namespace: manifest.namespace || prev.namespace,
+      selected_saved_manifest_id: manifest.id,
+      manifest: manifest.raw_manifest,
     }));
   };
 
@@ -2013,6 +2026,48 @@ function ApplicationsTab({ id }: { id: number }) {
                         <span className="block text-xs text-slate-500">
                           source namespace: {configMap.namespace} · {Object.keys(configMap.data || {}).join(', ') || 'no keys'}
                         </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="border border-slate-200 rounded-md p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">Saved manifests</p>
+                  <p className="text-xs text-slate-500">Select a stored manifest to populate the deployment YAML below.</p>
+                </div>
+                {appForm.selected_saved_manifest_id > 0 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => setAppForm({ ...appForm, selected_saved_manifest_id: 0 })}
+                  >
+                    Clear selection
+                  </Button>
+                )}
+              </div>
+              {!availableSavedManifests.length ? (
+                <p className="text-sm text-slate-400">No saved manifests found.</p>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {availableSavedManifests.map((manifest) => (
+                    <label key={manifest.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
+                      <input
+                        type="radio"
+                        name="saved-manifest"
+                        checked={appForm.selected_saved_manifest_id === manifest.id}
+                        onChange={() => loadSavedManifestIntoAppForm(manifest)}
+                        className="mt-1 h-4 w-4 border-slate-300 text-indigo-600"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-900">{manifest.name}</span>
+                        <span className="block text-xs text-slate-500">
+                          {manifest.is_global ? 'global' : 'cluster'} · namespace: {manifest.namespace} · rev {manifest.latest_revision || 1}
+                        </span>
+                        {manifest.description && <span className="mt-1 block text-xs text-slate-500">{manifest.description}</span>}
                       </span>
                     </label>
                   ))}
