@@ -36,12 +36,14 @@ import {
   deleteClusterSecret,
   applyClusterSecret,
   updateClusterSecretKey,
+  deleteClusterSecretKey,
   getClusterConfigMaps,
   createClusterConfigMap,
   updateClusterConfigMap,
   deleteClusterConfigMap,
   applyClusterConfigMap,
   updateClusterConfigMapKey,
+  deleteClusterConfigMapKey,
 } from '../api/clusters';
 import { getSSHKeys } from '../api/sshKeys';
 import { getSSLCertificates } from '../api/sslCertificates';
@@ -946,6 +948,7 @@ function SecretsTab({ id }: { id: number }) {
     is_global: false,
     data_raw: 'USERNAME=\nPASSWORD=',
   });
+  const [keyForm, setKeyForm] = useState({ secretID: 0, key: '', value: '' });
 
   const resetForm = () => {
     setEditing(null);
@@ -996,6 +999,21 @@ function SecretsTab({ id }: { id: number }) {
 
   const deleteMut = useMutation({
     mutationFn: (secretID: number) => deleteClusterSecret(id, secretID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }),
+  });
+
+  const updateKeyMut = useMutation({
+    mutationFn: (body: { secretID: number; key: string; value: string }) =>
+      updateClusterSecretKey(id, body.secretID, body.key.trim(), body.value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-secrets', id] });
+      setKeyForm({ secretID: 0, key: '', value: '' });
+    },
+  });
+
+  const deleteKeyMut = useMutation({
+    mutationFn: (body: { secretID: number; key: string }) =>
+      deleteClusterSecretKey(id, body.secretID, body.key),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }),
   });
 
@@ -1065,7 +1083,7 @@ function SecretsTab({ id }: { id: number }) {
               onChange={(e) => setForm({ ...form, data_raw: e.target.value })}
               rows={7}
               className="font-mono text-xs"
-              helperText="Use KEY=value per line. Existing values are never displayed; leave a key blank only when intentionally replacing it."
+              helperText={editing ? 'Metadata only: leave values blank to keep existing keys. Use the per-key controls below to add, update, or delete one value without replacing the full secret.' : 'Use KEY=value per line. Values are encrypted for native secrets.'}
               required
             />
             <label className="flex items-center gap-3">
@@ -1114,21 +1132,58 @@ function SecretsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 text-slate-600">
                         <div className="flex flex-wrap gap-1">
                           {secret.keys.length ? secret.keys.map((key) => (
-                            <Button
-                              key={key}
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={secret.cluster_id !== id}
-                              onClick={() => {
-                                const value = window.prompt(`Enter new value for ${key}`);
-                                if (value !== null) updateClusterSecretKey(id, secret.id, key, value).then(() => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }));
-                              }}
-                            >
-                              {key}
-                            </Button>
+                            <span key={key} className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1">
+                              <button
+                                type="button"
+                                className="font-mono text-xs text-slate-700 hover:text-indigo-700"
+                                disabled={secret.cluster_id !== id}
+                                onClick={() => setKeyForm({ secretID: secret.id, key, value: '' })}
+                              >
+                                {key}
+                              </button>
+                              {secret.cluster_id === id && (
+                                <button
+                                  type="button"
+                                  className="text-xs text-rose-600 hover:text-rose-700"
+                                  disabled={deleteKeyMut.isPending}
+                                  onClick={() => {
+                                    if (window.confirm(`Delete key ${key} from ${secret.name}?`)) {
+                                      deleteKeyMut.mutate({ secretID: secret.id, key });
+                                    }
+                                  }}
+                                >
+                                  delete
+                                </button>
+                              )}
+                            </span>
                           )) : '-'}
                         </div>
+                        {secret.cluster_id === id && (
+                          <div className="mt-2 flex flex-wrap items-end gap-2">
+                            <Input
+                              label="Key"
+                              value={keyForm.secretID === secret.id ? keyForm.key : ''}
+                              onChange={(e) => setKeyForm({ ...keyForm, secretID: secret.id, key: e.target.value })}
+                              className="w-52"
+                            />
+                            <Input
+                              label="Value"
+                              type="password"
+                              value={keyForm.secretID === secret.id ? keyForm.value : ''}
+                              onChange={(e) => setKeyForm({ ...keyForm, secretID: secret.id, value: e.target.value })}
+                              className="w-56"
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              loading={updateKeyMut.isPending && updateKeyMut.variables?.secretID === secret.id}
+                              disabled={keyForm.secretID !== secret.id || !keyForm.key.trim() || !keyForm.value}
+                              onClick={() => updateKeyMut.mutate(keyForm)}
+                            >
+                              Save key only
+                            </Button>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
@@ -1146,6 +1201,8 @@ function SecretsTab({ id }: { id: number }) {
           )}
           {applyMut.error && <ErrorMessage error={applyMut.error} />}
           {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+          {updateKeyMut.error && <ErrorMessage error={updateKeyMut.error} />}
+          {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
         </CardContent>
       </Card>
     </div>
@@ -1164,6 +1221,7 @@ function ConfigMapsTab({ id }: { id: number }) {
     is_global: false,
     data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
   });
+  const [keyForm, setKeyForm] = useState({ configMapID: 0, key: '', value: '' });
 
   const resetForm = () => {
     setEditing(null);
@@ -1207,6 +1265,21 @@ function ConfigMapsTab({ id }: { id: number }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }),
   });
 
+  const updateKeyMut = useMutation({
+    mutationFn: (body: { configMapID: number; key: string; value: string }) =>
+      updateClusterConfigMapKey(id, body.configMapID, body.key.trim(), body.value),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] });
+      setKeyForm({ configMapID: 0, key: '', value: '' });
+    },
+  });
+
+  const deleteKeyMut = useMutation({
+    mutationFn: (body: { configMapID: number; key: string }) =>
+      deleteClusterConfigMapKey(id, body.configMapID, body.key),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }),
+  });
+
   const startEdit = (configMap: ClusterConfigMapRecord) => {
     setEditing(configMap);
     setForm({
@@ -1236,7 +1309,7 @@ function ConfigMapsTab({ id }: { id: number }) {
               onChange={(e) => setForm({ ...form, data_raw: e.target.value })}
               rows={8}
               className="font-mono text-xs"
-              helperText="Use KEY=value per line. ConfigMaps are for non-sensitive application configuration only."
+              helperText={editing ? 'Full editor: saving here replaces the ConfigMap data with the lines shown. Use the per-key controls below to add, update, or delete one key only.' : 'Use KEY=value per line. ConfigMaps are for non-sensitive application configuration only.'}
               required
             />
             <label className="flex items-center gap-3">
@@ -1283,21 +1356,57 @@ function ConfigMapsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 text-slate-600">
                         <div className="flex flex-wrap gap-1">
                           {Object.keys(configMap.data || {}).length ? Object.keys(configMap.data || {}).map((key) => (
-                            <Button
-                              key={key}
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              disabled={configMap.cluster_id !== id}
-                              onClick={() => {
-                                const value = window.prompt(`Enter new value for ${key}`, configMap.data[key] || '');
-                                if (value !== null) updateClusterConfigMapKey(id, configMap.id, key, value).then(() => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }));
-                              }}
-                            >
-                              {key}
-                            </Button>
+                            <span key={key} className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1">
+                              <button
+                                type="button"
+                                className="font-mono text-xs text-slate-700 hover:text-indigo-700"
+                                disabled={configMap.cluster_id !== id}
+                                onClick={() => setKeyForm({ configMapID: configMap.id, key, value: configMap.data[key] || '' })}
+                              >
+                                {key}
+                              </button>
+                              {configMap.cluster_id === id && (
+                                <button
+                                  type="button"
+                                  className="text-xs text-rose-600 hover:text-rose-700"
+                                  disabled={deleteKeyMut.isPending}
+                                  onClick={() => {
+                                    if (window.confirm(`Delete key ${key} from ${configMap.name}?`)) {
+                                      deleteKeyMut.mutate({ configMapID: configMap.id, key });
+                                    }
+                                  }}
+                                >
+                                  delete
+                                </button>
+                              )}
+                            </span>
                           )) : '-'}
                         </div>
+                        {configMap.cluster_id === id && (
+                          <div className="mt-2 flex flex-wrap items-end gap-2">
+                            <Input
+                              label="Key"
+                              value={keyForm.configMapID === configMap.id ? keyForm.key : ''}
+                              onChange={(e) => setKeyForm({ ...keyForm, configMapID: configMap.id, key: e.target.value })}
+                              className="w-52"
+                            />
+                            <Input
+                              label="Value"
+                              value={keyForm.configMapID === configMap.id ? keyForm.value : ''}
+                              onChange={(e) => setKeyForm({ ...keyForm, configMapID: configMap.id, value: e.target.value })}
+                              className="w-56"
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              loading={updateKeyMut.isPending && updateKeyMut.variables?.configMapID === configMap.id}
+                              disabled={keyForm.configMapID !== configMap.id || !keyForm.key.trim()}
+                              onClick={() => updateKeyMut.mutate(keyForm)}
+                            >
+                              Save key only
+                            </Button>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-slate-500">{configMap.last_applied_at ? new Date(configMap.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
@@ -1315,6 +1424,8 @@ function ConfigMapsTab({ id }: { id: number }) {
           )}
           {applyMut.error && <ErrorMessage error={applyMut.error} />}
           {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+          {updateKeyMut.error && <ErrorMessage error={updateKeyMut.error} />}
+          {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
         </CardContent>
       </Card>
     </div>

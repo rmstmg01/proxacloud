@@ -343,6 +343,11 @@ export const updateClusterSecretKey = (id: number, secretID: number, key: string
     .put<ClusterSecretRecord>(`/clusters/${id}/secrets/${secretID}/keys/${encodeURIComponent(key)}`, { value })
     .then((r) => r.data);
 
+export const deleteClusterSecretKey = (id: number, secretID: number, key: string) =>
+  client
+    .delete<ClusterSecretRecord>(`/clusters/${id}/secrets/${secretID}/keys/${encodeURIComponent(key)}`)
+    .then((r) => r.data);
+
 export const getClusterConfigMaps = (id: number) =>
   client.get<ClusterConfigMapRecord[]>(`/clusters/${id}/config-maps`).then((r) => r.data);
 
@@ -391,6 +396,11 @@ export const applyClusterConfigMap = (id: number, configMapID: number) =>
 export const updateClusterConfigMapKey = (id: number, configMapID: number, key: string, value: string) =>
   client
     .put<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}/keys/${encodeURIComponent(key)}`, { value })
+    .then((r) => r.data);
+
+export const deleteClusterConfigMapKey = (id: number, configMapID: number, key: string) =>
+  client
+    .delete<ClusterConfigMapRecord>(`/clusters/${id}/config-maps/${configMapID}/keys/${encodeURIComponent(key)}`)
     .then((r) => r.data);
 
 export const getApplicationManifests = (id: number) =>

@@ -2570,6 +2570,42 @@ func (s *Service) UpdateClusterSecretKey(clusterID, secretID int64, key string, 
 	return s.GetClusterSecret(clusterID, secretID)
 }
 
+func (s *Service) DeleteClusterSecretKey(clusterID, secretID int64, key string) (ClusterSecretRecord, error) {
+	rec, err := s.GetClusterSecret(clusterID, secretID)
+	if err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	if rec.ClusterID != clusterID {
+		return ClusterSecretRecord{}, errors.New("global secret can only be edited from its owning cluster")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ClusterSecretRecord{}, errors.New("secret key is required")
+	}
+
+	var ref sql.NullString
+	err = s.db.QueryRow(
+		`DELETE FROM cluster_secret_items
+		 WHERE cluster_secret_id = $1 AND key = $2
+		 RETURNING secret_ref`,
+		secretID,
+		key,
+	).Scan(&ref)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterSecretRecord{}, errors.New("secret key not found")
+		}
+		return ClusterSecretRecord{}, fmt.Errorf("delete cluster secret key: %w", err)
+	}
+	if s.secrets != nil && ref.Valid && strings.TrimSpace(ref.String) != "" {
+		if err := s.secrets.Delete(context.Background(), ref.String); err != nil && !errors.Is(err, secrets.ErrSecretNotFound) {
+			return ClusterSecretRecord{}, fmt.Errorf("delete stored secret value: %w", err)
+		}
+	}
+	_, _ = s.db.Exec(`UPDATE cluster_secrets SET updated_at = NOW() WHERE id = $1`, secretID)
+	return s.GetClusterSecret(clusterID, secretID)
+}
+
 func (s *Service) ApplyClusterSecret(clusterID, secretID int64) (ApplyClusterSecretResponse, error) {
 	rec, err := s.GetClusterSecret(clusterID, secretID)
 	if err != nil {
@@ -2738,6 +2774,38 @@ func (s *Service) UpdateClusterConfigMapKey(clusterID, configMapID int64, key st
 	)
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("update cluster config map key: %w", err)
+	}
+	return s.GetClusterConfigMap(clusterID, configMapID)
+}
+
+func (s *Service) DeleteClusterConfigMapKey(clusterID, configMapID int64, key string) (ClusterConfigMapRecord, error) {
+	rec, err := s.GetClusterConfigMap(clusterID, configMapID)
+	if err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	if rec.ClusterID != clusterID {
+		return ClusterConfigMapRecord{}, errors.New("global config map can only be edited from its owning cluster")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ClusterConfigMapRecord{}, errors.New("config map key is required")
+	}
+	if _, ok := rec.Data[key]; !ok {
+		return ClusterConfigMapRecord{}, errors.New("config map key not found")
+	}
+	delete(rec.Data, key)
+	dataJSON, err := json.Marshal(rec.Data)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
+	}
+	_, err = s.db.Exec(
+		`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
+		clusterID,
+		configMapID,
+		dataJSON,
+	)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("delete cluster config map key: %w", err)
 	}
 	return s.GetClusterConfigMap(clusterID, configMapID)
 }
