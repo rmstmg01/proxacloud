@@ -41,7 +41,7 @@ Fetch deploy event logs:
 GET /api/v1/database-clusters/{id}/events
 ```
 
-Terraform and Ansible run for database clusters when the request has `apply: true`. After Terraform creates the database VMs, the deploy workflow automatically applies the Kubernetes `Service` and `Endpoints` for `external-mariadb` by using the backend `KUBECONFIG`. The database-cluster deploy workflow does not require `TERRAFORM_AUTO_APPLY` or `ANSIBLE_AUTO_APPLY`; those flags remain relevant to the Kubernetes cluster provisioning workflow.
+Terraform and Ansible run for database clusters when the request has `apply: true`. After Terraform creates the database VMs, the deploy workflow automatically applies the Kubernetes `Service` and `Endpoints` for `external-mariadb` by using the backend `KUBECONFIG`. After Galera bootstrap succeeds, it patches `pscs-config`, patches `pscs-secrets`, and restarts the `backend` and `gateway` deployments so the app uses the new database cluster. The database-cluster deploy workflow does not require `TERRAFORM_AUTO_APPLY` or `ANSIBLE_AUTO_APPLY`; those flags remain relevant to the Kubernetes cluster provisioning workflow.
 
 Set `apply: false` only when you want reviewable Terraform or Ansible workspaces without changing Proxmox or the database VMs.
 
@@ -119,7 +119,7 @@ The generated manifest endpoint also includes:
 
 - `Secret/external-mariadb-client`
 
-The Secret is returned as guidance and is not auto-applied during VM provisioning, so existing app credentials are not overwritten unexpectedly. For this repository's `pscs` deployment, set application DB configuration to:
+After bootstrap succeeds, the deploy workflow patches this repository's `pscs` deployment config to:
 
 ```text
 DB_HOST=external-mariadb

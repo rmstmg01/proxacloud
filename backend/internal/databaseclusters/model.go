@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -464,6 +466,9 @@ func (s *Service) runBootstrapApplyAsync(clusterID int64, workDir string) {
 	}
 	_ = s.updateStatus(clusterID, "ready")
 	_ = s.insertEvent(clusterID, "ansible-apply", "success", "MariaDB Galera bootstrap completed successfully", result.Output)
+	if err := s.applyKubernetesAppDatabaseConfigAfterBootstrap(clusterID); err != nil {
+		_ = s.insertEvent(clusterID, "kubernetes-app-config", "error", "Failed to connect Kubernetes app to MariaDB Galera cluster", err.Error())
+	}
 }
 
 func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error) {
@@ -1263,6 +1268,86 @@ func (s *Service) applyKubernetesEndpointManifest(clusterID int64, namespace, se
 
 	_ = s.insertEvent(clusterID, "kubernetes-manifest", "success", "External MariaDB Service/Endpoints manifest applied", combined)
 	return nil
+}
+
+func (s *Service) applyKubernetesAppDatabaseConfigAfterBootstrap(clusterID int64) error {
+	cluster, err := s.Get(clusterID)
+	if err != nil {
+		return err
+	}
+	secret, err := s.loadDatabaseSecrets(clusterID)
+	if err != nil {
+		return fmt.Errorf("load database app secret for Kubernetes app config: %w", err)
+	}
+	return s.applyKubernetesAppDatabaseConfig(clusterID, cluster.HAProxyNamespace, cluster.HAProxyServiceName, cluster.DatabaseName, cluster.AppUsername, secret.AppPassword)
+}
+
+func (s *Service) applyKubernetesAppDatabaseConfig(clusterID int64, namespace, serviceName, databaseName, appUsername, appPassword string) error {
+	namespace = nonEmpty(namespace, "pscs")
+	serviceName = nonEmpty(serviceName, "external-mariadb")
+	databaseName = nonEmpty(databaseName, "pscs")
+	appUsername = nonEmpty(appUsername, "pscs")
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return err
+	}
+
+	configPatch, err := json.Marshal(map[string]any{
+		"data": map[string]string{
+			"DB_HOST": serviceName,
+			"DB_PORT": "3306",
+			"DB_NAME": databaseName,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("build configmap patch: %w", err)
+	}
+	secretPatch, err := json.Marshal(map[string]any{
+		"data": map[string]string{
+			"DB_USER": base64.StdEncoding.EncodeToString([]byte(appUsername)),
+			"DB_PASS": base64.StdEncoding.EncodeToString([]byte(appPassword)),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("build secret patch: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	_ = s.insertEvent(clusterID, "kubernetes-app-config", "info", "Updating app DB ConfigMap/Secret and restarting workloads", fmt.Sprintf("namespace=%s service=%s database=%s user=%s", namespace, serviceName, databaseName, appUsername))
+
+	outputs := make([]string, 0, 5)
+	commands := [][]string{
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "configmap", "pscs-config", "--type", "merge", "-p", string(configPatch)},
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "secret", "pscs-secrets", "--type", "merge", "-p", string(secretPatch)},
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/backend", "deployment/gateway"},
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "status", "deployment/backend", "--timeout=300s"},
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "status", "deployment/gateway", "--timeout=300s"},
+	}
+	for _, args := range commands {
+		output, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
+		outputs = append(outputs, fmt.Sprintf("$ kubectl %s\n%s", strings.Join(redactKubectlArgs(args), " "), string(output)))
+		if err != nil {
+			combined := strings.Join(outputs, "\n")
+			return fmt.Errorf("kubectl %s failed: %w\nOutput: %s", strings.Join(redactKubectlArgs(args), " "), err, combined)
+		}
+	}
+
+	combined := strings.Join(outputs, "\n")
+	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Kubernetes app now points to MariaDB Galera cluster", combined)
+	return nil
+}
+
+func redactKubectlArgs(args []string) []string {
+	out := append([]string(nil), args...)
+	for i := 0; i < len(out)-1; i++ {
+		if out[i] == "-p" {
+			out[i+1] = "<redacted-json-patch>"
+		}
+	}
+	return out
 }
 
 func (s *Service) kubeconfigPath() string {
