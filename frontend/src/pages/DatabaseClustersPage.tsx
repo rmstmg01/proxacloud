@@ -10,7 +10,7 @@ import {
   type DatabaseCluster,
 } from '../api/databaseClusters';
 import { getNetworks } from '../api/networks';
-import { getCredentials, getNodes } from '../api/proxmox';
+import { getNodes } from '../api/proxmox';
 import { getSSHKeys } from '../api/sshKeys';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -19,12 +19,11 @@ import { Button } from '../components/ui/Button';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
-import type { NetworkProfile, ProxmoxCredential, ProxmoxNode, SSHKeyPair } from '../types';
+import type { NetworkProfile, ProxmoxNode, SSHKeyPair } from '../types';
 
 const initialForm = {
   name: '',
   network_profile_id: '',
-  proxmox_credential_id: '',
   node_1: '',
   node_2: '',
   node_3: '',
@@ -67,7 +66,6 @@ export function DatabaseClustersPage() {
     refetchInterval: 30_000,
   });
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
-  const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
   const selectedCluster = clusters?.find((cluster) => cluster.id === selectedID) ?? null;
@@ -81,9 +79,7 @@ export function DatabaseClustersPage() {
     queryFn: () => getDatabaseClusterK8sManifest(manifestID ?? 0),
     enabled: manifestID !== null,
   });
-  const selectedCredentialID = Number(form.proxmox_credential_id);
-  const availableNodes =
-    proxmoxNodes?.filter((node) => node.enabled && node.credential_id === selectedCredentialID) ?? [];
+  const availableNodes = proxmoxNodes?.filter((node) => node.enabled) ?? [];
   const provisionMutation = useMutation({
     mutationFn: provisionDatabaseCluster,
     onSuccess: async (resp) => {
@@ -112,10 +108,11 @@ export function DatabaseClustersPage() {
   const submitDeploy = (event: FormEvent) => {
     event.preventDefault();
     const nodeNames = [form.node_1, form.node_2, form.node_3].map((v) => v.trim()).filter(Boolean);
+    const primaryNode = availableNodes.find((node) => node.node_name === form.node_1);
     provisionMutation.mutate({
       name: form.name.trim(),
       network_profile_id: Number(form.network_profile_id),
-      proxmox_credential_id: Number(form.proxmox_credential_id),
+      proxmox_credential_id: primaryNode?.credential_id ?? 0,
       proxmox_node_names: nodeNames,
       node_ip_pool_start: form.node_ip_pool_start.trim(),
       cpu: Number(form.cpu),
@@ -169,7 +166,6 @@ export function DatabaseClustersPage() {
         <DeployDatabaseForm
           form={form}
           networks={networks ?? []}
-          credentials={credentials ?? []}
           nodes={availableNodes}
           sshKeys={sshKeys ?? []}
           loading={provisionMutation.isPending}
@@ -306,7 +302,6 @@ function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; 
 function DeployDatabaseForm({
   form,
   networks,
-  credentials,
   nodes,
   sshKeys,
   loading,
@@ -315,7 +310,6 @@ function DeployDatabaseForm({
 }: {
   form: typeof initialForm;
   networks: NetworkProfile[];
-  credentials: ProxmoxCredential[];
   nodes: ProxmoxNode[];
   sshKeys: SSHKeyPair[];
   loading: boolean;
@@ -327,7 +321,6 @@ function DeployDatabaseForm({
   const canSubmit =
     form.name &&
     form.network_profile_id &&
-    form.proxmox_credential_id &&
     form.node_1 &&
     form.node_2 &&
     form.node_3 &&
@@ -365,14 +358,7 @@ function DeployDatabaseForm({
                 </option>
               ))}
             </Select>
-            <Select label="Proxmox credential" value={form.proxmox_credential_id} onChange={(e) => onChange('proxmox_credential_id', e.target.value)} required>
-              <option value="">Select credential</option>
-              {credentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.name}
-                </option>
-              ))}
-            </Select>
+            <Input label="Credential mode" value="Auto from selected nodes" disabled />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -381,8 +367,8 @@ function DeployDatabaseForm({
             <NodeSelect label="DB node 3" value={form.node_3} nodes={nodes} onChange={(value) => onChange('node_3', value)} />
           </div>
           {duplicateNodes && <Alert variant="warning">Choose three distinct Proxmox nodes.</Alert>}
-          {form.proxmox_credential_id && nodes.length < 3 && (
-            <Alert variant="warning">The selected credential has fewer than three enabled Proxmox nodes.</Alert>
+          {nodes.length < 3 && (
+            <Alert variant="warning">At least three enabled Proxmox nodes are required.</Alert>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

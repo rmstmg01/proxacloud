@@ -232,6 +232,12 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	if err != nil {
 		return ProvisionResponse{}, err
 	}
+	if req.ProxmoxCredentialID <= 0 && len(nodes) > 0 {
+		req.ProxmoxCredentialID = nodes[0].ProxmoxCredentialID
+	}
+	if hasMultipleNodeCredentials(nodes) {
+		warnings = append(warnings, "selected nodes use multiple Proxmox credential records; Terraform apply will authenticate with the first selected node credential")
+	}
 	if err := s.resolveProvisionSSHKey(&req); err != nil {
 		return ProvisionResponse{}, err
 	}
@@ -447,9 +453,6 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 	if err != nil {
 		return networks.Profile{}, nil, nil, err
 	}
-	if req.ProxmoxCredentialID <= 0 {
-		return networks.Profile{}, nil, nil, errors.New("proxmox_credential_id is required")
-	}
 	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)).To4() == nil {
 		return networks.Profile{}, nil, nil, errors.New("node_ip_pool_start must be a valid IPv4 address")
 	}
@@ -493,7 +496,7 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 			VMName:              fmt.Sprintf("%s-db-%d", sanitizeName(req.Name), i+1),
 			IPAddress:           ip,
 			ProxmoxNodeName:     proxmoxNode.NodeName,
-			ProxmoxCredentialID: req.ProxmoxCredentialID,
+			ProxmoxCredentialID: proxmoxNode.CredentialID,
 			CPU:                 cpu,
 			MemoryMB:            memory,
 			DiskGB:              disk,
@@ -508,22 +511,13 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 }
 
 func selectProxmoxNodes(enabled []proxmox.Node, credentialID int64, requested []string) ([]proxmox.Node, error) {
-	candidates := []proxmox.Node{}
-	for _, n := range enabled {
-		if n.CredentialID == credentialID {
-			candidates = append(candidates, n)
-		}
-	}
-	if len(candidates) < nodeCount {
-		return nil, fmt.Errorf("three enabled proxmox nodes are required for the selected credential; found %d", len(candidates))
-	}
-	byName := map[string]proxmox.Node{}
-	for _, n := range candidates {
-		byName[strings.ToLower(n.NodeName)] = n
-	}
 	if len(requested) > 0 {
 		if len(requested) != nodeCount {
 			return nil, errors.New("proxmox_node_names must contain exactly three distinct nodes")
+		}
+		byName := map[string]proxmox.Node{}
+		for _, n := range enabled {
+			byName[strings.ToLower(n.NodeName)] = n
 		}
 		out := []proxmox.Node{}
 		seen := map[string]struct{}{}
@@ -537,12 +531,22 @@ func selectProxmoxNodes(enabled []proxmox.Node, credentialID int64, requested []
 			}
 			node, ok := byName[key]
 			if !ok {
-				return nil, fmt.Errorf("proxmox node %q is not enabled for the selected credential", raw)
+				return nil, fmt.Errorf("proxmox node %q is not enabled", raw)
 			}
 			seen[key] = struct{}{}
 			out = append(out, node)
 		}
 		return out, nil
+	}
+
+	candidates := []proxmox.Node{}
+	for _, n := range enabled {
+		if credentialID <= 0 || n.CredentialID == credentialID {
+			candidates = append(candidates, n)
+		}
+	}
+	if len(candidates) < nodeCount {
+		return nil, fmt.Errorf("three enabled proxmox nodes are required; found %d", len(candidates))
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		left := candidates[i].MemoryTotalBytes - candidates[i].MemoryUsedBytes
@@ -553,6 +557,14 @@ func selectProxmoxNodes(enabled []proxmox.Node, credentialID int64, requested []
 		return left > right
 	})
 	return candidates[:nodeCount], nil
+}
+
+func hasMultipleNodeCredentials(nodes []NodeRecord) bool {
+	seen := map[int64]struct{}{}
+	for _, node := range nodes {
+		seen[node.ProxmoxCredentialID] = struct{}{}
+	}
+	return len(seen) > 1
 }
 
 func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
