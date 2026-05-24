@@ -96,6 +96,8 @@ export function DatabaseClustersPage() {
       let message = form.applyTerraform
         ? `Terraform finished with status ${resp.status}.`
         : `Terraform workspace generated at ${resp.terraform_work_dir}.`;
+      setSelectedID(resp.cluster_id);
+      setManifestID(resp.cluster_id);
       try {
         if (form.bootstrapAfterProvision) {
           const boot = await bootstrapDatabaseCluster(resp.cluster_id, {
@@ -103,7 +105,7 @@ export function DatabaseClustersPage() {
             apply: form.applyAnsible,
           });
           message += form.applyAnsible
-            ? ` Galera bootstrap finished with status ${boot.status}.`
+            ? ` Galera bootstrap started; watch the Event Log for live progress.`
             : ` Bootstrap workspace generated at ${boot.ansible_work_dir}.`;
           queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
           queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
@@ -115,8 +117,6 @@ export function DatabaseClustersPage() {
         queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
       }
       setLastResult({ clusterID: resp.cluster_id, message, manifest: resp.kubernetes_yaml });
-      setSelectedID(resp.cluster_id);
-      setManifestID(resp.cluster_id);
       setShowDeploy(false);
       setForm(initialForm);
     },
@@ -133,7 +133,7 @@ export function DatabaseClustersPage() {
       setSelectedID(resp.cluster_id);
       setLastResult({
         clusterID: resp.cluster_id,
-        message: `Galera bootstrap finished with status ${resp.status}.`,
+        message: `Galera bootstrap started; watch the Event Log for live progress.`,
       });
     },
     onError: (_error, id) => {
@@ -286,14 +286,14 @@ export function DatabaseClustersPage() {
                               <FileCode className="h-3.5 w-3.5" />
                               Manifest
                             </Button>
-                            {(cluster.status === 'provisioned' || cluster.status === 'bootstrap_failed') && (
+                            {cluster.status === 'bootstrap_failed' && (
                               <Button
                                 variant="success"
                                 size="sm"
                                 onClick={() => bootstrapMutation.mutate(cluster.id)}
                                 loading={bootstrapMutation.isPending && bootstrapMutation.variables === cluster.id}
                               >
-                                Bootstrap
+                                Retry Bootstrap
                               </Button>
                             )}
                             {cluster.status.endsWith('_failed') && (

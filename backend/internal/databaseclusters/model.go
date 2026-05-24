@@ -394,6 +394,9 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		status = "applied"
 		_ = s.updateStatus(clusterID, "provisioned")
 		_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", strings.Join(outputs, "\n\n"))
+		if manifestErr := s.applyKubernetesEndpointManifest(clusterID, req.HAProxyNamespace, req.HAProxyServiceName, nodes); manifestErr != nil {
+			warnings = append(warnings, "Kubernetes external MariaDB Service/Endpoints apply failed; see Event Log")
+		}
 	} else {
 		_ = s.insertEvent(clusterID, "terraform-apply", "warning", "Terraform apply skipped by request; no Proxmox VMs were created", "")
 	}
@@ -438,22 +441,27 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	output := ""
 	if req.Apply {
 		_ = s.insertEvent(clusterID, "ansible-apply", "info", "Starting Ansible Galera bootstrap", "")
-		result, applyErr := s.runAnsible(workDir)
-		output = result.Output
-		status = result.Status
-		_ = s.insertRun(clusterID, "ansible-apply", result.Status, workDir, result.Output, applyErr == nil)
-		if applyErr != nil {
-			_ = s.updateStatus(clusterID, "bootstrap_failed")
-			_ = s.insertEvent(clusterID, "ansible-apply", "error", "Ansible Galera bootstrap failed", result.Output+"\n"+applyErr.Error())
-			return BootstrapResponse{}, applyErr
-		}
-		_ = s.updateStatus(clusterID, "ready")
-		_ = s.insertEvent(clusterID, "ansible-apply", "success", "MariaDB Galera bootstrap completed successfully", result.Output)
+		status = "bootstrapping"
+		_ = s.updateStatus(clusterID, status)
+		_ = s.insertRun(clusterID, "ansible-apply", status, workDir, "")
+		go s.runBootstrapApplyAsync(clusterID, workDir)
 	} else {
 		_ = s.insertEvent(clusterID, "ansible-apply", "warning", "Ansible apply skipped by request; Galera was not bootstrapped", "")
 	}
 
 	return BootstrapResponse{ClusterID: clusterID, Status: status, AnsibleWorkDir: workDir, AnsibleOutput: output, Warnings: warnings}, nil
+}
+
+func (s *Service) runBootstrapApplyAsync(clusterID int64, workDir string) {
+	result, applyErr := s.runAnsible(workDir)
+	_ = s.insertRun(clusterID, "ansible-apply", result.Status, workDir, result.Output, applyErr == nil)
+	if applyErr != nil {
+		_ = s.updateStatus(clusterID, "bootstrap_failed")
+		_ = s.insertEvent(clusterID, "ansible-apply", "error", "Ansible Galera bootstrap failed", result.Output+"\n"+applyErr.Error())
+		return
+	}
+	_ = s.updateStatus(clusterID, "ready")
+	_ = s.insertEvent(clusterID, "ansible-apply", "success", "MariaDB Galera bootstrap completed successfully", result.Output)
 }
 
 func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error) {
@@ -498,6 +506,9 @@ func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error
 	}
 	_ = s.updateStatus(clusterID, "provisioned")
 	_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", result.Output)
+	if manifestErr := s.applyKubernetesEndpointManifest(clusterID, cluster.HAProxyNamespace, cluster.HAProxyServiceName, cluster.Nodes); manifestErr != nil {
+		warnings = append(warnings, "Kubernetes external MariaDB Service/Endpoints apply failed; see Event Log")
+	}
 
 	return TerraformApplyResponse{
 		ClusterID:        clusterID,
@@ -1071,6 +1082,72 @@ func (s *Service) runAnsible(workDir string) (ansibleResult, error) {
 	return ansibleResult{WorkDir: workDir, Output: combined, Status: "bootstrapped"}, nil
 }
 
+func (s *Service) applyKubernetesEndpointManifest(clusterID int64, namespace, serviceName string, nodes []NodeRecord) error {
+	namespace = nonEmpty(namespace, "pscs")
+	serviceName = nonEmpty(serviceName, "external-mariadb")
+	manifest := buildKubernetesEndpointManifest(namespace, serviceName, nodes)
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		_ = s.insertEvent(clusterID, "kubernetes-manifest", "error", "Kubernetes kubeconfig is not available for external MariaDB manifest apply", err.Error())
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	_ = s.insertEvent(clusterID, "kubernetes-manifest", "info", fmt.Sprintf("Applying external MariaDB Service/Endpoints %s/%s", namespace, serviceName), manifest)
+
+	outputs := make([]string, 0, 2)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
+	output, err := cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		combined := strings.Join(outputs, "\n")
+		_ = s.insertEvent(clusterID, "kubernetes-manifest", "error", "kubectl cluster connectivity test failed", combined+"\n"+err.Error())
+		return fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	combined := strings.Join(outputs, "\n")
+	if err != nil {
+		_ = s.insertEvent(clusterID, "kubernetes-manifest", "error", "Failed to apply external MariaDB Service/Endpoints manifest", combined+"\n"+err.Error())
+		return fmt.Errorf("apply external MariaDB Service/Endpoints manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	_ = s.insertEvent(clusterID, "kubernetes-manifest", "success", "External MariaDB Service/Endpoints manifest applied", combined)
+	return nil
+}
+
+func (s *Service) kubeconfigPath() string {
+	if envPath := strings.TrimSpace(os.Getenv("KUBECONFIG")); envPath != "" {
+		return envPath
+	}
+	return "/app/backend/.kube/config"
+}
+
+func (s *Service) resolveKubeconfigPath(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("kubeconfig file not found at %s: %w", path, err)
+		}
+		return "", fmt.Errorf("failed to stat kubeconfig path %s: %w", path, err)
+	}
+	if info.IsDir() {
+		candidate := filepath.Join(path, "config")
+		candidateInfo, candidateErr := os.Stat(candidate)
+		if candidateErr == nil && !candidateInfo.IsDir() {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("kubeconfig path %s is a directory; mount the kubeconfig file, not a directory", path)
+	}
+	return path, nil
+}
+
 func renderDatabaseInventory(nodes []NodeRecord, sshUser, keyPath string) (string, error) {
 	tpl, err := template.New("inventory").Parse(databaseInventoryTemplate)
 	if err != nil {
@@ -1107,6 +1184,23 @@ func renderDatabasePlaybook(cluster ClusterRecord, secret databaseSecrets) (stri
 }
 
 func buildKubernetesManifest(namespace, serviceName string, nodes []NodeRecord, databaseName, appUser string) string {
+	return buildKubernetesEndpointManifest(namespace, serviceName, nodes) + fmt.Sprintf(`---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: external-mariadb-client
+  namespace: %s
+type: Opaque
+stringData:
+  DB_HOST: %s
+  DB_PORT: "3306"
+  DB_NAME: %s
+  DB_USER: %s
+  DB_PASS: replace-me-with-the-app-password-from-your-secret-store
+`, namespace, serviceName, databaseName, appUser)
+}
+
+func buildKubernetesEndpointManifest(namespace, serviceName string, nodes []NodeRecord) string {
 	addresses := strings.Builder{}
 	for _, n := range nodes {
 		addresses.WriteString(fmt.Sprintf("  - ip: %s\n", n.IPAddress))
@@ -1133,20 +1227,7 @@ subsets:
 %s    ports:
       - name: mysql
         port: 3306
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: external-mariadb-client
-  namespace: %s
-type: Opaque
-stringData:
-  DB_HOST: %s
-  DB_PORT: "3306"
-  DB_NAME: %s
-  DB_USER: %s
-  DB_PASS: replace-me-with-the-app-password-from-your-secret-store
-`, serviceName, namespace, serviceName, namespace, addresses.String(), namespace, serviceName, databaseName, appUser)
+`, serviceName, namespace, serviceName, namespace, addresses.String())
 }
 
 func buildAnsibleReadme(cluster ClusterRecord) string {
