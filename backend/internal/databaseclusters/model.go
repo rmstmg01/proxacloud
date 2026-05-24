@@ -1322,8 +1322,7 @@ func (s *Service) applyKubernetesAppDatabaseConfig(clusterID int64, namespace, s
 	commands := [][]string{
 		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "configmap", "pscs-config", "--type", "merge", "-p", string(configPatch)},
 		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "secret", "pscs-secrets", "--type", "merge", "-p", string(secretPatch)},
-		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/backend", "deployment/gateway"},
-		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "status", "deployment/backend", "--timeout=300s"},
+		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/gateway"},
 		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "status", "deployment/gateway", "--timeout=300s"},
 	}
 	for _, args := range commands {
@@ -1335,8 +1334,17 @@ func (s *Service) applyKubernetesAppDatabaseConfig(clusterID int64, namespace, s
 		}
 	}
 
-	combined := strings.Join(outputs, "\n")
-	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Kubernetes app now points to MariaDB Galera cluster", combined)
+	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Kubernetes app config updated and gateway rollout completed", strings.Join(outputs, "\n"))
+
+	restartBackendArgs := []string{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/backend"}
+	output, err := exec.CommandContext(ctx, "kubectl", restartBackendArgs...).CombinedOutput()
+	outputs = append(outputs, fmt.Sprintf("$ kubectl %s\n%s", strings.Join(restartBackendArgs, " "), string(output)))
+	if err != nil {
+		combined := strings.Join(outputs, "\n")
+		return fmt.Errorf("kubectl %s failed: %w\nOutput: %s", strings.Join(restartBackendArgs, " "), err, combined)
+	}
+
+	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Backend rollout restart triggered; verify rollout from Kubernetes", strings.Join(outputs, "\n"))
 	return nil
 }
 
