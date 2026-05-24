@@ -32,7 +32,7 @@ const initialForm = {
   memory_mb: '8192',
   disk_gb: '100',
   mariadb_version: '11.4',
-  ubuntu_image: '',
+  ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
   ssh_key_pair_id: '',
   database_name: 'pscs',
   app_username: 'pscs',
@@ -318,23 +318,6 @@ function DeployDatabaseForm({
 }) {
   const selectedNodes = [form.node_1, form.node_2, form.node_3].filter(Boolean);
   const duplicateNodes = new Set(selectedNodes).size !== selectedNodes.length;
-  const canSubmit =
-    form.name &&
-    form.network_profile_id &&
-    form.node_1 &&
-    form.node_2 &&
-    form.node_3 &&
-    !duplicateNodes &&
-    form.node_ip_pool_start &&
-    form.ubuntu_image &&
-    form.ssh_key_pair_id &&
-    form.database_name &&
-    form.app_username &&
-    form.app_password &&
-    form.root_password &&
-    form.sst_username &&
-    form.sst_password;
-
   return (
     <Card className="mb-6">
       <CardHeader>
@@ -380,7 +363,14 @@ function DeployDatabaseForm({
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input label="MariaDB version" value={form.mariadb_version} onChange={(e) => onChange('mariadb_version', e.target.value)} required />
-            <Input label="Ubuntu image" value={form.ubuntu_image} onChange={(e) => onChange('ubuntu_image', e.target.value)} placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img" required />
+            <Input
+              label="Ubuntu image"
+              value={form.ubuntu_image}
+              onChange={(e) => onChange('ubuntu_image', e.target.value)}
+              placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img"
+              helperText="Default Ubuntu 24.04 cloud image path; edit if your Proxmox storage path is different."
+              required
+            />
             <Select label="SSH key" value={form.ssh_key_pair_id} onChange={(e) => onChange('ssh_key_pair_id', e.target.value)} required>
               <option value="">Select SSH key</option>
               {sshKeys.map((key) => (
@@ -421,7 +411,7 @@ function DeployDatabaseForm({
           </div>
 
           <div className="flex justify-end">
-            <Button type="submit" loading={loading} disabled={!canSubmit || loading}>
+            <Button type="submit" loading={loading} disabled={loading}>
               <Rocket className="h-4 w-4" />
               Deploy Database Cluster
             </Button>
