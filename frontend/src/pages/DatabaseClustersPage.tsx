@@ -124,6 +124,22 @@ export function DatabaseClustersPage() {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
     },
   });
+  const bootstrapMutation = useMutation({
+    mutationFn: (id: number) => bootstrapDatabaseCluster(id, { ssh_key_pair_id: 0, apply: true }),
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
+      queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
+      queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
+      setSelectedID(resp.cluster_id);
+      setLastResult({
+        clusterID: resp.cluster_id,
+        message: `Galera bootstrap finished with status ${resp.status}.`,
+      });
+    },
+    onError: (_error, id) => {
+      queryClient.invalidateQueries({ queryKey: ['database-cluster-events', id] });
+    },
+  });
   const deleteMutation = useMutation({
     mutationFn: deleteFailedDatabaseCluster,
     onSuccess: (resp) => {
@@ -201,6 +217,7 @@ export function DatabaseClustersPage() {
       {detailQuery.error && <ErrorMessage error={detailQuery.error} />}
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {provisionMutation.error && <ErrorMessage error={provisionMutation.error} />}
+      {bootstrapMutation.error && <ErrorMessage error={bootstrapMutation.error} />}
       {eventsQuery.error && <ErrorMessage error={eventsQuery.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
@@ -269,6 +286,16 @@ export function DatabaseClustersPage() {
                               <FileCode className="h-3.5 w-3.5" />
                               Manifest
                             </Button>
+                            {(cluster.status === 'provisioned' || cluster.status === 'bootstrap_failed') && (
+                              <Button
+                                variant="success"
+                                size="sm"
+                                onClick={() => bootstrapMutation.mutate(cluster.id)}
+                                loading={bootstrapMutation.isPending && bootstrapMutation.variables === cluster.id}
+                              >
+                                Bootstrap
+                              </Button>
+                            )}
                             {cluster.status.endsWith('_failed') && (
                               <Button
                                 variant="danger"

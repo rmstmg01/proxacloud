@@ -414,6 +414,9 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	if err != nil {
 		return BootstrapResponse{}, err
 	}
+	if req.SSHKeyPairID <= 0 && cluster.SSHKeyPairID.Valid {
+		req.SSHKeyPairID = cluster.SSHKeyPairID.Int64
+	}
 	privateKey, sshUser, err := s.resolveBootstrapSSH(req)
 	if err != nil {
 		return BootstrapResponse{}, err
@@ -1215,13 +1218,23 @@ ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/
 const databasePlaybookTemplate = `---
 - hosts: mariadb_galera
   become: true
-  gather_facts: true
+  gather_facts: false
+  any_errors_fatal: true
   vars:
     galera_cluster_name: {{ .ClusterName | printf "%q" }}
     galera_cluster_address: {{ .ClusterAddress | printf "%q" }}
     sst_user: {{ .SSTUsername | printf "%q" }}
     sst_password: {{ .SSTPassword | printf "%q" }}
   pre_tasks:
+    - name: Wait for SSH connectivity on every database node
+      wait_for_connection:
+        connect_timeout: 5
+        sleep: 10
+        timeout: 600
+
+    - name: Gather facts after SSH is reachable
+      setup:
+
     - name: Wait for cloud-init to finish
       shell: |
         if command -v cloud-init >/dev/null 2>&1; then
@@ -1247,6 +1260,13 @@ const databasePlaybookTemplate = `---
         name: qemu-guest-agent
         enabled: true
         state: started
+      register: qemu_guest_agent_service
+      failed_when: false
+
+    - name: Record qemu guest agent startup warning
+      debug:
+        msg: "qemu-guest-agent did not start; continuing because Galera bootstrap does not require it. Check VM guest-agent device settings if Proxmox guest status is needed."
+      when: qemu_guest_agent_service is failed
 
     - name: Write Galera configuration
       copy:
