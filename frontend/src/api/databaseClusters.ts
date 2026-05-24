@@ -90,3 +90,14 @@ export const bootstrapDatabaseCluster = (
       warnings: string[];
     }>(`/database-clusters/${id}/bootstrap`, body)
     .then((r) => r.data);
+
+export const applyDatabaseClusterTerraform = (id: number) =>
+  client
+    .post<{
+      cluster_id: number;
+      status: string;
+      terraform_work_dir: string;
+      terraform_output?: string;
+      warnings: string[];
+    }>(`/database-clusters/${id}/terraform/apply`)
+    .then((r) => r.data);

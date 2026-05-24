@@ -67,6 +67,19 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ApplyTerraform(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ApplyTerraform(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) List(w http.ResponseWriter, _ *http.Request) {
 	resp, err := h.service.List()
 	if err != nil {

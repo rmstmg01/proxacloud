@@ -35,12 +35,9 @@ Fetch generated Kubernetes connection manifest:
 GET /api/v1/database-clusters/{id}/k8s-manifests
 ```
 
-Terraform and Ansible only run when the request has `apply: true` and the matching runtime flag is enabled:
+Terraform and Ansible run for database clusters when the request has `apply: true`. The database-cluster deploy workflow does not require `TERRAFORM_AUTO_APPLY` or `ANSIBLE_AUTO_APPLY`; those flags remain relevant to the Kubernetes cluster provisioning workflow.
 
-- `TERRAFORM_AUTO_APPLY=true`
-- `ANSIBLE_AUTO_APPLY=true`
-
-Otherwise the backend generates reviewable workspaces.
+Set `apply: false` only when you want reviewable Terraform or Ansible workspaces without changing Proxmox or the database VMs.
 
 ## Example Provision Payload
 

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Database, FileCode, Plus, RefreshCw, Rocket } from 'lucide-react';
 import {
+  applyDatabaseClusterTerraform,
   bootstrapDatabaseCluster,
   getDatabaseCluster,
   getDatabaseClusterK8sManifest,
@@ -42,9 +43,9 @@ const initialForm = {
   sst_password: '',
   haproxy_namespace: 'pscs',
   haproxy_service_name: 'external-mariadb',
-  applyTerraform: false,
+  applyTerraform: true,
   bootstrapAfterProvision: true,
-  applyAnsible: false,
+  applyAnsible: true,
 };
 
 export function DatabaseClustersPage() {
@@ -98,6 +99,18 @@ export function DatabaseClustersPage() {
       setManifestID(resp.cluster_id);
       setShowDeploy(false);
       setForm(initialForm);
+    },
+  });
+  const applyTerraformMutation = useMutation({
+    mutationFn: applyDatabaseClusterTerraform,
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
+      queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
+      const warningText = resp.warnings?.length ? ` ${resp.warnings.join(' ')}` : '';
+      setLastResult({
+        clusterID: resp.cluster_id,
+        message: `Terraform apply status: ${resp.status}. Workspace: ${resp.terraform_work_dir}.${warningText}`,
+      });
     },
   });
 
@@ -157,6 +170,10 @@ export function DatabaseClustersPage() {
       {detailQuery.error && <ErrorMessage error={detailQuery.error} />}
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {provisionMutation.error && <ErrorMessage error={provisionMutation.error} />}
+      {applyTerraformMutation.error && <ErrorMessage error={applyTerraformMutation.error} />}
+      <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
+        Database cluster deploy now runs Terraform and Galera bootstrap when the form options are enabled. Uncheck the apply options only when you want reviewable workspaces without changing Proxmox.
+      </Alert>
       {lastResult && (
         <Alert variant="success" className="mb-6" title="Database cluster workspace ready">
           {lastResult.message}
@@ -215,6 +232,14 @@ export function DatabaseClustersPage() {
                           <div className="flex items-center justify-end gap-2">
                             <Button variant="secondary" size="sm" onClick={() => setSelectedID(cluster.id)}>
                               Details
+                            </Button>
+                            <Button
+                              variant="success"
+                              size="sm"
+                              onClick={() => applyTerraformMutation.mutate(cluster.id)}
+                              loading={applyTerraformMutation.isPending && applyTerraformMutation.variables === cluster.id}
+                            >
+                              Create VMs
                             </Button>
                             <Button variant="secondary" size="sm" onClick={() => setManifestID(cluster.id)}>
                               <FileCode className="h-3.5 w-3.5" />
@@ -398,7 +423,7 @@ function DeployDatabaseForm({
           <div className="flex flex-wrap gap-4 border-t border-slate-100 pt-4">
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={form.applyTerraform} onChange={(e) => onChange('applyTerraform', e.target.checked)} />
-              Run Terraform apply when allowed
+              Create Proxmox VMs now
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={form.bootstrapAfterProvision} onChange={(e) => onChange('bootstrapAfterProvision', e.target.checked)} />
@@ -406,7 +431,7 @@ function DeployDatabaseForm({
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input type="checkbox" checked={form.applyAnsible} onChange={(e) => onChange('applyAnsible', e.target.checked)} disabled={!form.bootstrapAfterProvision} />
-              Run Ansible apply when allowed
+              Bootstrap Galera now
             </label>
           </div>
 

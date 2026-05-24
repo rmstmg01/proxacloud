@@ -157,6 +157,14 @@ type BootstrapResponse struct {
 	Warnings       []string `json:"warnings"`
 }
 
+type TerraformApplyResponse struct {
+	ClusterID        int64    `json:"cluster_id"`
+	Status           string   `json:"status"`
+	TerraformWorkDir string   `json:"terraform_work_dir"`
+	TerraformOutput  string   `json:"terraform_output,omitempty"`
+	Warnings         []string `json:"warnings"`
+}
+
 type KubernetesManifestResponse struct {
 	ClusterID int64  `json:"cluster_id"`
 	Manifest  string `json:"manifest"`
@@ -310,31 +318,27 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	status := "planned"
 	output := ""
 	if req.Apply {
-		if !s.terraformAutoApply {
-			warnings = append(warnings, "terraform apply requested but TERRAFORM_AUTO_APPLY is false; workspace was generated only")
-		} else {
-			cred, credErr := s.proxmoxCredentials.GetCredentialWithSecrets(req.ProxmoxCredentialID)
-			if credErr != nil {
-				return ProvisionResponse{}, credErr
-			}
-			result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
-				Endpoint:       cred.Endpoint,
-				Username:       cred.Username,
-				Password:       cred.Password,
-				APITokenID:     cred.APITokenID,
-				APITokenSecret: cred.APITokenSecret,
-				InsecureTLS:    cred.InsecureTLS,
-			})
-			output = result.Output
-			status = result.Status
-			finished := applyErr == nil
-			_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, finished)
-			if applyErr != nil {
-				_ = s.updateStatus(clusterID, "provision_failed")
-				return ProvisionResponse{}, applyErr
-			}
-			_ = s.updateStatus(clusterID, "provisioned")
+		cred, credErr := s.proxmoxCredentials.GetCredentialWithSecrets(req.ProxmoxCredentialID)
+		if credErr != nil {
+			return ProvisionResponse{}, credErr
 		}
+		result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
+			Endpoint:       cred.Endpoint,
+			Username:       cred.Username,
+			Password:       cred.Password,
+			APITokenID:     cred.APITokenID,
+			APITokenSecret: cred.APITokenSecret,
+			InsecureTLS:    cred.InsecureTLS,
+		})
+		output = result.Output
+		status = result.Status
+		finished := applyErr == nil
+		_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, finished)
+		if applyErr != nil {
+			_ = s.updateStatus(clusterID, "provision_failed")
+			return ProvisionResponse{}, applyErr
+		}
+		_ = s.updateStatus(clusterID, "provisioned")
 	}
 
 	return ProvisionResponse{
@@ -372,22 +376,66 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	status := "prepared"
 	output := ""
 	if req.Apply {
-		if !s.ansibleAutoApply {
-			warnings = append(warnings, "ansible apply requested but ANSIBLE_AUTO_APPLY is false; workspace was generated only")
-		} else {
-			result, applyErr := s.runAnsible(workDir)
-			output = result.Output
-			status = result.Status
-			_ = s.insertRun(clusterID, "ansible-apply", result.Status, workDir, result.Output, applyErr == nil)
-			if applyErr != nil {
-				_ = s.updateStatus(clusterID, "bootstrap_failed")
-				return BootstrapResponse{}, applyErr
-			}
-			_ = s.updateStatus(clusterID, "ready")
+		result, applyErr := s.runAnsible(workDir)
+		output = result.Output
+		status = result.Status
+		_ = s.insertRun(clusterID, "ansible-apply", result.Status, workDir, result.Output, applyErr == nil)
+		if applyErr != nil {
+			_ = s.updateStatus(clusterID, "bootstrap_failed")
+			return BootstrapResponse{}, applyErr
 		}
+		_ = s.updateStatus(clusterID, "ready")
 	}
 
 	return BootstrapResponse{ClusterID: clusterID, Status: status, AnsibleWorkDir: workDir, AnsibleOutput: output, Warnings: warnings}, nil
+}
+
+func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error) {
+	cluster, err := s.Get(clusterID)
+	if err != nil {
+		return TerraformApplyResponse{}, err
+	}
+	workDir := strings.TrimSpace(cluster.TerraformWorkDir)
+	if workDir == "" {
+		return TerraformApplyResponse{}, errors.New("database cluster has no terraform workspace; provision it first")
+	}
+
+	warnings := []string{}
+	if hasMultipleNodeCredentials(cluster.Nodes) {
+		warnings = append(warnings, "selected nodes use multiple Proxmox credential records; Terraform apply authenticates with the first selected node credential")
+	}
+
+	credentialID := cluster.ProxmoxCredentialID
+	if credentialID <= 0 && len(cluster.Nodes) > 0 {
+		credentialID = cluster.Nodes[0].ProxmoxCredentialID
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(credentialID)
+	if err != nil {
+		return TerraformApplyResponse{}, err
+	}
+
+	result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
+		Endpoint:       cred.Endpoint,
+		Username:       cred.Username,
+		Password:       cred.Password,
+		APITokenID:     cred.APITokenID,
+		APITokenSecret: cred.APITokenSecret,
+		InsecureTLS:    cred.InsecureTLS,
+	})
+	_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, applyErr == nil)
+	if applyErr != nil {
+		_ = s.updateStatus(clusterID, "provision_failed")
+		return TerraformApplyResponse{}, applyErr
+	}
+	_ = s.updateStatus(clusterID, "provisioned")
+
+	return TerraformApplyResponse{
+		ClusterID:        clusterID,
+		Status:           result.Status,
+		TerraformWorkDir: workDir,
+		TerraformOutput:  result.Output,
+		Warnings:         warnings,
+	}, nil
 }
 
 func (s *Service) List() ([]ClusterRecord, error) {
