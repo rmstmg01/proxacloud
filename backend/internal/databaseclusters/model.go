@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -30,9 +31,10 @@ const (
 )
 
 var (
-	ErrDatabaseClusterExists    = errors.New("database cluster already exists")
-	ErrDatabaseClusterNotFound  = errors.New("database cluster not found")
-	ErrDatabaseClusterNotFailed = errors.New("only failed database clusters can be deleted")
+	ErrDatabaseClusterExists           = errors.New("database cluster already exists")
+	ErrDatabaseClusterNotFound         = errors.New("database cluster not found")
+	ErrDatabaseClusterDeleteNotAllowed = errors.New("only failed, provisioned, or ready database clusters can be deleted")
+	ErrDatabaseClusterConfirmation     = errors.New("database cluster name confirmation does not match")
 )
 
 type NetworkStore interface {
@@ -553,18 +555,23 @@ func (s *Service) Get(clusterID int64) (ClusterRecord, error) {
 	return rec, nil
 }
 
-func (s *Service) DeleteFailed(clusterID int64) error {
-	var status string
-	err := s.db.QueryRow(`SELECT status FROM database_clusters WHERE id = $1`, clusterID).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrDatabaseClusterNotFound
-	}
+func (s *Service) Delete(clusterID int64, confirmationName string) error {
+	cluster, err := s.Get(clusterID)
 	if err != nil {
-		return fmt.Errorf("get database cluster status: %w", err)
+		return err
 	}
-	if !strings.HasSuffix(strings.TrimSpace(status), "_failed") {
-		return ErrDatabaseClusterNotFailed
+	if !isDatabaseClusterDeletable(cluster.Status) {
+		return ErrDatabaseClusterDeleteNotAllowed
 	}
+	if strings.TrimSpace(confirmationName) != cluster.Name {
+		return ErrDatabaseClusterConfirmation
+	}
+
+	if err := s.destroyDatabaseClusterInfrastructure(cluster); err != nil {
+		_ = s.insertEvent(clusterID, "terraform-destroy", "error", "Terraform destroy failed during database cluster deletion", err.Error())
+		return err
+	}
+
 	res, err := s.db.Exec(`DELETE FROM database_clusters WHERE id = $1`, clusterID)
 	if err != nil {
 		return fmt.Errorf("delete database cluster: %w", err)
@@ -573,6 +580,7 @@ func (s *Service) DeleteFailed(clusterID int64) error {
 	if affected == 0 {
 		return ErrDatabaseClusterNotFound
 	}
+	s.removeDatabaseClusterWorkspaces(cluster)
 	return nil
 }
 
@@ -788,6 +796,141 @@ func describeWorkspaces(workspaces map[int64]string) string {
 		builder.WriteString(fmt.Sprintf("credential_id=%d -> %s\n", credentialID, workspaces[credentialID]))
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func isDatabaseClusterDeletable(status string) bool {
+	status = strings.TrimSpace(status)
+	return status == "provisioned" || status == "ready" || status == "applied" || strings.HasSuffix(status, "_failed")
+}
+
+func (s *Service) destroyDatabaseClusterInfrastructure(cluster ClusterRecord) error {
+	credentialIDs := distinctDatabaseCredentialIDs(cluster.Nodes)
+	if len(credentialIDs) == 0 && cluster.ProxmoxCredentialID > 0 {
+		credentialIDs = append(credentialIDs, cluster.ProxmoxCredentialID)
+	}
+	if len(credentialIDs) == 0 {
+		if len(cluster.Nodes) > 0 {
+			return errors.New("database cluster cannot be deleted safely because its Proxmox credential metadata is missing; destroy the VMs manually first")
+		}
+		return nil
+	}
+
+	multiCredential := len(credentialIDs) > 1
+	for _, credentialID := range credentialIDs {
+		cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(credentialID)
+		if err != nil {
+			return fmt.Errorf("load Proxmox credential for database cluster delete: %w", err)
+		}
+		auth := terraform.ProxmoxAuth{
+			Endpoint:       cred.Endpoint,
+			Username:       cred.Username,
+			Password:       cred.Password,
+			APITokenID:     cred.APITokenID,
+			APITokenSecret: cred.APITokenSecret,
+			InsecureTLS:    cred.InsecureTLS,
+			SSHUsername:    sshUserFromCredential(cred),
+			SSHPassword:    cred.Password,
+		}
+
+		candidates := databaseWorkspaceCandidates(s.terraformRunner, cluster, credentialID, multiCredential)
+		destroyed := false
+		seen := make(map[string]struct{}, len(candidates))
+		for _, candidate := range candidates {
+			workDir := strings.TrimSpace(candidate)
+			if workDir == "" {
+				continue
+			}
+			if _, ok := seen[workDir]; ok {
+				continue
+			}
+			seen[workDir] = struct{}{}
+
+			if _, statErr := os.Stat(filepath.Join(workDir, "terraform.tfvars.json")); statErr == nil {
+				result, destroyErr := s.terraformRunner.Destroy(workDir, auth)
+				_ = s.insertRun(cluster.ID, "terraform-destroy", result.Status, workDir, result.Output, destroyErr == nil)
+				if destroyErr != nil {
+					if isIgnorableDatabaseDestroyError(destroyErr) {
+						log.Printf("warning: terraform destroy failed for database cluster %d credential_id=%d workspace=%s; proceeding with metadata delete only: %v", cluster.ID, credentialID, workDir, destroyErr)
+						destroyed = true
+						break
+					}
+					return fmt.Errorf("destroy database cluster infrastructure: %w", destroyErr)
+				}
+				destroyed = true
+				break
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("inspect terraform workspace: %w", statErr)
+			}
+		}
+
+		if !destroyed && len(cluster.Nodes) > 0 {
+			log.Printf("warning: terraform workspace for database cluster %d credential_id=%d is missing; proceeding with metadata delete only", cluster.ID, credentialID)
+		}
+	}
+	return nil
+}
+
+func databaseWorkspaceCandidates(runner *terraform.Runner, cluster ClusterRecord, credentialID int64, multiCredential bool) []string {
+	if multiCredential {
+		return []string{runner.WorkspaceDirForKey(databaseWorkspaceKeyForCredential(cluster.Name, credentialID))}
+	}
+	return []string{
+		cluster.TerraformWorkDir,
+		runner.WorkspaceDirForKey("db-" + cluster.Name),
+		runner.WorkspaceDir(cluster.Name),
+	}
+}
+
+func (s *Service) removeDatabaseClusterWorkspaces(cluster ClusterRecord) {
+	removeDatabaseWorkspace(cluster.TerraformWorkDir)
+	removeDatabaseWorkspace(s.terraformRunner.WorkspaceDirForKey("db-" + cluster.Name))
+	removeDatabaseWorkspace(s.terraformRunner.WorkspaceDir(cluster.Name))
+	for _, credentialID := range distinctDatabaseCredentialIDs(cluster.Nodes) {
+		removeDatabaseWorkspace(s.terraformRunner.WorkspaceDirForKey(databaseWorkspaceKeyForCredential(cluster.Name, credentialID)))
+	}
+}
+
+func removeDatabaseWorkspace(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	_ = os.RemoveAll(path)
+}
+
+func databaseWorkspaceKeyForCredential(clusterName string, credentialID int64) string {
+	return fmt.Sprintf("db-%s-cred-%d", strings.TrimSpace(clusterName), credentialID)
+}
+
+func distinctDatabaseCredentialIDs(nodes []NodeRecord) []int64 {
+	seen := make(map[int64]struct{}, len(nodes))
+	out := make([]int64, 0)
+	for _, node := range nodes {
+		if node.ProxmoxCredentialID <= 0 {
+			continue
+		}
+		if _, ok := seen[node.ProxmoxCredentialID]; ok {
+			continue
+		}
+		seen[node.ProxmoxCredentialID] = struct{}{}
+		out = append(out, node.ProxmoxCredentialID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func isIgnorableDatabaseDestroyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "hostname lookup") ||
+		strings.Contains(msg, "name or service not known") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connect: connection refused") ||
+		strings.Contains(msg, "server misbehaving") ||
+		strings.Contains(msg, "i/o timeout")
 }
 
 func sshUserFromCredential(cred proxmox.Credential) string {

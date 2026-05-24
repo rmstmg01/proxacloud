@@ -1,26 +1,33 @@
-import { useEffect } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Plus, ChevronRight, Play, Power, RotateCcw, RefreshCw } from 'lucide-react';
+import { Plus, ChevronRight, Play, Power, RotateCcw, RefreshCw, Trash2 } from 'lucide-react';
 import { deleteCluster, getClusters, redeployCluster, restartCluster, shutdownCluster, startCluster } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
 import { PageSpinner } from '../components/ui/Spinner';
-import { ErrorMessage } from '../components/ui/Alert';
+import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
+import { Input } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
+import type { ClusterSummary } from '../types';
 
 export function ClustersPage() {
   const queryClient = useQueryClient();
+  const [deleteTarget, setDeleteTarget] = useState<ClusterSummary | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const { data: clusters, isLoading, error, dataUpdatedAt } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
     refetchInterval: 30_000,
   });
   const deleteMutation = useMutation({
-    mutationFn: deleteCluster,
+    mutationFn: ({ id, confirmationName }: { id: number; confirmationName: string }) => deleteCluster(id, confirmationName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clusters'] });
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
     },
   });
   const startMutation = useMutation({
@@ -56,6 +63,19 @@ export function ClustersPage() {
     if (!redeployMutation.isPending) redeployMutation.reset();
     if (!deleteMutation.isPending) deleteMutation.reset();
   }, [dataUpdatedAt]);
+
+  const requestDeleteCluster = (cluster: ClusterSummary) => {
+    setDeleteTarget(cluster);
+    setDeleteConfirmationName('');
+  };
+
+  const confirmDeleteCluster = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) {
+      return;
+    }
+    deleteMutation.mutate({ id: deleteTarget.id, confirmationName: deleteConfirmationName });
+  };
 
   return (
     <Layout>
@@ -183,13 +203,10 @@ export function ClustersPage() {
                           <Button
                             variant="danger"
                             size="sm"
-                            onClick={() => {
-                              if (window.confirm(`Delete cluster \"${c.name}\"? This removes cluster metadata, nodes, and run history.`)) {
-                                deleteMutation.mutate(c.id);
-                              }
-                            }}
-                            loading={deleteMutation.isPending && deleteMutation.variables === c.id}
+                            onClick={() => requestDeleteCluster(c)}
+                            loading={deleteMutation.isPending && deleteMutation.variables?.id === c.id}
                           >
+                            <Trash2 className="h-3.5 w-3.5" />
                             Delete
                           </Button>
                         </div>
@@ -202,6 +219,67 @@ export function ClustersPage() {
           )}
         </Card>
       )}
+      <DeleteClusterModal
+        cluster={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMutation.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMutation.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDeleteCluster}
+      />
     </Layout>
+  );
+}
+
+function DeleteClusterModal({
+  cluster,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  cluster: ClusterSummary | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!cluster && confirmationName === cluster.name;
+  return (
+    <Modal open={!!cluster} onClose={onClose} title="Delete Kubernetes Cluster" maxWidth="lg">
+      {cluster && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This deletes infrastructure">
+            Terraform destroy will be attempted for the Kubernetes cluster VMs before portal metadata is removed. Type the exact cluster name to continue.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{cluster.name}</span> to confirm deletion.
+          </div>
+          <Input
+            label="Cluster name confirmation"
+            value={confirmationName}
+            onChange={(event) => onChange(event.target.value)}
+            autoFocus
+            autoComplete="off"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>
+              <Trash2 className="h-4 w-4" />
+              Delete Cluster
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

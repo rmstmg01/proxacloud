@@ -77,6 +77,7 @@ type Service struct {
 
 var ErrClusterExists = errors.New("cluster already exists")
 var ErrClusterNotFound = errors.New("cluster not found")
+var ErrClusterDeleteConfirmation = errors.New("cluster name confirmation does not match")
 var ErrOperationNotFound = errors.New("cluster operation not found")
 var ErrApplicationManifestNotFound = errors.New("application manifest not found")
 var ErrSavedManifestNotFound = errors.New("saved manifest not found")
@@ -1668,10 +1669,13 @@ func (s *Service) RedeployCluster(clusterID int64) (ClusterRedeployResponse, err
 	}, nil
 }
 
-func (s *Service) DeleteCluster(clusterID int64) error {
+func (s *Service) DeleteCluster(clusterID int64, confirmationName string) error {
 	info, err := s.getClusterDeleteInfo(clusterID)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(confirmationName) != info.Name {
+		return ErrClusterDeleteConfirmation
 	}
 
 	workDir := strings.TrimSpace(info.TerraformWorkDir)

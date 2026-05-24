@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Database, FileCode, Plus, RefreshCw, Rocket, Trash2 } from 'lucide-react';
 import {
   bootstrapDatabaseCluster,
-  deleteFailedDatabaseCluster,
+  deleteDatabaseCluster,
   getDatabaseCluster,
   getDatabaseClusterEvents,
   getDatabaseClusterK8sManifest,
@@ -22,6 +22,7 @@ import { Button } from '../components/ui/Button';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
 import type { NetworkProfile, ProxmoxNode, SSHKeyPair } from '../types';
 
 const initialForm = {
@@ -56,6 +57,8 @@ export function DatabaseClustersPage() {
   const [manifestID, setManifestID] = useState<number | null>(null);
   const [showDeploy, setShowDeploy] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [deleteTarget, setDeleteTarget] = useState<DatabaseCluster | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [lastResult, setLastResult] = useState<{ clusterID: number; message: string; manifest?: string } | null>(null);
   const {
     data: clusters,
@@ -141,7 +144,7 @@ export function DatabaseClustersPage() {
     },
   });
   const deleteMutation = useMutation({
-    mutationFn: deleteFailedDatabaseCluster,
+    mutationFn: ({ id, confirmationName }: { id: number; confirmationName: string }) => deleteDatabaseCluster(id, confirmationName),
     onSuccess: (resp) => {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
       if (selectedID === resp.id) {
@@ -150,7 +153,9 @@ export function DatabaseClustersPage() {
       if (manifestID === resp.id) {
         setManifestID(null);
       }
-      setLastResult({ clusterID: resp.id, message: 'Failed database cluster deleted.' });
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
+      setLastResult({ clusterID: resp.id, message: 'Database cluster deleted.' });
     },
   });
 
@@ -186,11 +191,17 @@ export function DatabaseClustersPage() {
     });
   };
 
-  const deleteFailedCluster = (cluster: DatabaseCluster) => {
-    if (!window.confirm(`Delete failed database cluster "${cluster.name}"? This removes portal metadata, nodes, runs, and event logs. It does not destroy any Proxmox VMs that may have been created before failure.`)) {
+  const requestDeleteCluster = (cluster: DatabaseCluster) => {
+    setDeleteTarget(cluster);
+    setDeleteConfirmationName('');
+  };
+
+  const confirmDeleteCluster = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) {
       return;
     }
-    deleteMutation.mutate(cluster.id);
+    deleteMutation.mutate({ id: deleteTarget.id, confirmationName: deleteConfirmationName });
   };
 
   return (
@@ -296,12 +307,12 @@ export function DatabaseClustersPage() {
                                 Retry Bootstrap
                               </Button>
                             )}
-                            {cluster.status.endsWith('_failed') && (
+                            {isDeletableDatabaseCluster(cluster.status) && (
                               <Button
                                 variant="danger"
                                 size="sm"
-                                onClick={() => deleteFailedCluster(cluster)}
-                                loading={deleteMutation.isPending && deleteMutation.variables === cluster.id}
+                                onClick={() => requestDeleteCluster(cluster)}
+                                loading={deleteMutation.isPending && deleteMutation.variables?.id === cluster.id}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                                 Delete
@@ -333,7 +344,72 @@ export function DatabaseClustersPage() {
           )}
         </div>
       )}
+      <DeleteDatabaseClusterModal
+        cluster={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMutation.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMutation.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDeleteCluster}
+      />
     </Layout>
+  );
+}
+
+function isDeletableDatabaseCluster(status: string) {
+  return status === 'provisioned' || status === 'ready' || status === 'applied' || status.endsWith('_failed');
+}
+
+function DeleteDatabaseClusterModal({
+  cluster,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  cluster: DatabaseCluster | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!cluster && confirmationName === cluster.name;
+  return (
+    <Modal open={!!cluster} onClose={onClose} title="Delete Database Cluster" maxWidth="lg">
+      {cluster && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This deletes infrastructure">
+            Terraform destroy will be attempted for the database VM workspace before portal metadata is removed. Kubernetes Service/Endpoints and application DB config are not deleted automatically.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{cluster.name}</span> to confirm deletion.
+          </div>
+          <Input
+            label="Cluster name confirmation"
+            value={confirmationName}
+            onChange={(event) => onChange(event.target.value)}
+            autoFocus
+            autoComplete="off"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>
+              <Trash2 className="h-4 w-4" />
+              Delete Cluster
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 

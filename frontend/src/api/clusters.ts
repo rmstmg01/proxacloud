@@ -49,8 +49,12 @@ export const checkClusterName = (name: string) =>
 export const getCluster = (id: number) =>
   client.get<ClusterSummary>(`/clusters/${id}`).then((r) => r.data);
 
-export const deleteCluster = (id: number) =>
-  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}`).then((r) => r.data);
+export const deleteCluster = (id: number, confirmationName: string) =>
+  client
+    .delete<{ id: number; deleted: boolean }>(`/clusters/${id}`, {
+      data: { confirmation_name: confirmationName },
+    })
+    .then((r) => r.data);
 
 export const startCluster = (id: number) =>
   client.post<ClusterPowerActionResponse>(`/clusters/${id}/start`).then((r) => r.data);

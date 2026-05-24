@@ -3,6 +3,7 @@ package databaseclusters
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -11,6 +12,10 @@ import (
 
 type Handler struct {
 	service *Service
+}
+
+type DeleteRequest struct {
+	ConfirmationName string `json:"confirmation_name"`
 }
 
 func NewHandler(service *Service) *Handler {
@@ -106,12 +111,17 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) DeleteFailed(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
 		return
 	}
-	if err := h.service.DeleteFailed(id); err != nil {
+	var req DeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	if err := h.service.Delete(id, req.ConfirmationName); err != nil {
 		if errors.Is(err, ErrDatabaseClusterNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
