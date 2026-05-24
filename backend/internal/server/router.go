@@ -195,6 +195,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/provision", databaseClusterHandler.Provision)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}", databaseClusterHandler.Get)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/runs", databaseClusterHandler.ListRuns)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/events", databaseClusterHandler.ListEvents)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/terraform/apply", databaseClusterHandler.ApplyTerraform)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/bootstrap", databaseClusterHandler.Bootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)

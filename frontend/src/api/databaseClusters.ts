@@ -30,6 +30,16 @@ export type DatabaseCluster = {
   nodes?: DatabaseClusterNode[];
 };
 
+export type DatabaseClusterEvent = {
+  id: number;
+  cluster_id: number;
+  step: string;
+  level: string;
+  message: string;
+  output: string;
+  created_at: string;
+};
+
 export const getDatabaseClusters = () =>
   client.get<DatabaseCluster[]>('/database-clusters').then((r) => r.data);
 
@@ -40,6 +50,9 @@ export const getDatabaseClusterK8sManifest = (id: number) =>
   client
     .get<{ cluster_id: number; manifest: string }>(`/database-clusters/${id}/k8s-manifests`)
     .then((r) => r.data);
+
+export const getDatabaseClusterEvents = (id: number) =>
+  client.get<DatabaseClusterEvent[]>(`/database-clusters/${id}/events`).then((r) => r.data);
 
 export const provisionDatabaseCluster = (body: {
   name: string;

@@ -132,6 +132,16 @@ type RunRecord struct {
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
+type EventRecord struct {
+	ID        int64     `json:"id"`
+	ClusterID int64     `json:"cluster_id"`
+	Step      string    `json:"step"`
+	Level     string    `json:"level"`
+	Message   string    `json:"message"`
+	Output    string    `json:"output"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type PlanResponse struct {
 	TopologyType         string       `json:"topology_type"`
 	SelectedProxmoxNodes []string     `json:"selected_proxmox_nodes"`
@@ -314,12 +324,17 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 	_ = s.insertRun(clusterID, "terraform-prepare", "prepared", workDir, "")
+	_ = s.insertEvent(clusterID, "provision", "info", "Database cluster record created", "")
+	_ = s.insertEvent(clusterID, "placement", "info", "Selected Proxmox placement for database VMs", describeNodePlacement(nodes))
+	_ = s.insertEvent(clusterID, "terraform-prepare", "success", "Terraform workspace generated", workDir)
 
 	status := "planned"
 	output := ""
 	if req.Apply {
+		_ = s.insertEvent(clusterID, "terraform-apply", "info", "Starting Terraform apply to create database VMs", "")
 		cred, credErr := s.proxmoxCredentials.GetCredentialWithSecrets(req.ProxmoxCredentialID)
 		if credErr != nil {
+			_ = s.insertEvent(clusterID, "terraform-apply", "error", "Failed to load Proxmox credentials", credErr.Error())
 			return ProvisionResponse{}, credErr
 		}
 		result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
@@ -336,9 +351,13 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, finished)
 		if applyErr != nil {
 			_ = s.updateStatus(clusterID, "provision_failed")
+			_ = s.insertEvent(clusterID, "terraform-apply", "error", "Terraform apply failed", result.Output+"\n"+applyErr.Error())
 			return ProvisionResponse{}, applyErr
 		}
 		_ = s.updateStatus(clusterID, "provisioned")
+		_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", result.Output)
+	} else {
+		_ = s.insertEvent(clusterID, "terraform-apply", "warning", "Terraform apply skipped by request; no Proxmox VMs were created", "")
 	}
 
 	return ProvisionResponse{
@@ -371,20 +390,26 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	}
 	_ = s.setAnsibleWorkDir(clusterID, workDir)
 	_ = s.insertRun(clusterID, "ansible-prepare", "prepared", workDir, "")
+	_ = s.insertEvent(clusterID, "ansible-prepare", "success", "Ansible Galera bootstrap workspace generated", workDir)
 
 	warnings := []string{}
 	status := "prepared"
 	output := ""
 	if req.Apply {
+		_ = s.insertEvent(clusterID, "ansible-apply", "info", "Starting Ansible Galera bootstrap", "")
 		result, applyErr := s.runAnsible(workDir)
 		output = result.Output
 		status = result.Status
 		_ = s.insertRun(clusterID, "ansible-apply", result.Status, workDir, result.Output, applyErr == nil)
 		if applyErr != nil {
 			_ = s.updateStatus(clusterID, "bootstrap_failed")
+			_ = s.insertEvent(clusterID, "ansible-apply", "error", "Ansible Galera bootstrap failed", result.Output+"\n"+applyErr.Error())
 			return BootstrapResponse{}, applyErr
 		}
 		_ = s.updateStatus(clusterID, "ready")
+		_ = s.insertEvent(clusterID, "ansible-apply", "success", "MariaDB Galera bootstrap completed successfully", result.Output)
+	} else {
+		_ = s.insertEvent(clusterID, "ansible-apply", "warning", "Ansible apply skipped by request; Galera was not bootstrapped", "")
 	}
 
 	return BootstrapResponse{ClusterID: clusterID, Status: status, AnsibleWorkDir: workDir, AnsibleOutput: output, Warnings: warnings}, nil
@@ -411,9 +436,11 @@ func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error
 	}
 	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(credentialID)
 	if err != nil {
+		_ = s.insertEvent(clusterID, "terraform-apply", "error", "Failed to load Proxmox credentials", err.Error())
 		return TerraformApplyResponse{}, err
 	}
 
+	_ = s.insertEvent(clusterID, "terraform-apply", "info", "Starting Terraform apply to create database VMs", "")
 	result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
 		Endpoint:       cred.Endpoint,
 		Username:       cred.Username,
@@ -425,9 +452,11 @@ func (s *Service) ApplyTerraform(clusterID int64) (TerraformApplyResponse, error
 	_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, applyErr == nil)
 	if applyErr != nil {
 		_ = s.updateStatus(clusterID, "provision_failed")
+		_ = s.insertEvent(clusterID, "terraform-apply", "error", "Terraform apply failed", result.Output+"\n"+applyErr.Error())
 		return TerraformApplyResponse{}, applyErr
 	}
 	_ = s.updateStatus(clusterID, "provisioned")
+	_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", result.Output)
 
 	return TerraformApplyResponse{
 		ClusterID:        clusterID,
@@ -482,6 +511,23 @@ func (s *Service) ListRuns(clusterID int64) ([]RunRecord, error) {
 	for rows.Next() {
 		var rec RunRecord
 		if err := rows.Scan(&rec.ID, &rec.Action, &rec.Status, &rec.WorkDir, &rec.Output, &rec.CreatedAt, &rec.FinishedAt); err == nil {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) ListEvents(clusterID int64) ([]EventRecord, error) {
+	rows, err := s.db.Query(`SELECT id, database_cluster_id, step, level, message, output, created_at FROM database_cluster_events WHERE database_cluster_id = $1 ORDER BY id ASC`, clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("list database cluster events: %w", err)
+	}
+	defer rows.Close()
+
+	out := []EventRecord{}
+	for rows.Next() {
+		var rec EventRecord
+		if err := rows.Scan(&rec.ID, &rec.ClusterID, &rec.Step, &rec.Level, &rec.Message, &rec.Output, &rec.CreatedAt); err == nil {
 			out = append(out, rec)
 		}
 	}
@@ -613,6 +659,14 @@ func hasMultipleNodeCredentials(nodes []NodeRecord) bool {
 		seen[node.ProxmoxCredentialID] = struct{}{}
 	}
 	return len(seen) > 1
+}
+
+func describeNodePlacement(nodes []NodeRecord) string {
+	var builder strings.Builder
+	for _, node := range nodes {
+		builder.WriteString(fmt.Sprintf("%s -> %s (%s)\n", node.VMName, node.ProxmoxNodeName, node.IPAddress))
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
@@ -764,6 +818,26 @@ func (s *Service) insertRun(clusterID int64, action, status, workDir, output str
 		finishedAt = time.Now()
 	}
 	_, err := s.db.Exec(`INSERT INTO database_cluster_runs (database_cluster_id, action, status, work_dir, output, finished_at) VALUES ($1, $2, $3, $4, $5, $6)`, clusterID, action, status, workDir, output, finishedAt)
+	return err
+}
+
+func (s *Service) insertEvent(clusterID int64, step, level, message, output string) error {
+	if clusterID <= 0 {
+		return nil
+	}
+	step = strings.TrimSpace(step)
+	level = strings.TrimSpace(level)
+	message = strings.TrimSpace(message)
+	if step == "" {
+		step = "database-cluster"
+	}
+	if level == "" {
+		level = "info"
+	}
+	if message == "" {
+		message = "event recorded"
+	}
+	_, err := s.db.Exec(`INSERT INTO database_cluster_events (database_cluster_id, step, level, message, output) VALUES ($1, $2, $3, $4, $5)`, clusterID, step, level, message, output)
 	return err
 }
 

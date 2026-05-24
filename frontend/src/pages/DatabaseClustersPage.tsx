@@ -2,13 +2,14 @@ import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Database, FileCode, Plus, RefreshCw, Rocket } from 'lucide-react';
 import {
-  applyDatabaseClusterTerraform,
   bootstrapDatabaseCluster,
   getDatabaseCluster,
+  getDatabaseClusterEvents,
   getDatabaseClusterK8sManifest,
   getDatabaseClusters,
   provisionDatabaseCluster,
   type DatabaseCluster,
+  type DatabaseClusterEvent,
 } from '../api/databaseClusters';
 import { getNetworks } from '../api/networks';
 import { getNodes } from '../api/proxmox';
@@ -80,19 +81,37 @@ export function DatabaseClustersPage() {
     queryFn: () => getDatabaseClusterK8sManifest(manifestID ?? 0),
     enabled: manifestID !== null,
   });
+  const eventsQuery = useQuery({
+    queryKey: ['database-cluster-events', selectedID],
+    queryFn: () => getDatabaseClusterEvents(selectedID ?? 0),
+    enabled: selectedID !== null,
+    refetchInterval: selectedID !== null ? 5_000 : false,
+  });
   const availableNodes = proxmoxNodes?.filter((node) => node.enabled) ?? [];
   const provisionMutation = useMutation({
     mutationFn: provisionDatabaseCluster,
     onSuccess: async (resp) => {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
-      let message = `Provision workspace generated at ${resp.terraform_work_dir}.`;
-      if (form.bootstrapAfterProvision) {
-        const boot = await bootstrapDatabaseCluster(resp.cluster_id, {
-          ssh_key_pair_id: Number(form.ssh_key_pair_id),
-          apply: form.applyAnsible,
-        });
-        message += ` Bootstrap workspace generated at ${boot.ansible_work_dir}.`;
+      let message = form.applyTerraform
+        ? `Terraform finished with status ${resp.status}.`
+        : `Terraform workspace generated at ${resp.terraform_work_dir}.`;
+      try {
+        if (form.bootstrapAfterProvision) {
+          const boot = await bootstrapDatabaseCluster(resp.cluster_id, {
+            ssh_key_pair_id: Number(form.ssh_key_pair_id),
+            apply: form.applyAnsible,
+          });
+          message += form.applyAnsible
+            ? ` Galera bootstrap finished with status ${boot.status}.`
+            : ` Bootstrap workspace generated at ${boot.ansible_work_dir}.`;
+          queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
+          queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
+        }
+      } catch {
+        message += ' Galera bootstrap failed; select the cluster and review the event log.';
+      } finally {
         queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
+        queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
       }
       setLastResult({ clusterID: resp.cluster_id, message, manifest: resp.kubernetes_yaml });
       setSelectedID(resp.cluster_id);
@@ -100,17 +119,8 @@ export function DatabaseClustersPage() {
       setShowDeploy(false);
       setForm(initialForm);
     },
-  });
-  const applyTerraformMutation = useMutation({
-    mutationFn: applyDatabaseClusterTerraform,
-    onSuccess: (resp) => {
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
-      queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
-      const warningText = resp.warnings?.length ? ` ${resp.warnings.join(' ')}` : '';
-      setLastResult({
-        clusterID: resp.cluster_id,
-        message: `Terraform apply status: ${resp.status}. Workspace: ${resp.terraform_work_dir}.${warningText}`,
-      });
     },
   });
 
@@ -170,12 +180,12 @@ export function DatabaseClustersPage() {
       {detailQuery.error && <ErrorMessage error={detailQuery.error} />}
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {provisionMutation.error && <ErrorMessage error={provisionMutation.error} />}
-      {applyTerraformMutation.error && <ErrorMessage error={applyTerraformMutation.error} />}
+      {eventsQuery.error && <ErrorMessage error={eventsQuery.error} />}
       <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
         Database cluster deploy now runs Terraform and Galera bootstrap when the form options are enabled. Uncheck the apply options only when you want reviewable workspaces without changing Proxmox.
       </Alert>
       {lastResult && (
-        <Alert variant="success" className="mb-6" title="Database cluster workspace ready">
+        <Alert variant="success" className="mb-6" title="Database deploy submitted">
           {lastResult.message}
         </Alert>
       )}
@@ -233,14 +243,6 @@ export function DatabaseClustersPage() {
                             <Button variant="secondary" size="sm" onClick={() => setSelectedID(cluster.id)}>
                               Details
                             </Button>
-                            <Button
-                              variant="success"
-                              size="sm"
-                              onClick={() => applyTerraformMutation.mutate(cluster.id)}
-                              loading={applyTerraformMutation.isPending && applyTerraformMutation.variables === cluster.id}
-                            >
-                              Create VMs
-                            </Button>
                             <Button variant="secondary" size="sm" onClick={() => setManifestID(cluster.id)}>
                               <FileCode className="h-3.5 w-3.5" />
                               Manifest
@@ -257,6 +259,7 @@ export function DatabaseClustersPage() {
 
           <div className="space-y-6">
             <ClusterDetail cluster={detailQuery.data ?? selectedCluster} loading={detailQuery.isFetching} />
+            <EventLog events={eventsQuery.data ?? []} loading={eventsQuery.isFetching} />
             {manifestQuery.data && (
               <Card>
                 <CardHeader>
@@ -322,6 +325,58 @@ function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; 
       </CardContent>
     </Card>
   );
+}
+
+function EventLog({ events, loading }: { events: DatabaseClusterEvent[]; loading: boolean }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle>Event Log</CardTitle>
+          {loading && <span className="text-xs text-slate-400">Refreshing...</span>}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {events.length === 0 ? (
+          <p className="text-sm text-slate-500">Select a database cluster to view deploy events and command output.</p>
+        ) : (
+          <div className="space-y-3">
+            {events.map((event) => (
+              <div key={event.id} className="rounded-md border border-slate-200">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{event.message}</p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      {event.step} · {new Date(event.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <span className={eventLevelClass(event.level)}>{event.level}</span>
+                </div>
+                {event.output && (
+                  <pre className="max-h-72 overflow-auto border-t border-slate-200 bg-slate-950 p-3 text-xs text-slate-100">
+                    {event.output}
+                  </pre>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function eventLevelClass(level: string) {
+  switch (level) {
+    case 'success':
+      return 'rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700';
+    case 'warning':
+      return 'rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700';
+    case 'error':
+      return 'rounded-full bg-red-50 px-2 py-1 text-xs font-medium text-red-700';
+    default:
+      return 'rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700';
+  }
 }
 
 function DeployDatabaseForm({
