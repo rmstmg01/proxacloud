@@ -428,6 +428,7 @@ variable "nodes" {
     role              = string
     role_index        = number
     proxmox_node_name = string
+    proxmox_node_address = optional(string)
     cpu               = number
     memory_mb         = number
     disk_gb           = number

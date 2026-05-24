@@ -310,21 +310,43 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		})
 	}
 
-	workDir, err := s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
-		WorkspaceKey:      "db-" + req.Name,
-		ClusterName:       req.Name,
-		KubernetesVersion: "external-db",
-		NetworkCIDR:       profile.CIDR,
-		Gateway:           profile.Gateway,
-		DNS:               profile.DNS,
-		Bridge:            profile.Bridge,
-		VLAN:              profile.VLAN,
-		UbuntuImage:       req.UbuntuImage,
-		SSHPublicKey:      req.SSHPublicKey,
-		Nodes:             tfNodes,
-	})
+	vmGroups, err := groupTerraformNodesByCredential(tfNodes, nodes)
 	if err != nil {
 		return ProvisionResponse{}, err
+	}
+	credentialIDs := sortedDatabaseCredentialIDs(vmGroups)
+	if len(credentialIDs) == 0 {
+		return ProvisionResponse{}, errors.New("unable to resolve credential groups for database provisioning")
+	}
+
+	workspaces := make(map[int64]string, len(credentialIDs))
+	workDir := ""
+	for _, credentialID := range credentialIDs {
+		groupNodes := vmGroups[credentialID]
+		workspaceKey := "db-" + req.Name
+		if len(credentialIDs) > 1 {
+			workspaceKey = fmt.Sprintf("db-%s-cred-%d", req.Name, credentialID)
+		}
+		groupWorkDir, prepErr := s.terraformRunner.PrepareWorkspace(terraform.WorkspaceSpec{
+			WorkspaceKey:      workspaceKey,
+			ClusterName:       req.Name,
+			KubernetesVersion: "external-db",
+			NetworkCIDR:       profile.CIDR,
+			Gateway:           profile.Gateway,
+			DNS:               profile.DNS,
+			Bridge:            profile.Bridge,
+			VLAN:              profile.VLAN,
+			UbuntuImage:       req.UbuntuImage,
+			SSHPublicKey:      req.SSHPublicKey,
+			Nodes:             groupNodes,
+		})
+		if prepErr != nil {
+			return ProvisionResponse{}, prepErr
+		}
+		workspaces[credentialID] = groupWorkDir
+		if workDir == "" {
+			workDir = groupWorkDir
+		}
 	}
 
 	clusterID, err := s.insertCluster(req, rootRef, appRef, sstRef, workDir, nodes)
@@ -334,36 +356,44 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	_ = s.insertRun(clusterID, "terraform-prepare", "prepared", workDir, "")
 	_ = s.insertEvent(clusterID, "provision", "info", "Database cluster record created", "")
 	_ = s.insertEvent(clusterID, "placement", "info", "Selected Proxmox placement for database VMs", describeNodePlacement(nodes))
-	_ = s.insertEvent(clusterID, "terraform-prepare", "success", "Terraform workspace generated", workDir)
+	_ = s.insertEvent(clusterID, "terraform-prepare", "success", "Terraform workspace generated", describeWorkspaces(workspaces))
 
 	status := "planned"
-	output := ""
+	outputs := make([]string, 0, len(credentialIDs))
 	if req.Apply {
 		_ = s.insertEvent(clusterID, "terraform-apply", "info", "Starting Terraform apply to create database VMs", "")
-		cred, credErr := s.proxmoxCredentials.GetCredentialWithSecrets(req.ProxmoxCredentialID)
-		if credErr != nil {
-			_ = s.insertEvent(clusterID, "terraform-apply", "error", "Failed to load Proxmox credentials", credErr.Error())
-			return ProvisionResponse{}, credErr
+		for _, credentialID := range credentialIDs {
+			groupWorkDir := workspaces[credentialID]
+			cred, credErr := s.proxmoxCredentials.GetCredentialWithSecrets(credentialID)
+			if credErr != nil {
+				_ = s.insertEvent(clusterID, fmt.Sprintf("terraform-apply-cred-%d", credentialID), "error", "Failed to load Proxmox credentials", credErr.Error())
+				_ = s.updateStatus(clusterID, "provision_failed")
+				return ProvisionResponse{}, credErr
+			}
+			_ = s.insertEvent(clusterID, fmt.Sprintf("terraform-apply-cred-%d", credentialID), "info", fmt.Sprintf("Applying Terraform for credential_id=%d", credentialID), groupWorkDir)
+			result, applyErr := s.terraformRunner.Apply(groupWorkDir, terraform.ProxmoxAuth{
+				Endpoint:       cred.Endpoint,
+				Username:       cred.Username,
+				Password:       cred.Password,
+				APITokenID:     cred.APITokenID,
+				APITokenSecret: cred.APITokenSecret,
+				InsecureTLS:    cred.InsecureTLS,
+				SSHUsername:    sshUserFromCredential(cred),
+				SSHPassword:    cred.Password,
+			})
+			outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", credentialID, groupWorkDir, strings.TrimSpace(result.Output)))
+			_ = s.insertRun(clusterID, "terraform-apply", result.Status, groupWorkDir, result.Output, applyErr == nil)
+			if applyErr != nil {
+				combinedOutput := strings.Join(outputs, "\n\n")
+				_ = s.updateStatus(clusterID, "provision_failed")
+				_ = s.insertEvent(clusterID, fmt.Sprintf("terraform-apply-cred-%d", credentialID), "error", "Terraform apply failed", combinedOutput+"\n"+applyErr.Error())
+				return ProvisionResponse{}, applyErr
+			}
+			_ = s.insertEvent(clusterID, fmt.Sprintf("terraform-apply-cred-%d", credentialID), "success", "Terraform apply completed for credential group", result.Output)
 		}
-		result, applyErr := s.terraformRunner.Apply(workDir, terraform.ProxmoxAuth{
-			Endpoint:       cred.Endpoint,
-			Username:       cred.Username,
-			Password:       cred.Password,
-			APITokenID:     cred.APITokenID,
-			APITokenSecret: cred.APITokenSecret,
-			InsecureTLS:    cred.InsecureTLS,
-		})
-		output = result.Output
-		status = result.Status
-		finished := applyErr == nil
-		_ = s.insertRun(clusterID, "terraform-apply", result.Status, workDir, result.Output, finished)
-		if applyErr != nil {
-			_ = s.updateStatus(clusterID, "provision_failed")
-			_ = s.insertEvent(clusterID, "terraform-apply", "error", "Terraform apply failed", result.Output+"\n"+applyErr.Error())
-			return ProvisionResponse{}, applyErr
-		}
+		status = "applied"
 		_ = s.updateStatus(clusterID, "provisioned")
-		_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", result.Output)
+		_ = s.insertEvent(clusterID, "terraform-apply", "success", "Database VMs created successfully", strings.Join(outputs, "\n\n"))
 	} else {
 		_ = s.insertEvent(clusterID, "terraform-apply", "warning", "Terraform apply skipped by request; no Proxmox VMs were created", "")
 	}
@@ -372,7 +402,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		ClusterID:        clusterID,
 		Status:           status,
 		TerraformWorkDir: workDir,
-		TerraformOutput:  output,
+		TerraformOutput:  strings.Join(outputs, "\n\n"),
 		Nodes:            nodes,
 		KubernetesYAML:   buildKubernetesManifest(req.HAProxyNamespace, req.HAProxyServiceName, nodes, req.DatabaseName, req.AppUsername),
 		Warnings:         warnings,
@@ -698,6 +728,62 @@ func describeNodePlacement(nodes []NodeRecord) string {
 		builder.WriteString(fmt.Sprintf("%s -> %s (%s)\n", node.VMName, node.ProxmoxNodeName, node.IPAddress))
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func groupTerraformNodesByCredential(tfNodes []terraform.VMNode, records []NodeRecord) (map[int64][]terraform.VMNode, error) {
+	credentialByNode := make(map[string]int64, len(records))
+	for _, record := range records {
+		nodeName := strings.TrimSpace(record.ProxmoxNodeName)
+		if nodeName != "" && record.ProxmoxCredentialID > 0 {
+			credentialByNode[nodeName] = record.ProxmoxCredentialID
+		}
+	}
+
+	out := make(map[int64][]terraform.VMNode)
+	for _, node := range tfNodes {
+		nodeName := strings.TrimSpace(node.ProxmoxNodeName)
+		credentialID := credentialByNode[nodeName]
+		if credentialID <= 0 {
+			return nil, fmt.Errorf("missing proxmox credential mapping for node %q", nodeName)
+		}
+		out[credentialID] = append(out[credentialID], node)
+	}
+	return out, nil
+}
+
+func sortedDatabaseCredentialIDs(groups map[int64][]terraform.VMNode) []int64 {
+	out := make([]int64, 0, len(groups))
+	for credentialID := range groups {
+		if credentialID > 0 {
+			out = append(out, credentialID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func describeWorkspaces(workspaces map[int64]string) string {
+	ids := make([]int64, 0, len(workspaces))
+	for credentialID := range workspaces {
+		ids = append(ids, credentialID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	var builder strings.Builder
+	for _, credentialID := range ids {
+		builder.WriteString(fmt.Sprintf("credential_id=%d -> %s\n", credentialID, workspaces[credentialID]))
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func sshUserFromCredential(cred proxmox.Credential) string {
+	if cred.Username != "" {
+		return strings.SplitN(cred.Username, "@", 2)[0]
+	}
+	if cred.APITokenID != "" {
+		return strings.SplitN(cred.APITokenID, "@", 2)[0]
+	}
+	return ""
 }
 
 func (s *Service) proxmoxNodeAddresses(nodes []NodeRecord) (map[string]string, error) {
