@@ -14,6 +14,7 @@ The application combines a React admin UI, a Go backend API, PostgreSQL persiste
 - Generates Ansible workspaces and kubeadm bootstrap playbooks.
 - Optionally runs Ansible to bootstrap Kubernetes control-plane and worker nodes.
 - Supports cluster lifecycle APIs for listing, detail views, run history, scaling, upgrade planning, node replacement, and kubeconfig token rotation.
+- Generates production-oriented three-node MariaDB Galera database-cluster workspaces on Proxmox VMs and Kubernetes external database manifests.
 - Generates MetalLB deployment manifests and helper commands.
 - Generates observability configuration for Prometheus/Grafana-style deployments.
 - Tracks etcd snapshot and restore plans.
@@ -57,6 +58,8 @@ Main UI routes:
 - `/topology` - topology planning
 - `/users` - user management
 - `/ssh-keys` - SSH key management
+
+MariaDB Galera database-cluster APIs are available under `/api/v1/database-clusters`. See `docs/mariadb-galera-cluster.md` for the workflow.
 
 ### Backend
 

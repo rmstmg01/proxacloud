@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-mariadb
+  namespace: pscs
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: external-mariadb
+  namespace: pscs
+subsets:
+  - addresses:
+      - ip: 192.168.8.201
+      - ip: 192.168.8.202
+      - ip: 192.168.8.203
+    ports:
+      - name: mysql
+        port: 3306
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: external-mariadb-client
+  namespace: pscs
+type: Opaque
+stringData:
+  DB_HOST: external-mariadb
+  DB_PORT: "3306"
+  DB_NAME: pscs
+  DB_USER: pscs
+  DB_PASS: replace-me

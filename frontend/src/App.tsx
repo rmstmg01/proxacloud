@@ -16,6 +16,7 @@ import { SSLCertificatesPage } from './pages/SSLCertificatesPage';
 import { ClusterSecretsPage } from './pages/ClusterSecretsPage';
 import { ClusterConfigMapsPage } from './pages/ClusterConfigMapsPage';
 import { ClusterManifestsPage } from './pages/ClusterManifestsPage';
+import { DatabaseClustersPage } from './pages/DatabaseClustersPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,6 +64,14 @@ export function App() {
               element={
                 <ProtectedRoute>
                   <ClusterDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/database-clusters"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <DatabaseClustersPage />
                 </ProtectedRoute>
               }
             />

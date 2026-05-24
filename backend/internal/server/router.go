@@ -14,6 +14,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/auth"
 	"k8s-proxmox-manager/backend/internal/clusters"
 	"k8s-proxmox-manager/backend/internal/config"
+	"k8s-proxmox-manager/backend/internal/databaseclusters"
 	"k8s-proxmox-manager/backend/internal/db"
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
@@ -80,6 +81,19 @@ func NewApp() (*App, error) {
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
 	)
+	databaseClusterService := databaseclusters.NewService(
+		database,
+		networkService,
+		proxmoxService,
+		terraformRunner,
+		proxmoxService,
+		sshKeyService,
+		secretStore,
+		cfg.AnsibleBinary,
+		cfg.AnsibleWorkDir,
+		cfg.TerraformAutoApply,
+		cfg.AnsibleAutoApply,
+	)
 
 	if len(networkService.List()) == 0 {
 		_, err = networkService.Create(networks.Profile{
@@ -105,6 +119,7 @@ func NewApp() (*App, error) {
 	sslCertHandler := sslcerts.NewHandler(sslCertService)
 	topologyHandler := topology.NewHandler(topologyService)
 	clusterHandler := clusters.NewHandler(clusterService)
+	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -175,6 +190,13 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/ssl-certificates/{id}", sslCertHandler.Delete)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/topology/plan", topologyHandler.Plan)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters", databaseClusterHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/plan", databaseClusterHandler.Plan)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/provision", databaseClusterHandler.Provision)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}", databaseClusterHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/runs", databaseClusterHandler.ListRuns)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/bootstrap", databaseClusterHandler.Bootstrap)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters", clusterHandler.ListClusters)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/check-name", clusterHandler.CheckName)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/{id}", clusterHandler.GetCluster)
