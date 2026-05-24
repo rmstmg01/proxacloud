@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,8 +30,9 @@ const (
 )
 
 var (
-	ErrDatabaseClusterExists   = errors.New("database cluster already exists")
-	ErrDatabaseClusterNotFound = errors.New("database cluster not found")
+	ErrDatabaseClusterExists    = errors.New("database cluster already exists")
+	ErrDatabaseClusterNotFound  = errors.New("database cluster not found")
+	ErrDatabaseClusterNotFailed = errors.New("only failed database clusters can be deleted")
 )
 
 type NetworkStore interface {
@@ -284,21 +286,27 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 
+	nodeAddresses, err := s.proxmoxNodeAddresses(nodes)
+	if err != nil {
+		return ProvisionResponse{}, err
+	}
+
 	tfNodes := make([]terraform.VMNode, 0, len(nodes))
 	for _, n := range nodes {
 		tfNodes = append(tfNodes, terraform.VMNode{
-			VMName:          n.VMName,
-			Role:            "database",
-			RoleIndex:       n.NodeIndex,
-			ProxmoxNodeName: n.ProxmoxNodeName,
-			CPU:             n.CPU,
-			MemoryMB:        n.MemoryMB,
-			DiskGB:          n.DiskGB,
-			IPAddress:       n.IPAddress,
-			NetworkCIDR:     profile.CIDR,
-			Gateway:         profile.Gateway,
-			Bridge:          profile.Bridge,
-			VLAN:            profile.VLAN,
+			VMName:             n.VMName,
+			Role:               "database",
+			RoleIndex:          n.NodeIndex,
+			ProxmoxNodeName:    n.ProxmoxNodeName,
+			ProxmoxNodeAddress: nodeAddresses[n.ProxmoxNodeName],
+			CPU:                n.CPU,
+			MemoryMB:           n.MemoryMB,
+			DiskGB:             n.DiskGB,
+			IPAddress:          n.IPAddress,
+			NetworkCIDR:        profile.CIDR,
+			Gateway:            profile.Gateway,
+			Bridge:             profile.Bridge,
+			VLAN:               profile.VLAN,
 		})
 	}
 
@@ -501,6 +509,29 @@ func (s *Service) Get(clusterID int64) (ClusterRecord, error) {
 	return rec, nil
 }
 
+func (s *Service) DeleteFailed(clusterID int64) error {
+	var status string
+	err := s.db.QueryRow(`SELECT status FROM database_clusters WHERE id = $1`, clusterID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrDatabaseClusterNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("get database cluster status: %w", err)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(status), "_failed") {
+		return ErrDatabaseClusterNotFailed
+	}
+	res, err := s.db.Exec(`DELETE FROM database_clusters WHERE id = $1`, clusterID)
+	if err != nil {
+		return fmt.Errorf("delete database cluster: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrDatabaseClusterNotFound
+	}
+	return nil
+}
+
 func (s *Service) ListRuns(clusterID int64) ([]RunRecord, error) {
 	rows, err := s.db.Query(`SELECT id, action, status, work_dir, output, created_at, finished_at FROM database_cluster_runs WHERE database_cluster_id = $1 ORDER BY created_at DESC`, clusterID)
 	if err != nil {
@@ -667,6 +698,52 @@ func describeNodePlacement(nodes []NodeRecord) string {
 		builder.WriteString(fmt.Sprintf("%s -> %s (%s)\n", node.VMName, node.ProxmoxNodeName, node.IPAddress))
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func (s *Service) proxmoxNodeAddresses(nodes []NodeRecord) (map[string]string, error) {
+	out := make(map[string]string, len(nodes))
+	credentials := make(map[int64]proxmox.Credential)
+	for _, node := range nodes {
+		if strings.TrimSpace(node.ProxmoxNodeName) == "" || node.ProxmoxCredentialID <= 0 {
+			continue
+		}
+		cred, ok := credentials[node.ProxmoxCredentialID]
+		if !ok {
+			var err error
+			cred, err = s.proxmoxCredentials.GetCredentialWithSecrets(node.ProxmoxCredentialID)
+			if err != nil {
+				return nil, fmt.Errorf("load proxmox credential for node %s: %w", node.ProxmoxNodeName, err)
+			}
+			credentials[node.ProxmoxCredentialID] = cred
+		}
+		address := endpointHost(cred.Endpoint)
+		if address != "" {
+			out[node.ProxmoxNodeName] = address
+		}
+	}
+	return out, nil
+}
+
+func endpointHost(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return ""
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		host = strings.TrimSpace(parsed.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	if withoutPort, _, err := net.SplitHostPort(host); err == nil {
+		host = withoutPort
+	}
+	return strings.Trim(host, "[]")
 }
 
 func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {

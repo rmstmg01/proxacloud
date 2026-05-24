@@ -54,6 +54,9 @@ export const getDatabaseClusterK8sManifest = (id: number) =>
 export const getDatabaseClusterEvents = (id: number) =>
   client.get<DatabaseClusterEvent[]>(`/database-clusters/${id}/events`).then((r) => r.data);
 
+export const deleteFailedDatabaseCluster = (id: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/database-clusters/${id}`).then((r) => r.data);
+
 export const provisionDatabaseCluster = (body: {
   name: string;
   network_profile_id: number;

@@ -1,8 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, FileCode, Plus, RefreshCw, Rocket } from 'lucide-react';
+import { Database, FileCode, Plus, RefreshCw, Rocket, Trash2 } from 'lucide-react';
 import {
   bootstrapDatabaseCluster,
+  deleteFailedDatabaseCluster,
   getDatabaseCluster,
   getDatabaseClusterEvents,
   getDatabaseClusterK8sManifest,
@@ -123,6 +124,19 @@ export function DatabaseClustersPage() {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
     },
   });
+  const deleteMutation = useMutation({
+    mutationFn: deleteFailedDatabaseCluster,
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
+      if (selectedID === resp.id) {
+        setSelectedID(null);
+      }
+      if (manifestID === resp.id) {
+        setManifestID(null);
+      }
+      setLastResult({ clusterID: resp.id, message: 'Failed database cluster deleted.' });
+    },
+  });
 
   const updateField = (field: keyof typeof initialForm, value: string | boolean) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -156,6 +170,13 @@ export function DatabaseClustersPage() {
     });
   };
 
+  const deleteFailedCluster = (cluster: DatabaseCluster) => {
+    if (!window.confirm(`Delete failed database cluster "${cluster.name}"? This removes portal metadata, nodes, runs, and event logs. It does not destroy any Proxmox VMs that may have been created before failure.`)) {
+      return;
+    }
+    deleteMutation.mutate(cluster.id);
+  };
+
   return (
     <Layout>
       <PageHeader
@@ -181,6 +202,7 @@ export function DatabaseClustersPage() {
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {provisionMutation.error && <ErrorMessage error={provisionMutation.error} />}
       {eventsQuery.error && <ErrorMessage error={eventsQuery.error} />}
+      {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
         Database cluster deploy now runs Terraform and Galera bootstrap when the form options are enabled. Uncheck the apply options only when you want reviewable workspaces without changing Proxmox.
       </Alert>
@@ -202,7 +224,7 @@ export function DatabaseClustersPage() {
       )}
 
       {clusters && (
-        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_420px] gap-6">
+        <div className="space-y-6">
           <Card>
             {clusters.length === 0 ? (
               <div className="text-center py-16">
@@ -247,6 +269,17 @@ export function DatabaseClustersPage() {
                               <FileCode className="h-3.5 w-3.5" />
                               Manifest
                             </Button>
+                            {cluster.status.endsWith('_failed') && (
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => deleteFailedCluster(cluster)}
+                                loading={deleteMutation.isPending && deleteMutation.variables === cluster.id}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Delete
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -257,22 +290,20 @@ export function DatabaseClustersPage() {
             )}
           </Card>
 
-          <div className="space-y-6">
-            <ClusterDetail cluster={detailQuery.data ?? selectedCluster} loading={detailQuery.isFetching} />
-            <EventLog events={eventsQuery.data ?? []} loading={eventsQuery.isFetching} />
-            {manifestQuery.data && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Kubernetes Manifest</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
-                    {manifestQuery.data.manifest}
-                  </pre>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+          <ClusterDetail cluster={detailQuery.data ?? selectedCluster} loading={detailQuery.isFetching} />
+          <EventLog events={eventsQuery.data ?? []} loading={eventsQuery.isFetching} />
+          {manifestQuery.data && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Kubernetes Manifest</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <pre className="max-h-96 overflow-auto rounded-md bg-slate-950 p-4 text-xs text-slate-100">
+                  {manifestQuery.data.manifest}
+                </pre>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </Layout>

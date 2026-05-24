@@ -20,18 +20,19 @@ import (
 const defaultProxmoxSSHPort = 9846
 
 type VMNode struct {
-	VMName          string `json:"vm_name"`
-	Role            string `json:"role"`
-	RoleIndex       int    `json:"role_index"`
-	ProxmoxNodeName string `json:"proxmox_node_name"`
-	CPU             int    `json:"cpu"`
-	MemoryMB        int    `json:"memory_mb"`
-	DiskGB          int    `json:"disk_gb"`
-	IPAddress       string `json:"ip_address,omitempty"`
-	NetworkCIDR     string `json:"network_cidr"`
-	Gateway         string `json:"gateway"`
-	Bridge          string `json:"bridge"`
-	VLAN            int    `json:"vlan"`
+	VMName             string `json:"vm_name"`
+	Role               string `json:"role"`
+	RoleIndex          int    `json:"role_index"`
+	ProxmoxNodeName    string `json:"proxmox_node_name"`
+	ProxmoxNodeAddress string `json:"proxmox_node_address,omitempty"`
+	CPU                int    `json:"cpu"`
+	MemoryMB           int    `json:"memory_mb"`
+	DiskGB             int    `json:"disk_gb"`
+	IPAddress          string `json:"ip_address,omitempty"`
+	NetworkCIDR        string `json:"network_cidr"`
+	Gateway            string `json:"gateway"`
+	Bridge             string `json:"bridge"`
+	VLAN               int    `json:"vlan"`
 }
 
 type WorkspaceSpec struct {
@@ -305,10 +306,14 @@ func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNod
 func renderTerraformMainTF(nodes []VMNode, endpoint string) (string, error) {
 	nodeNames := make([]string, 0)
 	seen := make(map[string]struct{}, len(nodes))
+	addressesByNode := make(map[string]string, len(nodes))
 	for _, node := range nodes {
 		name := strings.TrimSpace(node.ProxmoxNodeName)
 		if name == "" {
 			continue
+		}
+		if address := strings.TrimSpace(node.ProxmoxNodeAddress); address != "" {
+			addressesByNode[name] = address
 		}
 		if _, exists := seen[name]; exists {
 			continue
@@ -322,7 +327,9 @@ func renderTerraformMainTF(nodes []VMNode, endpoint string) (string, error) {
 	var nodeBlocks strings.Builder
 	for _, name := range nodeNames {
 		nodeAddress := name
-		if address != "" {
+		if explicitAddress := strings.TrimSpace(addressesByNode[name]); explicitAddress != "" {
+			nodeAddress = explicitAddress
+		} else if address != "" {
 			nodeAddress = address
 		}
 		nodeBlocks.WriteString("\n    node {\n")
