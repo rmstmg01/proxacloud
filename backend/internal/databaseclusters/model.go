@@ -1439,7 +1439,7 @@ stringData:
 func buildKubernetesEndpointManifest(namespace, serviceName string, nodes []NodeRecord) string {
 	addresses := strings.Builder{}
 	for _, n := range nodes {
-		addresses.WriteString(fmt.Sprintf("  - ip: %s\n", n.IPAddress))
+		addresses.WriteString(fmt.Sprintf("      - ip: %s\n", n.IPAddress))
 	}
 	return fmt.Sprintf(`apiVersion: v1
 kind: Service
