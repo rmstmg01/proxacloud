@@ -40,3 +40,53 @@ export const getDatabaseClusterK8sManifest = (id: number) =>
   client
     .get<{ cluster_id: number; manifest: string }>(`/database-clusters/${id}/k8s-manifests`)
     .then((r) => r.data);
+
+export const provisionDatabaseCluster = (body: {
+  name: string;
+  network_profile_id: number;
+  proxmox_credential_id: number;
+  proxmox_node_names: string[];
+  node_ip_pool_start: string;
+  cpu: number;
+  memory_mb: number;
+  disk_gb: number;
+  mariadb_version: string;
+  ubuntu_image: string;
+  ssh_key_pair_id: number;
+  database_name: string;
+  app_username: string;
+  app_password: string;
+  root_password: string;
+  sst_username: string;
+  sst_password: string;
+  haproxy_namespace: string;
+  haproxy_service_name: string;
+  apply: boolean;
+}) =>
+  client
+    .post<{
+      cluster_id: number;
+      status: string;
+      terraform_work_dir: string;
+      terraform_output?: string;
+      kubernetes_yaml: string;
+      warnings: string[];
+    }>('/database-clusters/provision', body)
+    .then((r) => r.data);
+
+export const bootstrapDatabaseCluster = (
+  id: number,
+  body: {
+    ssh_key_pair_id: number;
+    apply: boolean;
+  },
+) =>
+  client
+    .post<{
+      cluster_id: number;
+      status: string;
+      ansible_work_dir: string;
+      ansible_output?: string;
+      warnings: string[];
+    }>(`/database-clusters/${id}/bootstrap`, body)
+    .then((r) => r.data);
