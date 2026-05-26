@@ -3795,6 +3795,13 @@ func (s *Service) executeSavedManifestApply(namespace, manifest string) (string,
 	return strings.Join(outputs, "\n"), nil
 }
 
+func (s *Service) ApplyRawManifest(clusterID int64, namespace, manifest string) (string, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return "", err
+	}
+	return s.executeSavedManifestApply(namespace, manifest)
+}
+
 func (s *Service) applyTLSSecret(ctx context.Context, kubeconfigPath, namespace string, secret appTLSSecretSpec) (string, error) {
 	if strings.TrimSpace(secret.Name) == "" {
 		return "", errors.New("tls secret name is required")

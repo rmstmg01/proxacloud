@@ -12,6 +12,7 @@ import {
   GitBranch,
   LogOut,
   Database,
+  Cloud,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/clusters', icon: Server, label: 'Clusters' },
   { to: '/database-clusters', icon: Database, label: 'Databases' },
+  { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },
   { to: '/networks', icon: Network, label: 'Networks' },
   { to: '/proxmox', icon: Cpu, label: 'Proxmox' },
   { to: '/topology', icon: GitBranch, label: 'Topology' },

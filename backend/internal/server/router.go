@@ -12,6 +12,7 @@ import (
 
 	"k8s-proxmox-manager/backend/internal/ansible"
 	"k8s-proxmox-manager/backend/internal/auth"
+	"k8s-proxmox-manager/backend/internal/cloudflaretunnels"
 	"k8s-proxmox-manager/backend/internal/clusters"
 	"k8s-proxmox-manager/backend/internal/config"
 	"k8s-proxmox-manager/backend/internal/databaseclusters"
@@ -94,6 +95,7 @@ func NewApp() (*App, error) {
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
 	)
+	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 
 	if len(networkService.List()) == 0 {
 		_, err = networkService.Create(networks.Profile{
@@ -120,6 +122,7 @@ func NewApp() (*App, error) {
 	topologyHandler := topology.NewHandler(topologyService)
 	clusterHandler := clusters.NewHandler(clusterService)
 	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
+	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -200,6 +203,13 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/terraform/apply", databaseClusterHandler.ApplyTerraform)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/bootstrap", databaseClusterHandler.Bootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels", cloudflareTunnelHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/cloudflare-tunnels", cloudflareTunnelHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/cloudflare-tunnels/{id}/deploy", cloudflareTunnelHandler.Deploy)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/manifest", cloudflareTunnelHandler.Manifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/events", cloudflareTunnelHandler.ListEvents)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters", clusterHandler.ListClusters)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/check-name", clusterHandler.CheckName)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/{id}", clusterHandler.GetCluster)
