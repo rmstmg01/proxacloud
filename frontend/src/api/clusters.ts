@@ -31,6 +31,8 @@ import type {
   ApplicationManifestRecord,
   ApplicationManifestRevisionRecord,
   KubectlCommandRun,
+  NodeCommandKind,
+  NodeCommandRun,
   DeployObservabilityResponse,
   ObservabilityStatusResponse,
   EtcdSnapshotRecord,
@@ -514,6 +516,25 @@ export const startKubectlCommand = (id: number, command: string) =>
 export const getKubectlCommandRun = (id: number, runID: string) =>
   client
     .get<KubectlCommandRun>(`/clusters/${id}/kubectl-commands/${runID}`)
+    .then((r) => r.data);
+
+export const startNodeCommand = (
+  id: number,
+  nodeName: string,
+  kind: NodeCommandKind,
+  command: string,
+) =>
+  client
+    .post<NodeCommandRun>(`/clusters/${id}/nodes/${encodeURIComponent(nodeName)}/commands`, {
+      kind,
+      node: nodeName,
+      command,
+    })
+    .then((r) => r.data);
+
+export const getNodeCommandRun = (id: number, runID: string) =>
+  client
+    .get<NodeCommandRun>(`/clusters/${id}/node-commands/${runID}`)
     .then((r) => r.data);
 
 export const deployObservability = (

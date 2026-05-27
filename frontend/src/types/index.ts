@@ -469,6 +469,21 @@ export interface KubectlCommandRun {
   finished_at?: string;
 }
 
+export type NodeCommandKind = 'docker' | 'linux';
+
+export interface NodeCommandRun {
+  id: string;
+  cluster_id: number;
+  node: string;
+  kind: NodeCommandKind;
+  command: string;
+  status: string;
+  output: string;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+}
+
 export interface DeployObservabilityResponse {
   cluster_id: number;
   status: string;

@@ -31,6 +31,8 @@ import (
 	"k8s-proxmox-manager/backend/internal/sslcerts"
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
+
+	"golang.org/x/crypto/ssh"
 )
 
 type TopologyPlanner interface {
@@ -73,6 +75,8 @@ type Service struct {
 	autoBootstrap   bool
 	kubectlRunsMu   sync.RWMutex
 	kubectlRuns     map[string]*kubectlCommandRunState
+	nodeRunsMu      sync.RWMutex
+	nodeRuns        map[string]*NodeCommandRunState
 }
 
 var ErrClusterExists = errors.New("cluster already exists")
@@ -551,6 +555,30 @@ type kubectlCommandRunState struct {
 	outputMu sync.RWMutex
 }
 
+type NodeCommandRequest struct {
+	Kind    string `json:"kind"`
+	Node    string `json:"node"`
+	Command string `json:"command"`
+}
+
+type NodeCommandRun struct {
+	ID         string     `json:"id"`
+	ClusterID  int64      `json:"cluster_id"`
+	Node       string     `json:"node"`
+	Kind       string     `json:"kind"`
+	Command    string     `json:"command"`
+	Status     string     `json:"status"`
+	Output     string     `json:"output"`
+	Error      string     `json:"error,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+type NodeCommandRunState struct {
+	NodeCommandRun
+	outputMu sync.RWMutex
+}
+
 type ApplicationManifestRecord struct {
 	ID               int64     `json:"id"`
 	ClusterID        int64     `json:"cluster_id"`
@@ -788,6 +816,7 @@ func NewService(
 		autoApply:       autoApply,
 		autoBootstrap:   autoBootstrap,
 		kubectlRuns:     make(map[string]*kubectlCommandRunState),
+		nodeRuns:        make(map[string]*NodeCommandRunState),
 	}
 }
 
@@ -4481,6 +4510,78 @@ func (s *Service) GetKubectlCommandRun(clusterID int64, runID string) (KubectlCo
 	return run.snapshot(), nil
 }
 
+func (s *Service) StartNodeCommand(clusterID int64, req NodeCommandRequest) (NodeCommandRun, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return NodeCommandRun{}, err
+	}
+
+	nodeName := strings.TrimSpace(req.Node)
+	if nodeName == "" {
+		return NodeCommandRun{}, errors.New("node is required")
+	}
+	node, err := s.getClusterNodeByName(clusterID, nodeName)
+	if err != nil {
+		return NodeCommandRun{}, err
+	}
+	if strings.TrimSpace(node.IPAddress) == "" {
+		return NodeCommandRun{}, errors.New("selected node does not have an IP address recorded")
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	args, err := parseNodeCommand(kind, strings.TrimSpace(req.Command))
+	if err != nil {
+		return NodeCommandRun{}, err
+	}
+
+	bootstrapConfig, err := s.getBootstrapConfig(clusterID)
+	if err != nil {
+		return NodeCommandRun{}, errors.New("bootstrap SSH settings are required before running node commands")
+	}
+	if !bootstrapConfig.LastSSHKeyID.Valid || bootstrapConfig.LastSSHKeyID.Int64 <= 0 {
+		return NodeCommandRun{}, errors.New("no saved bootstrap SSH key is available for this cluster")
+	}
+	privateKey, err := s.getBootstrapSSHKeyByID(clusterID, bootstrapConfig.LastSSHKeyID.Int64)
+	if err != nil {
+		return NodeCommandRun{}, err
+	}
+
+	runID, err := newCommandRunID()
+	if err != nil {
+		return NodeCommandRun{}, err
+	}
+
+	command := formatNodeCommand(args)
+	run := &NodeCommandRunState{
+		NodeCommandRun: NodeCommandRun{
+			ID:        runID,
+			ClusterID: clusterID,
+			Node:      node.VMName,
+			Kind:      kind,
+			Command:   command,
+			Status:    "running",
+			StartedAt: time.Now().UTC(),
+		},
+	}
+
+	s.nodeRunsMu.Lock()
+	s.nodeRuns[runID] = run
+	s.nodeRunsMu.Unlock()
+
+	go executeNodeCommand(run, node.IPAddress, bootstrapConfig.SSHUser, privateKey, args)
+
+	return run.snapshot(), nil
+}
+
+func (s *Service) GetNodeCommandRun(clusterID int64, runID string) (NodeCommandRun, error) {
+	s.nodeRunsMu.RLock()
+	run := s.nodeRuns[runID]
+	s.nodeRunsMu.RUnlock()
+	if run == nil || run.ClusterID != clusterID {
+		return NodeCommandRun{}, errors.New("node command run not found")
+	}
+	return run.snapshot(), nil
+}
+
 func (s *Service) executeKubectlCommands(run *kubectlCommandRunState, kubeconfigPath string, commands [][]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -4585,11 +4686,241 @@ func (r *kubectlCommandRunState) snapshot() KubectlCommandRun {
 }
 
 func newKubectlRunID() (string, error) {
+	return newCommandRunID()
+}
+
+func newCommandRunID() (string, error) {
 	tokenBytes := make([]byte, 12)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return "", fmt.Errorf("generate kubectl run id: %w", err)
+		return "", fmt.Errorf("generate command run id: %w", err)
 	}
 	return hex.EncodeToString(tokenBytes), nil
+}
+
+func executeNodeCommand(run *NodeCommandRunState, ipAddress, sshUser, privateKey string, args []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	signer, err := ssh.ParsePrivateKey([]byte(privateKey))
+	if err != nil {
+		run.finish("failed", "parse bootstrap SSH private key: "+err.Error())
+		return
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User: strings.TrimSpace(sshUser),
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         20 * time.Second,
+	}
+
+	address := net.JoinHostPort(strings.TrimSpace(ipAddress), "22")
+	client, err := ssh.Dial("tcp", address, clientConfig)
+	if err != nil {
+		run.finish("failed", "connect to node over SSH: "+err.Error())
+		return
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		run.finish("failed", "open SSH session: "+err.Error())
+		return
+	}
+	defer session.Close()
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		run.finish("failed", "open stdout pipe: "+err.Error())
+		return
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		run.finish("failed", "open stderr pipe: "+err.Error())
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go copyNodeCommandOutput(run, stdout, &wg)
+	go copyNodeCommandOutput(run, stderr, &wg)
+
+	command := formatRemoteCommand(args)
+	done := make(chan error, 1)
+	if err := session.Start(command); err != nil {
+		run.finish("failed", "start remote command: "+err.Error())
+		return
+	}
+	go func() {
+		done <- session.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		wg.Wait()
+		if err != nil {
+			run.finish("failed", err.Error())
+			return
+		}
+		run.finish("succeeded", "")
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		wg.Wait()
+		run.finish("failed", "node command timed out after 5 minutes")
+	}
+}
+
+func copyNodeCommandOutput(run *NodeCommandRunState, reader io.Reader, wg *sync.WaitGroup) {
+	defer wg.Done()
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			run.appendOutput(string(buf[:n]))
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (r *NodeCommandRunState) appendOutput(chunk string) {
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	r.Output += chunk
+}
+
+func (r *NodeCommandRunState) finish(status, errText string) {
+	now := time.Now().UTC()
+	r.outputMu.Lock()
+	defer r.outputMu.Unlock()
+	r.Status = status
+	r.Error = errText
+	r.FinishedAt = &now
+}
+
+func (r *NodeCommandRunState) snapshot() NodeCommandRun {
+	r.outputMu.RLock()
+	defer r.outputMu.RUnlock()
+	return NodeCommandRun{
+		ID:         r.ID,
+		ClusterID:  r.ClusterID,
+		Node:       r.Node,
+		Kind:       r.Kind,
+		Command:    r.Command,
+		Status:     r.Status,
+		Output:     r.Output,
+		Error:      r.Error,
+		StartedAt:  r.StartedAt,
+		FinishedAt: r.FinishedAt,
+	}
+}
+
+func parseNodeCommand(kind string, command string) ([]string, error) {
+	if command == "" {
+		return nil, errors.New("command is required")
+	}
+	parts, err := splitCommandFields(command)
+	if err != nil {
+		return nil, err
+	}
+	if len(parts) == 0 {
+		return nil, errors.New("command is required")
+	}
+	for _, part := range parts {
+		if hasShellControlCharacter(part) {
+			return nil, errors.New("shell control characters are not allowed in node commands")
+		}
+	}
+	switch kind {
+	case "docker":
+		return parseDockerNodeCommand(parts)
+	case "linux":
+		return parseLinuxNodeCommand(parts)
+	default:
+		return nil, errors.New("kind must be docker or linux")
+	}
+}
+
+func parseDockerNodeCommand(parts []string) ([]string, error) {
+	if parts[0] == "docker" {
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return nil, errors.New("docker subcommand is required")
+	}
+	allowed := map[string]bool{
+		"ps": true, "logs": true, "inspect": true, "images": true, "stats": true,
+		"version": true, "info": true,
+	}
+	if !allowed[parts[0]] {
+		return nil, fmt.Errorf("docker %s is not allowed", parts[0])
+	}
+	args := append([]string{"docker"}, parts...)
+	if parts[0] == "stats" && !containsArg(parts, "--no-stream") {
+		args = append(args, "--no-stream")
+	}
+	return args, nil
+}
+
+func parseLinuxNodeCommand(parts []string) ([]string, error) {
+	allowed := map[string]bool{
+		"uptime": true, "df": true, "free": true, "hostname": true, "whoami": true,
+		"uname": true, "ip": true, "systemctl": true, "journalctl": true,
+	}
+	if !allowed[parts[0]] {
+		return nil, fmt.Errorf("%s is not an allowed linux command", parts[0])
+	}
+	if parts[0] == "systemctl" {
+		if len(parts) < 2 {
+			return nil, errors.New("systemctl requires a read-only subcommand")
+		}
+		readOnly := map[string]bool{
+			"status": true, "is-active": true, "is-enabled": true, "list-units": true,
+		}
+		if !readOnly[parts[1]] {
+			return nil, fmt.Errorf("systemctl %s is not allowed", parts[1])
+		}
+	}
+	args := append([]string{}, parts...)
+	if parts[0] == "journalctl" && !containsArg(parts, "--no-pager") {
+		args = append(args, "--no-pager")
+	}
+	return args, nil
+}
+
+func hasShellControlCharacter(value string) bool {
+	return strings.ContainsAny(value, ";&|<>`$()")
+}
+
+func containsArg(args []string, target string) bool {
+	for _, arg := range args {
+		if arg == target {
+			return true
+		}
+	}
+	return false
+}
+
+func formatNodeCommand(args []string) string {
+	return strings.Join(args, " ")
+}
+
+func formatRemoteCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func parseKubectlCommands(command string) ([][]string, error) {
@@ -5968,6 +6299,24 @@ func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) 
 	}
 
 	return out, nil
+}
+
+func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (ClusterNodeRecord, error) {
+	var n ClusterNodeRecord
+	err := s.db.QueryRow(
+		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name, COALESCE(proxmox_credential_id, 0)
+		 FROM cluster_nodes
+		 WHERE cluster_id = $1 AND vm_name = $2`,
+		clusterID,
+		strings.TrimSpace(nodeName),
+	).Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterNodeRecord{}, errors.New("cluster node not found")
+		}
+		return ClusterNodeRecord{}, fmt.Errorf("query cluster node: %w", err)
+	}
+	return n, nil
 }
 
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
