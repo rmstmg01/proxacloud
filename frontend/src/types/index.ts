@@ -296,6 +296,7 @@ export interface DeployIngressControllerResponse {
   status: string;
   namespace: string;
   image: string;
+  replicas: number;
   output?: string;
   warnings: string[];
 }

@@ -1718,6 +1718,7 @@ function ApplicationsTab({ id }: { id: number }) {
   const [ingressForm, setIngressForm] = useState({
     namespace: 'traefik',
     image: 'traefik:v3.3',
+    replicas: '3',
     apply: true,
     wait: true,
   });
@@ -1777,6 +1778,7 @@ function ApplicationsTab({ id }: { id: number }) {
     await ingressMut.mutateAsync({
       namespace: ingressForm.namespace.trim() || 'traefik',
       image: ingressForm.image.trim() || 'traefik:v3.3',
+      replicas: Math.max(1, Number(ingressForm.replicas) || 3),
       apply: ingressForm.apply,
       wait: ingressForm.wait,
     });
@@ -1852,6 +1854,16 @@ function ApplicationsTab({ id }: { id: number }) {
               placeholder="traefik:v3.3"
               required
             />
+            <Input
+              label="Replicas"
+              type="number"
+              min={1}
+              step={1}
+              value={ingressForm.replicas}
+              onChange={(e) => setIngressForm({ ...ingressForm, replicas: e.target.value })}
+              helperText="Use 3 or more for HA Traefik deployments."
+              required
+            />
             <label className="flex items-center gap-3">
               <input
                 type="checkbox"
@@ -1876,6 +1888,7 @@ function ApplicationsTab({ id }: { id: number }) {
                 <div className="space-y-2">
                   <p>Status: {ingressMut.data.status}</p>
                   <p>Namespace: {ingressMut.data.namespace}</p>
+                  <p>Replicas: {ingressMut.data.replicas}</p>
                 </div>
               </Alert>
             )}

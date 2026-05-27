@@ -260,6 +260,7 @@ export const deployIngressController = (
   body: {
     namespace: string;
     image: string;
+    replicas: number;
     apply: boolean;
     wait: boolean;
   },

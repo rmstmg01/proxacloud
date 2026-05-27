@@ -318,6 +318,7 @@ type DeployObservabilityRequest struct {
 type DeployIngressControllerRequest struct {
 	Namespace string `json:"namespace"`
 	Image     string `json:"image"`
+	Replicas  int    `json:"replicas"`
 	Apply     bool   `json:"apply"`
 	Wait      bool   `json:"wait"`
 }
@@ -327,6 +328,7 @@ type DeployIngressControllerResponse struct {
 	Status    string   `json:"status"`
 	Namespace string   `json:"namespace"`
 	Image     string   `json:"image"`
+	Replicas  int      `json:"replicas"`
 	Output    string   `json:"output,omitempty"`
 	Warnings  []string `json:"warnings"`
 }
@@ -2401,13 +2403,17 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 	if image == "" {
 		image = "traefik:v3.3"
 	}
+	replicas := req.Replicas
+	if replicas < 1 {
+		replicas = 3
+	}
 
 	status := "ingress-controller-prepared"
 	output := ""
 	warnings := []string{}
 	if req.Apply {
 		status = "ingress-controller-deployed"
-		applyOutput, err := s.executeIngressControllerDeployment(namespace, image, req.Wait)
+		applyOutput, err := s.executeIngressControllerDeployment(namespace, image, replicas, req.Wait)
 		output = applyOutput
 		if err != nil {
 			_ = s.insertProvisionRun(clusterID, "ingress-controller-deploy", "failed", namespace, output)
@@ -2427,6 +2433,7 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 		Status:    status,
 		Namespace: namespace,
 		Image:     image,
+		Replicas:  replicas,
 		Output:    output,
 		Warnings:  warnings,
 	}, nil
@@ -3603,7 +3610,7 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	return nil
 }
 
-func (s *Service) executeIngressControllerDeployment(namespace, image string, wait bool) (string, error) {
+func (s *Service) executeIngressControllerDeployment(namespace, image string, replicas int, wait bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -3620,7 +3627,7 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, wa
 	}
 	outputs = append(outputs, string(output))
 
-	manifest := buildTraefikIngressControllerManifest(namespace, image)
+	manifest := buildTraefikIngressControllerManifest(namespace, image, replicas)
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
 	cmd.Stdin = strings.NewReader(manifest)
 	output, err = cmd.CombinedOutput()
@@ -6928,7 +6935,7 @@ func buildMetalLBCommands(manifestDir string) MetalLBCommands {
 	}
 }
 
-func buildTraefikIngressControllerManifest(namespace, image string) string {
+func buildTraefikIngressControllerManifest(namespace, image string, replicas int) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Namespace
 metadata:
@@ -6991,7 +6998,7 @@ metadata:
   labels:
     app.kubernetes.io/name: traefik
 spec:
-  replicas: 1
+  replicas: %d
   selector:
     matchLabels:
       app.kubernetes.io/name: traefik
@@ -7050,7 +7057,7 @@ spec:
     - name: websecure
       port: 443
       targetPort: websecure
-`, namespace, namespace, namespace, namespace, image, namespace, namespace)
+`, namespace, namespace, namespace, namespace, replicas, image, namespace, namespace)
 }
 
 func buildLetsEncryptClusterIssuerManifest(issuerName, email, acmeServer, ingressClass string) string {
