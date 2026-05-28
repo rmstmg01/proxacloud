@@ -1255,41 +1255,6 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
           </CardHeader>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Common Error Messages</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">
-              A practical catalog of Kubernetes statuses and event messages. The troubleshooting steps use proxaops as the example namespace.
-            </p>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-              {commonErrors.map((item) => (
-                <div key={item.error} className="rounded-md border border-slate-200 p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="font-mono text-sm font-semibold text-red-700">{item.error}</h3>
-                    <Badge variant="default">{item.category}</Badge>
-                  </div>
-                  <div className="mt-3 space-y-3 text-sm">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Meaning</p>
-                      <p className="mt-1 text-slate-700">{item.meaning}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Common causes</p>
-                      <p className="mt-1 text-slate-700">{item.causes}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Troubleshooting</p>
-                      <p className="mt-1 text-slate-700">{item.steps}</p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
         {documentSections.map((section) => {
           const Icon = section.icon;
           return (
@@ -1332,6 +1297,41 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
             </Card>
           );
         })}
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Common Error Messages</CardTitle>
+            <p className="mt-1 text-sm text-slate-500">
+              A practical catalog of Kubernetes statuses and event messages. The troubleshooting steps use proxaops as the example namespace.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {commonErrors.map((item) => (
+                <div key={item.error} className="rounded-md border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-mono text-sm font-semibold text-red-700">{item.error}</h3>
+                    <Badge variant="default">{item.category}</Badge>
+                  </div>
+                  <div className="mt-3 space-y-3 text-sm">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Meaning</p>
+                      <p className="mt-1 text-slate-700">{item.meaning}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Common causes</p>
+                      <p className="mt-1 text-slate-700">{item.causes}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Troubleshooting</p>
+                      <p className="mt-1 text-slate-700">{item.steps}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
         </>
         )}
       </div>
