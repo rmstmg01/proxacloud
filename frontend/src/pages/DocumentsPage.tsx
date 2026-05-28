@@ -1,4 +1,5 @@
-import { AlertTriangle, BookOpen, CheckCircle2, ClipboardList, RefreshCcw, Search, Shield, Terminal } from 'lucide-react';
+import { useState } from 'react';
+import { AlertTriangle, BookOpen, Check, CheckCircle2, Clipboard, ClipboardList, RefreshCcw, Search, Shield, Terminal } from 'lucide-react';
 import { Layout, PageHeader } from '../components/Layout';
 import { Badge } from '../components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -15,13 +16,13 @@ kubectl get ingress -A
 kubectl get events -A --sort-by=.lastTimestamp`,
   },
   {
-    title: 'Check ProxaOps namespace',
+    title: 'Check example application namespace',
     command: `kubectl get all -n ${namespace}
 kubectl get pods -n ${namespace} -o wide
 kubectl get events -n ${namespace} --sort-by=.lastTimestamp`,
   },
   {
-    title: 'Restart ProxaOps deployments',
+    title: 'Restart example application deployments',
     command: `kubectl rollout restart deployment/backend -n ${namespace}
 kubectl rollout restart deployment/frontend -n ${namespace}
 kubectl rollout restart deployment/gateway -n ${namespace}
@@ -70,10 +71,10 @@ kubectl describe nodes`,
     icon: RefreshCcw,
     badge: 'Daily Use',
     description:
-      'Use these commands when a new image has been published, configuration changed, or pods need to be recreated.',
+      'Use these commands when a new image has been published, configuration changed, or pods need to be recreated. The examples use the proxaops namespace.',
     commands: [
       {
-        label: 'Restart all ProxaOps application deployments',
+        label: 'Restart example application deployments',
         command: `kubectl rollout restart deployment/backend -n ${namespace}
 kubectl rollout restart deployment/frontend -n ${namespace}
 kubectl rollout restart deployment/gateway -n ${namespace}
@@ -280,10 +281,29 @@ const commonErrors = [
 ];
 
 function CodeBlock({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyCommand = async () => {
+    await navigator.clipboard.writeText(command);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
   return (
-    <pre className="mt-2 overflow-x-auto rounded-md bg-slate-950 p-4 text-xs leading-6 text-slate-100">
-      <code>{command}</code>
-    </pre>
+    <div className="relative mt-2">
+      <button
+        type="button"
+        onClick={copyCommand}
+        className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+        aria-label={copied ? 'Copied command' : 'Copy command'}
+        title={copied ? 'Copied' : 'Copy'}
+      >
+        {copied ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
+      </button>
+      <pre className="overflow-x-auto rounded-md bg-slate-950 p-4 pr-14 text-xs leading-6 text-slate-100">
+        <code>{command}</code>
+      </pre>
+    </div>
   );
 }
 
@@ -292,7 +312,7 @@ export function DocumentsPage() {
     <Layout>
       <PageHeader
         title="Documents"
-        description="Kubernetes deployment, restart, status, failure, and troubleshooting reference for ProxaOps"
+        description="Kubernetes deployment, restart, status, failure, and troubleshooting reference. Examples use the proxaops namespace."
       />
 
       <div className="space-y-6">
@@ -303,7 +323,9 @@ export function DocumentsPage() {
             </div>
             <div>
               <CardTitle>Quick Commands</CardTitle>
-              <p className="mt-1 text-sm text-slate-500">Copy and paste these when you need a fast cluster check or restart.</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Copy these commands when you need a fast cluster check or restart. Replace proxaops with your namespace when needed.
+              </p>
             </div>
           </CardHeader>
           <CardContent>
