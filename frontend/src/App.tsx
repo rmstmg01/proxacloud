@@ -167,6 +167,30 @@ export function App() {
               }
             />
             <Route
+              path="/documents/quick-commands"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <DocumentsPage category="quick-commands" />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/documents/database-cluster"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <DocumentsPage category="database-cluster" />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/documents/kubernetes-cluster"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <DocumentsPage category="kubernetes-cluster" />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/topology"
               element={
                 <ProtectedRoute>

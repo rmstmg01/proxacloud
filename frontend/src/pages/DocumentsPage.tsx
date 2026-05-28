@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NavLink } from 'react-router-dom';
 import { AlertTriangle, BookOpen, Check, CheckCircle2, Clipboard, ClipboardList, Database, RefreshCcw, Search, Shield, Terminal } from 'lucide-react';
 import { Layout, PageHeader } from '../components/Layout';
 import { Badge } from '../components/ui/Badge';
@@ -8,6 +9,38 @@ const namespace = 'proxaops';
 const dbNamespace = 'pscs';
 const dbService = 'pscs-prod-db-cluster';
 const dbHost = `${dbService}.${dbNamespace}`;
+
+type DocumentCategory = 'quick-commands' | 'database-cluster' | 'kubernetes-cluster';
+
+const documentTabs = [
+  {
+    to: '/documents/quick-commands',
+    category: 'quick-commands',
+    label: 'Quick Commands',
+    description: 'Fast copy/paste checks and restart commands.',
+    icon: BookOpen,
+  },
+  {
+    to: '/documents/database-cluster',
+    category: 'database-cluster',
+    label: 'Database Cluster',
+    description: 'Database service, endpoints, DNS, port, and app config checks.',
+    icon: Database,
+  },
+  {
+    to: '/documents/kubernetes-cluster',
+    category: 'kubernetes-cluster',
+    label: 'Kubernetes Cluster',
+    description: 'Cluster, deployment, pod, registry, networking, and error troubleshooting.',
+    icon: Terminal,
+  },
+] satisfies Array<{
+  to: string;
+  category: DocumentCategory;
+  label: string;
+  description: string;
+  icon: typeof BookOpen;
+}>;
 
 const quickCommands = [
   {
@@ -1081,7 +1114,7 @@ function CodeBlock({ command }: { command: string }) {
   );
 }
 
-export function DocumentsPage() {
+export function DocumentsPage({ category = 'quick-commands' }: { category?: DocumentCategory }) {
   return (
     <Layout>
       <PageHeader
@@ -1090,6 +1123,36 @@ export function DocumentsPage() {
       />
 
       <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {documentTabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <NavLink
+                key={tab.to}
+                to={tab.to}
+                className={({ isActive }) =>
+                  `rounded-md border p-4 transition-colors ${
+                    isActive || category === tab.category
+                      ? 'border-indigo-200 bg-indigo-50 text-indigo-900'
+                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                  }`
+                }
+              >
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 h-8 w-8 rounded-md bg-white text-indigo-600 flex items-center justify-center border border-slate-200">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">{tab.label}</p>
+                    <p className="mt-1 text-xs text-slate-500">{tab.description}</p>
+                  </div>
+                </div>
+              </NavLink>
+            );
+          })}
+        </div>
+
+        {category === 'quick-commands' && (
         <Card>
           <CardHeader className="flex flex-row items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -1113,7 +1176,10 @@ export function DocumentsPage() {
             </div>
           </CardContent>
         </Card>
+        )}
 
+        {category === 'database-cluster' && (
+        <>
         <Card>
           <CardHeader className="flex flex-row items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-emerald-50 text-emerald-700 flex items-center justify-center">
@@ -1170,7 +1236,11 @@ export function DocumentsPage() {
             </Card>
           );
         })}
+        </>
+        )}
 
+        {category === 'kubernetes-cluster' && (
+        <>
         <Card>
           <CardHeader className="flex flex-row items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -1262,6 +1332,8 @@ export function DocumentsPage() {
             </Card>
           );
         })}
+        </>
+        )}
       </div>
     </Layout>
   );
