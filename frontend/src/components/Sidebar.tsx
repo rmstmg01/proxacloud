@@ -9,6 +9,7 @@ import {
   ShieldCheck,
   FileText,
   FileCode,
+  BookOpen,
   GitBranch,
   LogOut,
   Database,
@@ -32,6 +33,7 @@ const navItems = [
   { to: '/secrets', icon: KeyRound, label: 'Secrets' },
   { to: '/configmaps', icon: FileText, label: 'ConfigMaps' },
   { to: '/manifests', icon: FileCode, label: 'Manifests' },
+  { to: '/documents', icon: BookOpen, label: 'Documents' },
 ];
 
 export function Sidebar() {

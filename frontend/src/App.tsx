@@ -19,6 +19,7 @@ import { ClusterManifestsPage } from './pages/ClusterManifestsPage';
 import { DatabaseClustersPage } from './pages/DatabaseClustersPage';
 import { CloudflareTunnelsPage } from './pages/CloudflareTunnelsPage';
 import { CommandCenterPage } from './pages/CommandCenterPage';
+import { DocumentsPage } from './pages/DocumentsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -154,6 +155,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <ClusterManifestsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/documents"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <DocumentsPage />
                 </ProtectedRoute>
               }
             />
