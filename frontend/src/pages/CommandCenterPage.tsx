@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Play, RefreshCw, Terminal } from 'lucide-react';
+import { Check, Clipboard, Play, RefreshCw, Terminal } from 'lucide-react';
 import {
   getClusters,
   getClusterNodes,
@@ -55,6 +55,7 @@ export function CommandCenterPage() {
   const [command, setCommand] = useState(COMMAND_PRESETS.kubernetes[0].command);
   const [runID, setRunID] = useState('');
   const [runKind, setRunKind] = useState<CommandMode>('kubernetes');
+  const [outputCopied, setOutputCopied] = useState(false);
 
   const clustersQuery = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
 
@@ -130,6 +131,14 @@ export function CommandCenterPage() {
     ?? kubectlMutation.data
     ?? nodeMutation.data;
   const isRunning = activeRun?.status === 'running';
+  const outputText = activeRun
+    ? [
+      `$ ${activeRun.command}`,
+      isNodeCommandRun(activeRun) ? `node: ${activeRun.node}` : '',
+      activeRun.output || (activeRun.status === 'running' ? 'Running...' : ''),
+      activeRun.error ? `error: ${activeRun.error}` : '',
+    ].filter(Boolean).join('\n')
+    : '';
 
   const runCommand = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -147,6 +156,13 @@ export function CommandCenterPage() {
     const nextPreset = presets.find((item) => item.label === label);
     setPreset(label);
     if (nextPreset) setCommand(nextPreset.command);
+  };
+
+  const copyOutput = async () => {
+    if (!outputText) return;
+    await navigator.clipboard.writeText(outputText);
+    setOutputCopied(true);
+    window.setTimeout(() => setOutputCopied(false), 1800);
   };
 
   if (clustersQuery.isLoading) {
@@ -281,14 +297,21 @@ export function CommandCenterPage() {
 
               {activeRun && (
                 <div className="mt-5">
-                  <p className="mb-1 text-sm font-medium text-slate-700">Output</p>
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-slate-700">Output</p>
+                    <button
+                      type="button"
+                      onClick={copyOutput}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+                      aria-label={outputCopied ? 'Copied command output' : 'Copy command output'}
+                      title={outputCopied ? 'Copied' : 'Copy output'}
+                    >
+                      {outputCopied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+                      {outputCopied ? 'Copied' : 'Copy output'}
+                    </button>
+                  </div>
                   <pre className="min-h-[22rem] max-h-[44rem] overflow-auto rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 whitespace-pre-wrap">
-                    {[
-                      `$ ${activeRun.command}`,
-                      isNodeCommandRun(activeRun) ? `node: ${activeRun.node}` : '',
-                      activeRun.output || (activeRun.status === 'running' ? 'Running...' : ''),
-                      activeRun.error ? `error: ${activeRun.error}` : '',
-                    ].filter(Boolean).join('\n')}
+                    {outputText}
                   </pre>
                 </div>
               )}
