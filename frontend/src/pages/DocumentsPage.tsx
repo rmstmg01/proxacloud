@@ -268,16 +268,664 @@ kubectl describe daemonset calico-node -n kube-system`,
 ];
 
 const commonErrors = [
-  ['ImagePullBackOff', 'Kubernetes cannot pull the image. Check image name, tag, registry auth, pull secret, and node access to ghcr.io.'],
-  ['ErrImagePull', 'Initial image pull failed. Describe the pod for the exact registry error.'],
-  ['CrashLoopBackOff', 'The container keeps exiting. Check current and previous logs, env vars, commands, and app startup dependencies.'],
-  ['Pending', 'The pod cannot be scheduled. Check node resources, taints, tolerations, PVC binding, and events.'],
-  ['CreateContainerConfigError', 'Kubernetes cannot build container config. Check referenced Secrets, ConfigMaps, env vars, and volumes.'],
-  ['RunContainerError', 'The runtime could not start the container. Check entrypoint, permissions, filesystem mounts, and security context.'],
-  ['OOMKilled', 'The container exceeded memory limits. Increase limits or reduce memory usage.'],
-  ['FailedMount', 'A volume, Secret, ConfigMap, or PVC could not be mounted. Describe the pod and PVC.'],
-  ['Readiness probe failed', 'The pod is running but not receiving traffic. Check health endpoint, port, startup time, and dependencies.'],
-  ['Liveness probe failed', 'Kubernetes restarts the container because the health check fails. Check app health path and timeout settings.'],
+  {
+    error: 'ImagePullBackOff',
+    category: 'Image',
+    meaning: 'Kubernetes tried to pull a container image, failed, and is backing off before retrying.',
+    causes: 'Wrong image name or tag, private registry without imagePullSecret, expired token, rate limit, DNS/network issue, or registry outage.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxaops, read the Events section, verify the image exists, check imagePullSecrets, then restart the deployment after fixing credentials or tags.',
+  },
+  {
+    error: 'ErrImagePull',
+    category: 'Image',
+    meaning: 'The first image pull attempt failed before Kubernetes moved into backoff retry behavior.',
+    causes: 'Bad tag, bad registry path, unauthorized registry access, TLS error, or node cannot reach the registry.',
+    steps: 'Describe the pod, copy the exact pull error, confirm the image path manually, and check whether the namespace has the correct GHCR secret.',
+  },
+  {
+    error: 'InvalidImageName',
+    category: 'Image',
+    meaning: 'The image value in the manifest is not a valid container image reference.',
+    causes: 'Missing repository, invalid characters, uppercase registry path, malformed tag, or empty image value from a template variable.',
+    steps: 'Inspect the deployment YAML, fix the image value, then run kubectl rollout restart deployment/DEPLOYMENT_NAME -n proxaops.',
+  },
+  {
+    error: 'ImageInspectError',
+    category: 'Image',
+    meaning: 'The node pulled or found the image but the runtime could not inspect its metadata.',
+    causes: 'Corrupt image on the node, runtime cache issue, unsupported image format, or container runtime problem.',
+    steps: 'Restart the pod on another node, check node runtime logs, and remove the bad cached image from the affected node if needed.',
+  },
+  {
+    error: 'CrashLoopBackOff',
+    category: 'Container',
+    meaning: 'The container starts, exits, and Kubernetes repeatedly restarts it with increasing delay.',
+    causes: 'Application startup crash, missing env vars, bad config, database unavailable, failed migration, bad command, or app exits successfully too quickly.',
+    steps: 'Run kubectl logs POD_NAME -n proxaops and kubectl logs POD_NAME -n proxaops --previous. Check env vars, secrets, config maps, probes, and dependent services.',
+  },
+  {
+    error: 'RunContainerError',
+    category: 'Container',
+    meaning: 'The container runtime could not start the container after Kubernetes created its config.',
+    causes: 'Bad command or args, permission denied, missing executable, invalid working directory, bad mount path, or security context conflict.',
+    steps: 'Describe the pod, inspect command/args/volumeMounts/securityContext, and compare with the image Dockerfile entrypoint.',
+  },
+  {
+    error: 'CreateContainerError',
+    category: 'Container',
+    meaning: 'The runtime failed while creating the container.',
+    causes: 'Runtime failure, invalid mount, bad container config, node disk issue, or container runtime instability.',
+    steps: 'Describe the pod, check Events, move the pod to another node if possible, and inspect kubelet/container runtime logs on the affected node.',
+  },
+  {
+    error: 'CreateContainerConfigError',
+    category: 'Config',
+    meaning: 'Kubernetes cannot build the container config before handing it to the runtime.',
+    causes: 'Referenced Secret or ConfigMap missing, missing key in Secret/ConfigMap, invalid env var reference, or bad projected volume.',
+    steps: 'Describe the pod and check Events. Then run kubectl get secrets -n proxaops and kubectl get configmaps -n proxaops to confirm referenced objects exist.',
+  },
+  {
+    error: 'ContainerCannotRun',
+    category: 'Container',
+    meaning: 'The runtime started container setup but the configured process could not run.',
+    causes: 'Executable not found, permission denied, wrong CPU architecture, bad shell path, or non-executable startup script.',
+    steps: 'Check the image architecture, command, args, file permissions, and whether the image contains the executable path used in the manifest.',
+  },
+  {
+    error: 'CannotStartContainerError',
+    category: 'Container',
+    meaning: 'Older runtime-style error showing the container could not be started.',
+    causes: 'Bad entrypoint, mount failure, permission problem, runtime issue, or missing binary.',
+    steps: 'Use pod describe and previous logs, then validate the image entrypoint locally or in a temporary debug pod.',
+  },
+  {
+    error: 'StartError',
+    category: 'Container',
+    meaning: 'Container startup failed before the application became usable.',
+    causes: 'Entrypoint failure, runtime permission issue, invalid config, or failed pre-start hook.',
+    steps: 'Describe the pod, check container state reason, inspect lifecycle hooks, and read previous logs if the container briefly started.',
+  },
+  {
+    error: 'OOMKilled',
+    category: 'Resource',
+    meaning: 'The container used more memory than its limit and was killed by the kernel.',
+    causes: 'Memory limit too low, memory leak, large startup workload, inefficient query, or traffic spike.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxaops, check Last State, review memory limits, inspect kubectl top pods -n proxaops, and increase limits or fix memory usage.',
+  },
+  {
+    error: 'Pending',
+    category: 'Scheduling',
+    meaning: 'The pod exists but has not been scheduled onto a node or cannot finish setup.',
+    causes: 'Insufficient CPU/memory, node taints, node selector mismatch, unbound PVC, missing storage class, or image pull setup waiting.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxaops and read Events. Check kubectl get nodes, kubectl get pvc -n proxaops, and node taints.',
+  },
+  {
+    error: 'Unschedulable',
+    category: 'Scheduling',
+    meaning: 'The scheduler cannot find any node that satisfies the pod requirements.',
+    causes: 'Resource requests too high, nodeSelector/affinity mismatch, taints without tolerations, host port conflict, or PVC zone mismatch.',
+    steps: 'Describe the pod, read scheduler event messages, lower resource requests if appropriate, update tolerations/affinity, or add capacity.',
+  },
+  {
+    error: 'Insufficient cpu',
+    category: 'Scheduling',
+    meaning: 'No node has enough allocatable CPU for the pod request.',
+    causes: 'CPU requests too high, cluster capacity too small, many pods already scheduled, or reserved system resources.',
+    steps: 'Run kubectl describe nodes and kubectl top nodes. Reduce CPU requests or add/scale nodes.',
+  },
+  {
+    error: 'Insufficient memory',
+    category: 'Scheduling',
+    meaning: 'No node has enough allocatable memory for the pod request.',
+    causes: 'Memory requests too high, exhausted nodes, or not enough worker capacity.',
+    steps: 'Check node allocatable memory and current pod requests. Reduce memory requests carefully or add capacity.',
+  },
+  {
+    error: 'Insufficient ephemeral-storage',
+    category: 'Scheduling',
+    meaning: 'A node does not have enough local ephemeral storage for pod scheduling.',
+    causes: 'Large logs, image cache growth, emptyDir usage, or high ephemeral-storage requests.',
+    steps: 'Describe nodes, clean node disk, set log rotation, lower ephemeral requests, or add disk capacity.',
+  },
+  {
+    error: 'Too many pods',
+    category: 'Scheduling',
+    meaning: 'A node has reached its maximum pod count.',
+    causes: 'Node pod CIDR limit, kubelet maxPods setting, or too many small workloads on the node.',
+    steps: 'Add nodes, reduce pod count, or adjust node maxPods only if the CNI and IP capacity support it.',
+  },
+  {
+    error: 'TaintToleration',
+    category: 'Scheduling',
+    meaning: 'The pod does not tolerate a taint on the available node.',
+    causes: 'Control-plane taint, dedicated node taint, maintenance taint, or NoSchedule taint.',
+    steps: 'Run kubectl describe node NODE_NAME, inspect Taints, then add the correct toleration or schedule the pod to a different node group.',
+  },
+  {
+    error: 'NodeAffinity',
+    category: 'Scheduling',
+    meaning: 'The pod node affinity rules do not match available nodes.',
+    causes: 'Required node labels missing, wrong label key/value, or overly strict affinity rules.',
+    steps: 'Check pod affinity in YAML and node labels with kubectl get nodes --show-labels. Fix labels or relax affinity.',
+  },
+  {
+    error: 'MatchNodeSelector',
+    category: 'Scheduling',
+    meaning: 'The pod has a nodeSelector that does not match any available node.',
+    causes: 'Wrong node label, node label removed, or manifest targeting the wrong environment.',
+    steps: 'Run kubectl get nodes --show-labels and update nodeSelector or node labels.',
+  },
+  {
+    error: 'PodFitsHostPorts',
+    category: 'Scheduling',
+    meaning: 'The pod requests a hostPort already in use on candidate nodes.',
+    causes: 'Multiple pods using the same hostPort or daemon-like workload not configured as a DaemonSet.',
+    steps: 'Avoid hostPort when possible, use a Service, change the port, or schedule only one pod per node.',
+  },
+  {
+    error: 'Preemption is not helpful for scheduling',
+    category: 'Scheduling',
+    meaning: 'Evicting lower priority pods would still not make the new pod schedulable.',
+    causes: 'Hard constraints like node affinity, taints, PVC zone, hostPort, or resource request too large for any single node.',
+    steps: 'Focus on the exact scheduler event. Add matching nodes, change constraints, or reduce pod requests.',
+  },
+  {
+    error: 'NodeNotReady',
+    category: 'Node',
+    meaning: 'The node is not healthy enough to run workloads.',
+    causes: 'Kubelet stopped, node network down, container runtime failure, disk pressure, memory pressure, or certificate issue.',
+    steps: 'Run kubectl describe node NODE_NAME, inspect Conditions and Events, then check kubelet and container runtime on the node.',
+  },
+  {
+    error: 'NodeUnavailable',
+    category: 'Node',
+    meaning: 'Kubernetes cannot use or reach the node for normal workload placement.',
+    causes: 'Node powered off, network partition, kubelet not reporting, or node under maintenance.',
+    steps: 'Check node status, confirm the VM/server is running, verify network connectivity, and drain/replace the node if needed.',
+  },
+  {
+    error: 'NodeLost',
+    category: 'Node',
+    meaning: 'The control plane lost contact with the node for long enough to mark pods as lost.',
+    causes: 'Node crash, network failure, kubelet failure, or host shutdown.',
+    steps: 'Check infrastructure health, restore the node, or delete stuck pods after confirming workloads are safely rescheduled.',
+  },
+  {
+    error: 'Evicted',
+    category: 'Node',
+    meaning: 'Kubelet terminated the pod to reclaim node resources.',
+    causes: 'MemoryPressure, DiskPressure, PIDPressure, ephemeral storage exhaustion, or node resource pressure.',
+    steps: 'Describe the pod and node, check eviction reason, clean disk or reduce resource pressure, then let the controller recreate the pod.',
+  },
+  {
+    error: 'Unknown',
+    category: 'Node',
+    meaning: 'Kubernetes cannot determine the pod state, usually because the node stopped reporting.',
+    causes: 'Node communication failure, kubelet down, API connectivity issue, or node crash.',
+    steps: 'Check the node running the pod, inspect node status, and delete/recreate the pod only after confirming node state.',
+  },
+  {
+    error: 'ContainerCreating',
+    category: 'Lifecycle',
+    meaning: 'Kubernetes is creating the container and preparing volumes, network, and image.',
+    causes: 'Normal startup, slow image pull, slow volume mount, CNI delay, or stuck runtime operation.',
+    steps: 'If it stays too long, describe the pod and inspect Events for pull, mount, or sandbox errors.',
+  },
+  {
+    error: 'PodInitializing',
+    category: 'Lifecycle',
+    meaning: 'The pod is waiting for init containers to finish before app containers start.',
+    causes: 'Long-running init container, failed init container, image pull issue, or dependency wait script.',
+    steps: 'Run kubectl get pod POD_NAME -n proxaops -o jsonpath="{.status.initContainerStatuses}" and check init container logs.',
+  },
+  {
+    error: 'Completed',
+    category: 'Lifecycle',
+    meaning: 'The container finished successfully.',
+    causes: 'Normal for Jobs, but wrong for Deployments if the app process exits instead of staying alive.',
+    steps: 'For Jobs, no fix is needed. For Deployments, ensure the container command starts a long-running server process.',
+  },
+  {
+    error: 'Error',
+    category: 'Lifecycle',
+    meaning: 'A container terminated with a non-zero exit code.',
+    causes: 'Application crash, bad command, failed dependency, permission error, or unhandled exception.',
+    steps: 'Check kubectl logs POD_NAME -n proxaops --previous and inspect the termination exit code in kubectl describe pod.',
+  },
+  {
+    error: 'Terminating',
+    category: 'Lifecycle',
+    meaning: 'The pod is being deleted and Kubernetes is waiting for containers, finalizers, or volumes to shut down.',
+    causes: 'Normal deletion, stuck finalizer, node unreachable, volume detach delay, or app not handling SIGTERM.',
+    steps: 'Wait for graceful shutdown, inspect finalizers with kubectl get pod POD_NAME -n proxaops -o yaml, and avoid force delete unless necessary.',
+  },
+  {
+    error: 'BackOff',
+    category: 'Lifecycle',
+    meaning: 'Kubernetes is delaying retries after repeated failures.',
+    causes: 'Repeated image pull failure, container crash, or failed pod sandbox creation.',
+    steps: 'Look at the more specific event beside BackOff, then troubleshoot image pull, logs, or sandbox/network setup.',
+  },
+  {
+    error: 'DeadlineExceeded',
+    category: 'Lifecycle',
+    meaning: 'An operation or Job exceeded its configured deadline.',
+    causes: 'activeDeadlineSeconds reached, slow startup, hanging job, API timeout, or long-running hook.',
+    steps: 'Check Job or pod spec deadlines, logs, and events. Increase deadline only if the workload legitimately needs more time.',
+  },
+  {
+    error: 'FailedMount',
+    category: 'Storage',
+    meaning: 'Kubernetes could not mount a volume into the pod.',
+    causes: 'Missing Secret/ConfigMap, unbound PVC, storage backend unavailable, permission issue, or node mount problem.',
+    steps: 'Describe the pod, check PVC/PV status, verify Secrets and ConfigMaps, and inspect CSI/storage controller logs.',
+  },
+  {
+    error: 'FailedAttachVolume',
+    category: 'Storage',
+    meaning: 'Kubernetes or the CSI driver could not attach a persistent volume to the node.',
+    causes: 'Storage backend failure, volume already attached elsewhere, zone mismatch, CSI driver issue, or cloud/provider API error.',
+    steps: 'Describe the pod and PVC, check VolumeAttachment objects, and inspect CSI controller logs.',
+  },
+  {
+    error: 'FailedDetachVolume',
+    category: 'Storage',
+    meaning: 'Kubernetes could not detach a volume from a node.',
+    causes: 'Node unreachable, storage backend delay, CSI issue, or stuck attachment metadata.',
+    steps: 'Check node status, VolumeAttachment resources, and CSI logs before manually intervening.',
+  },
+  {
+    error: 'Multi-Attach error',
+    category: 'Storage',
+    meaning: 'A volume that supports only one writer is already attached to another node.',
+    causes: 'ReadWriteOnce PVC used by pods on different nodes, stale attachment after node failure, or rolling update with storage constraints.',
+    steps: 'Scale down duplicate pods, wait for detach, use ReadWriteMany storage if needed, or pin the workload to one node.',
+  },
+  {
+    error: 'ProvisioningFailed',
+    category: 'Storage',
+    meaning: 'Dynamic volume provisioning failed.',
+    causes: 'Bad StorageClass, missing provisioner, backend quota, credentials issue, or CSI driver failure.',
+    steps: 'Describe the PVC and StorageClass, check external provisioner logs, and verify storage backend capacity and credentials.',
+  },
+  {
+    error: 'ExternalProvisioning',
+    category: 'Storage',
+    meaning: 'Kubernetes is waiting for an external provisioner to create the volume.',
+    causes: 'Normal delay, CSI provisioner not running, wrong StorageClass provisioner name, or backend issue.',
+    steps: 'Check storage controller pods and PVC events. If it stays pending, inspect the CSI provisioner logs.',
+  },
+  {
+    error: 'WaitForFirstConsumer',
+    category: 'Storage',
+    meaning: 'PVC binding waits until a pod is scheduled so Kubernetes can choose storage in the correct topology.',
+    causes: 'Normal for StorageClasses with volumeBindingMode WaitForFirstConsumer, but can be stuck if the pod is unschedulable.',
+    steps: 'Describe the pod and PVC together. Fix scheduling constraints first if no node can host the pod.',
+  },
+  {
+    error: 'PVC Pending',
+    category: 'Storage',
+    meaning: 'A PersistentVolumeClaim has not bound to a PersistentVolume.',
+    causes: 'No matching PV, StorageClass issue, dynamic provisioner failure, capacity mismatch, or access mode mismatch.',
+    steps: 'Run kubectl describe pvc PVC_NAME -n proxaops and kubectl get storageclass. Check provisioner logs if dynamic provisioning is expected.',
+  },
+  {
+    error: 'MountVolume.SetUp failed',
+    category: 'Storage',
+    meaning: 'Volume setup failed during pod startup.',
+    causes: 'Missing Secret/ConfigMap key, invalid projected volume, permission issue, unavailable storage, or mount command failure.',
+    steps: 'Describe the pod and inspect the named volume in the event. Verify the referenced object, key, and mount path.',
+  },
+  {
+    error: 'Unable to attach or mount volumes',
+    category: 'Storage',
+    meaning: 'Kubernetes could not complete volume attach or mount before timeout.',
+    causes: 'CSI problem, storage backend issue, node issue, unbound PVC, or multi-attach conflict.',
+    steps: 'Check pod events, PVC/PV status, VolumeAttachment objects, and storage controller logs.',
+  },
+  {
+    error: 'Volume is already exclusively attached',
+    category: 'Storage',
+    meaning: 'The storage backend reports the volume is already attached to another node.',
+    causes: 'ReadWriteOnce volume, old pod still terminating, stale attachment, or node failure.',
+    steps: 'Find pods using the PVC, scale down duplicates, wait for detach, and verify the old node is healthy.',
+  },
+  {
+    error: 'Readiness probe failed',
+    category: 'Probe',
+    meaning: 'The pod is running but is not marked Ready, so Services should not send traffic to it.',
+    causes: 'Wrong health path, wrong port, app not ready, dependency unavailable, slow startup, or timeout too low.',
+    steps: 'Describe the pod, test the health endpoint from inside the pod, and tune initialDelaySeconds, periodSeconds, timeoutSeconds, or failureThreshold.',
+  },
+  {
+    error: 'Liveness probe failed',
+    category: 'Probe',
+    meaning: 'Kubernetes considers the container unhealthy and restarts it.',
+    causes: 'Wrong health endpoint, app deadlock, dependency check in liveness probe, CPU starvation, or timeout too aggressive.',
+    steps: 'Check restart count and logs before restart. Keep liveness checks simple and use readiness for dependency availability.',
+  },
+  {
+    error: 'Startup probe failed',
+    category: 'Probe',
+    meaning: 'The application did not finish starting before the startup probe failed.',
+    causes: 'Slow boot, migrations, cold cache, insufficient CPU, wrong probe path, or timeout too short.',
+    steps: 'Increase startup probe thresholds or delay, fix the health endpoint, and check app startup logs.',
+  },
+  {
+    error: 'HTTP probe failed with statuscode',
+    category: 'Probe',
+    meaning: 'An HTTP health probe returned a non-success status code.',
+    causes: 'Wrong path, auth required on health endpoint, app returns 500, dependency failure, or wrong port.',
+    steps: 'Exec into the pod and curl the probe URL. Make health endpoints unauthenticated and lightweight.',
+  },
+  {
+    error: 'connection refused',
+    category: 'Network',
+    meaning: 'A network connection reached the target IP, but nothing accepted the connection on that port.',
+    causes: 'App not listening, wrong service targetPort, pod not ready, wrong container port, or startup delay.',
+    steps: 'Check service targetPort, pod ports, app listen address, endpoints, and logs.',
+  },
+  {
+    error: 'context deadline exceeded',
+    category: 'Network',
+    meaning: 'A request timed out before completing.',
+    causes: 'Network policy, DNS delay, service unavailable, overloaded app, API server slowness, or storage/network timeout.',
+    steps: 'Check events, DNS, service endpoints, network policies, and component logs for the caller and target.',
+  },
+  {
+    error: 'Client.Timeout exceeded while awaiting headers',
+    category: 'Network',
+    meaning: 'An HTTP client connected but did not receive response headers in time.',
+    causes: 'Slow backend, blocked request, overloaded pod, bad upstream route, or dependency timeout.',
+    steps: 'Check backend logs, service endpoints, ingress/controller logs, and resource usage on target pods.',
+  },
+  {
+    error: 'no endpoints available for service',
+    category: 'Network',
+    meaning: 'A Service has no Ready pods behind it.',
+    causes: 'Selector mismatch, pods not Ready, deployment scaled to zero, failed readiness probe, or wrong namespace.',
+    steps: 'Run kubectl get endpoints SERVICE_NAME -n proxaops and compare service selectors with pod labels.',
+  },
+  {
+    error: 'service has no active endpoints',
+    category: 'Network',
+    meaning: 'Ingress or another controller found a Service but no usable backend endpoints.',
+    causes: 'No Ready pods, selector mismatch, readiness failure, or wrong service name/port.',
+    steps: 'Check endpoints, pod readiness, service selector, and ingress backend service port.',
+  },
+  {
+    error: 'i/o timeout',
+    category: 'Network',
+    meaning: 'A network operation timed out at the TCP or HTTP layer.',
+    causes: 'DNS issue, firewall, network policy, unreachable service, registry/network outage, or CNI problem.',
+    steps: 'Test DNS and connectivity from a debug pod, check NetworkPolicies, and inspect CNI pods.',
+  },
+  {
+    error: 'no such host',
+    category: 'DNS',
+    meaning: 'DNS could not resolve the hostname.',
+    causes: 'Wrong service name, wrong namespace, CoreDNS issue, upstream DNS issue, or typo.',
+    steps: 'Run nslookup from a debug pod, check CoreDNS pods/logs, and verify the service DNS name.',
+  },
+  {
+    error: 'Temporary failure in name resolution',
+    category: 'DNS',
+    meaning: 'DNS resolution failed temporarily.',
+    causes: 'CoreDNS unavailable, upstream resolver issue, network policy blocking DNS, or overloaded DNS service.',
+    steps: 'Check CoreDNS status and logs, test kubernetes.default DNS, and verify UDP/TCP 53 is not blocked.',
+  },
+  {
+    error: 'NetworkPolicy denied traffic',
+    category: 'Network',
+    meaning: 'NetworkPolicy rules are blocking traffic between pods or namespaces.',
+    causes: 'Default deny policy, missing ingress/egress rule, wrong podSelector, or namespaceSelector mismatch.',
+    steps: 'List NetworkPolicies, identify source and destination labels, and add the minimum required ingress/egress rule.',
+  },
+  {
+    error: 'CNI plugin not initialized',
+    category: 'Network',
+    meaning: 'The node networking plugin is not ready.',
+    causes: 'CNI DaemonSet not running, bad CNI config, kubelet started before CNI, or node network problem.',
+    steps: 'Check CNI pods in kube-system, describe the affected node, and inspect kubelet logs.',
+  },
+  {
+    error: 'NetworkPluginNotReady',
+    category: 'Network',
+    meaning: 'Kubelet reports that pod networking is not ready on the node.',
+    causes: 'CNI plugin missing, CNI pod crash, bad configuration, or node cannot reach control plane.',
+    steps: 'Check kube-system CNI DaemonSet, node conditions, and CNI logs.',
+  },
+  {
+    error: 'CreatePodSandboxError',
+    category: 'Network',
+    meaning: 'Kubernetes could not create the pod sandbox, which prepares networking and isolation.',
+    causes: 'CNI failure, container runtime issue, pause image pull failure, or node-level networking problem.',
+    steps: 'Describe the pod, inspect CNI and kubelet logs on the node, and verify the pause image can be pulled.',
+  },
+  {
+    error: 'FailedCreatePodSandBox',
+    category: 'Network',
+    meaning: 'Event form of pod sandbox creation failure.',
+    causes: 'CNI setup failure, IP allocation failure, runtime error, or node network problem.',
+    steps: 'Read the full event message, check CNI DaemonSet health, and inspect node kubelet logs.',
+  },
+  {
+    error: 'failed to setup network for sandbox',
+    category: 'Network',
+    meaning: 'The CNI plugin failed while assigning networking to the pod sandbox.',
+    causes: 'IP pool exhausted, CNI config error, network plugin crash, or node routing issue.',
+    steps: 'Check CNI logs, IP pool capacity, node routes, and whether other pods can start on the same node.',
+  },
+  {
+    error: 'RegistryUnavailable',
+    category: 'Registry',
+    meaning: 'The image registry cannot be reached or is returning availability errors.',
+    causes: 'Registry outage, DNS failure, firewall, proxy issue, or node egress problem.',
+    steps: 'Test registry connectivity from the node, check DNS, and retry after confirming registry availability.',
+  },
+  {
+    error: 'Unauthorized',
+    category: 'Registry',
+    meaning: 'The registry rejected the image pull because credentials are missing or invalid.',
+    causes: 'Missing imagePullSecret, expired token, wrong GitHub token scope, or secret in the wrong namespace.',
+    steps: 'Recreate the registry secret in proxaops, attach it to the service account, and restart the deployment.',
+  },
+  {
+    error: 'Denied',
+    category: 'Registry',
+    meaning: 'The registry denied access to the image or repository.',
+    causes: 'No permission to package, private package, wrong owner/repo, or policy preventing pull.',
+    steps: 'Verify package permissions in GHCR, token scopes, image path, and imagePullSecret.',
+  },
+  {
+    error: 'manifest unknown',
+    category: 'Registry',
+    meaning: 'The registry exists but does not have the requested image tag or digest.',
+    causes: 'Tag not pushed, typo in tag, wrong repository, architecture manifest missing, or CI pushed to a different name.',
+    steps: 'Check the exact image tag in GHCR and update the deployment image to a real tag or digest.',
+  },
+  {
+    error: 'repository does not exist',
+    category: 'Registry',
+    meaning: 'The registry path points to a repository that cannot be found or accessed.',
+    causes: 'Wrong image owner/name, private repo without auth, or package not published.',
+    steps: 'Confirm ghcr.io/OWNER/IMAGE exists and that the token can read it.',
+  },
+  {
+    error: 'no basic auth credentials',
+    category: 'Registry',
+    meaning: 'The node tried to pull from a private registry without usable credentials.',
+    causes: 'Missing imagePullSecret, secret not attached to pod/service account, or secret in another namespace.',
+    steps: 'Create the docker-registry secret in proxaops and add it to imagePullSecrets or the default service account.',
+  },
+  {
+    error: 'x509: certificate signed by unknown authority',
+    category: 'TLS',
+    meaning: 'TLS verification failed because the registry or endpoint certificate is not trusted.',
+    causes: 'Private registry with self-signed certificate, missing CA bundle on nodes, or TLS interception proxy.',
+    steps: 'Install the trusted CA on cluster nodes or use a registry certificate signed by a trusted CA.',
+  },
+  {
+    error: 'TLS handshake timeout',
+    category: 'TLS',
+    meaning: 'TLS negotiation to a remote endpoint timed out.',
+    causes: 'Network latency, firewall, proxy, registry overload, or node egress issue.',
+    steps: 'Check node network path to the endpoint, DNS, proxy settings, and registry availability.',
+  },
+  {
+    error: 'configmap not found',
+    category: 'Config',
+    meaning: 'A pod references a ConfigMap that does not exist in the same namespace.',
+    causes: 'ConfigMap not applied, wrong namespace, typo in name, or deployment applied before config.',
+    steps: 'Create the ConfigMap in proxaops or fix the reference name, then restart affected pods.',
+  },
+  {
+    error: 'secret not found',
+    category: 'Config',
+    meaning: 'A pod references a Secret that does not exist in the same namespace.',
+    causes: 'Secret not created, wrong namespace, typo in name, or sealed/external secret sync failed.',
+    steps: 'Create or sync the Secret in proxaops, verify key names, and restart the deployment.',
+  },
+  {
+    error: "couldn't find key",
+    category: 'Config',
+    meaning: 'The Secret or ConfigMap exists, but the referenced key is missing.',
+    causes: 'Wrong key name, changed config schema, incomplete secret creation, or case mismatch.',
+    steps: 'Describe the Secret/ConfigMap and update the manifest or object so the key names match.',
+  },
+  {
+    error: 'invalid environment variable',
+    category: 'Config',
+    meaning: 'An environment variable definition is invalid.',
+    causes: 'Invalid env var name, unsupported fieldRef, bad valueFrom reference, or malformed manifest.',
+    steps: 'Validate env entries in the deployment YAML and fix names to use valid shell-style variable names.',
+  },
+  {
+    error: 'fieldRef not found',
+    category: 'Config',
+    meaning: 'A downward API fieldRef references a field Kubernetes cannot provide.',
+    causes: 'Typo in fieldPath, unsupported field, or using a field only available in another API version.',
+    steps: 'Check the env/valueFrom fieldRef path and use supported downward API fields such as metadata.name or status.podIP.',
+  },
+  {
+    error: 'volumeMount not found',
+    category: 'Config',
+    meaning: 'A mount references a volume name that is not defined in the pod spec.',
+    causes: 'Typo between volumeMounts.name and volumes.name or templating error.',
+    steps: 'Compare volumeMounts with volumes in the deployment YAML and make names match exactly.',
+  },
+  {
+    error: 'ProgressDeadlineExceeded',
+    category: 'Deployment',
+    meaning: 'A Deployment rollout did not make progress before its deadline.',
+    causes: 'Pods failing readiness, image pull errors, crash loops, insufficient capacity, or bad rollout config.',
+    steps: 'Run kubectl rollout status deployment/DEPLOYMENT_NAME -n proxaops and kubectl describe deployment DEPLOYMENT_NAME -n proxaops, then inspect failing pods.',
+  },
+  {
+    error: 'ReplicaFailure',
+    category: 'Deployment',
+    meaning: 'The ReplicaSet or Deployment failed to create or maintain replicas.',
+    causes: 'Quota exceeded, admission policy denied pod, invalid pod spec, scheduling failure, or missing config.',
+    steps: 'Describe the deployment and replicaset, then read Events for FailedCreate or policy messages.',
+  },
+  {
+    error: 'MinimumReplicasUnavailable',
+    category: 'Deployment',
+    meaning: 'The deployment does not have enough available replicas.',
+    causes: 'Pods not Ready, failed probes, crash loops, image pull failures, or unavailable nodes.',
+    steps: 'Check pod status, readiness probes, and deployment events. Fix the pod-level reason first.',
+  },
+  {
+    error: 'FailedCreate',
+    category: 'Controller',
+    meaning: 'A controller could not create a child resource such as a pod.',
+    causes: 'Quota, admission webhook denial, invalid spec, service account issue, or RBAC denial.',
+    steps: 'Describe the parent Deployment/ReplicaSet/Job and read the event message for the exact denial reason.',
+  },
+  {
+    error: 'FailedUpdate',
+    category: 'Controller',
+    meaning: 'A controller or API request failed while updating a resource.',
+    causes: 'Conflict, invalid patch, admission policy denial, resource version conflict, or RBAC issue.',
+    steps: 'Check controller events and audit/error logs, then reapply with a valid manifest or fix permissions.',
+  },
+  {
+    error: 'FailedDelete',
+    category: 'Controller',
+    meaning: 'Kubernetes could not delete a resource.',
+    causes: 'Finalizer blocking deletion, API conflict, RBAC denial, or dependent resource issue.',
+    steps: 'Inspect finalizers and ownerReferences. Remove finalizers only when you understand the cleanup impact.',
+  },
+  {
+    error: 'Deployment does not have minimum availability',
+    category: 'Deployment',
+    meaning: 'A Deployment has fewer available pods than required.',
+    causes: 'Readiness failures, unavailable nodes, crash loops, image pull failure, or maxUnavailable settings during rollout.',
+    steps: 'Check rollout status, pod readiness, deployment strategy, and pod events.',
+  },
+  {
+    error: 'FailedKillPod',
+    category: 'Kubelet',
+    meaning: 'Kubelet could not stop one or more containers in a pod.',
+    causes: 'Container runtime issue, stuck process, node pressure, or unresponsive runtime.',
+    steps: 'Check node runtime health and kubelet logs. Restart container runtime only during an approved maintenance window.',
+  },
+  {
+    error: 'FailedSync',
+    category: 'Kubelet',
+    meaning: 'Kubelet failed to sync desired pod state on the node.',
+    causes: 'Runtime error, volume setup failure, CNI issue, image pull issue, or node resource problem.',
+    steps: 'Read the full event message and inspect kubelet logs on the node hosting the pod.',
+  },
+  {
+    error: 'etcdserver: request timed out',
+    category: 'Control Plane',
+    meaning: 'etcd did not complete a request in time.',
+    causes: 'etcd overload, disk latency, network latency between control-plane nodes, or unhealthy etcd member.',
+    steps: 'Check etcd pod logs, control-plane node disk latency, member health, and API server latency.',
+  },
+  {
+    error: 'leader election lost',
+    category: 'Control Plane',
+    meaning: 'A controller lost leadership and another instance should take over.',
+    causes: 'API server latency, network issue, overloaded controller, or normal failover during restart.',
+    steps: 'If frequent, check API server health, controller logs, and control-plane resource pressure.',
+  },
+  {
+    error: 'certificate has expired or is not yet valid',
+    category: 'Certificates',
+    meaning: 'A Kubernetes component or client certificate is outside its valid time window.',
+    causes: 'Expired cert, node clock skew, unrenewed kubeadm certificates, or wrong system time.',
+    steps: 'Check system time, certificate expiration, and renew certificates according to your cluster bootstrap method.',
+  },
+  {
+    error: 'x509: certificate has expired',
+    category: 'Certificates',
+    meaning: 'TLS failed because the certificate is expired.',
+    causes: 'Expired API server, kubelet, webhook, ingress, or registry certificate.',
+    steps: 'Identify the endpoint from the error, renew the certificate, and restart the affected component if required.',
+  },
+  {
+    error: 'too old resource version',
+    category: 'API',
+    meaning: 'A watch request used an old resourceVersion that the API server no longer has in cache.',
+    causes: 'Long-running watch, API server cache compaction, controller lag, or high API churn.',
+    steps: 'Usually controllers reconnect automatically. If frequent, check API server load and controller health.',
+  },
+  {
+    error: 'unable to update cni config',
+    category: 'Network',
+    meaning: 'The node or CNI plugin could not write or refresh CNI configuration.',
+    causes: 'Permission issue, missing CNI config directory, bad CNI DaemonSet, or read-only filesystem.',
+    steps: 'Check CNI pod logs, kubelet logs, and CNI config files on the node.',
+  },
+  {
+    error: 'kubelet stopped posting node status',
+    category: 'Node',
+    meaning: 'The control plane has not received node status updates from kubelet.',
+    causes: 'Kubelet stopped, node network lost, API server unreachable from node, or node overloaded.',
+    steps: 'Check node reachability, kubelet service, container runtime, and node resource pressure.',
+  },
 ];
 
 function CodeBlock({ command }: { command: string }) {
@@ -343,25 +991,34 @@ export function DocumentsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Common Error Messages</CardTitle>
+            <p className="mt-1 text-sm text-slate-500">
+              A practical catalog of Kubernetes statuses and event messages. The troubleshooting steps use proxaops as the example namespace.
+            </p>
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
-                    <th className="py-2 pr-4 font-semibold">Error</th>
-                    <th className="py-2 font-semibold">Meaning and first fix</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {commonErrors.map(([error, fix]) => (
-                    <tr key={error}>
-                      <td className="py-3 pr-4 align-top font-mono text-xs text-red-700">{error}</td>
-                      <td className="py-3 text-slate-700">{fix}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {commonErrors.map((item) => (
+                <div key={item.error} className="rounded-md border border-slate-200 p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-mono text-sm font-semibold text-red-700">{item.error}</h3>
+                    <Badge variant="default">{item.category}</Badge>
+                  </div>
+                  <div className="mt-3 space-y-3 text-sm">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Meaning</p>
+                      <p className="mt-1 text-slate-700">{item.meaning}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Common causes</p>
+                      <p className="mt-1 text-slate-700">{item.causes}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Troubleshooting</p>
+                      <p className="mt-1 text-slate-700">{item.steps}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>
