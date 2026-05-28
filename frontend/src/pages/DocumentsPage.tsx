@@ -236,6 +236,48 @@ kubectl logs -n kube-system -l k8s-app=kube-dns`,
     ],
   },
   {
+    title: 'Public Access Logs',
+    icon: Terminal,
+    badge: 'Ingress',
+    description:
+      'Use these commands to check public-facing website and admin frontend traffic for the pscs application behind Traefik ingress.',
+    commands: [
+      {
+        label: 'Website and frontend container logs',
+        command: `kubectl logs -n pscs deploy/website
+kubectl logs -n pscs deploy/frontend
+kubectl logs -n pscs deploy/website -f
+kubectl logs -n pscs deploy/frontend -f`,
+      },
+      {
+        label: 'Logs from all website and frontend replicas',
+        command: `kubectl logs -n pscs -l app=website --all-containers=true --prefix=true
+kubectl logs -n pscs -l app=frontend --all-containers=true --prefix=true
+kubectl logs -n pscs -l app=website --all-containers=true --prefix=true -f
+kubectl logs -n pscs -l app=frontend --all-containers=true --prefix=true -f`,
+      },
+      {
+        label: 'Find Traefik and check ingress access logs',
+        command: `kubectl get pods -A | Select-String traefik
+kubectl get pods -n kube-system --show-labels
+kubectl logs -n kube-system -l app.kubernetes.io/name=traefik -f
+kubectl logs -n kube-system TRAEFIK_POD_NAME -f`,
+      },
+      {
+        label: 'Generate public requests while watching logs',
+        command: `curl http://proxaops.com
+curl http://www.proxaops.com
+curl http://admin.proxaops.com`,
+      },
+    ],
+    notes: [
+      'Public website traffic routes to the website Service for proxaops.com and www.proxaops.com.',
+      'Public admin traffic routes to the frontend Service for admin.proxaops.com.',
+      'If container logs are empty, the frontend or website image may not write access logs to stdout or stderr. Check Traefik access logs next.',
+      'Traefik may run in kube-system, traefik, or traefik-system depending on how it was installed. Use the discovered namespace in the logs command.',
+    ],
+  },
+  {
     title: 'Storage, Config, And Secrets',
     icon: Terminal,
     badge: 'Advanced',
