@@ -1,10 +1,13 @@
 import { useState } from 'react';
-import { AlertTriangle, BookOpen, Check, CheckCircle2, Clipboard, ClipboardList, RefreshCcw, Search, Shield, Terminal } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, CheckCircle2, Clipboard, ClipboardList, Database, RefreshCcw, Search, Shield, Terminal } from 'lucide-react';
 import { Layout, PageHeader } from '../components/Layout';
 import { Badge } from '../components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 
 const namespace = 'proxaops';
+const dbNamespace = 'pscs';
+const dbService = 'pscs-prod-db-cluster';
+const dbHost = `${dbService}.${dbNamespace}`;
 
 const quickCommands = [
   {
@@ -263,6 +266,129 @@ kubectl describe daemonset calico-node -n kube-system`,
       'Widespread DNS failures often look like application errors first. Always check CoreDNS and CNI pods.',
       'Control plane instability can show up as slow kubectl commands, leader election errors, API timeouts, or failing scheduler/controller pods.',
       'DiskPressure can block scheduling and cause evictions. Check node describe output and free disk on the node.',
+    ],
+  },
+];
+
+const databaseSections = [
+  {
+    title: 'Database Service And Endpoints',
+    icon: Database,
+    badge: 'Database',
+    description:
+      'Use this first to confirm Kubernetes has a stable Service name and real database node endpoints behind it.',
+    commands: [
+      {
+        label: 'Check database service and endpoints',
+        command: `kubectl get svc ${dbService} -n ${dbNamespace}
+kubectl get endpoints ${dbService} -n ${dbNamespace}`,
+      },
+      {
+        label: 'Expected healthy shape',
+        command: `NAME                   TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+${dbService}   ClusterIP   10.106.147.144   <none>        3306/TCP   3d17h
+
+NAME                   ENDPOINTS                                               AGE
+${dbService}   192.168.8.50:3306,192.168.8.51:3306,192.168.8.52:3306   3d17h`,
+      },
+    ],
+    notes: [
+      'The Service name is the DNS name applications should use inside Kubernetes.',
+      'Endpoints must show the database node IPs and port 3306. Empty endpoints means the Service exists but has no backend database targets.',
+      `For this cluster, the application DB host should be ${dbHost}.`,
+    ],
+  },
+  {
+    title: 'Database DNS And Port Connectivity',
+    icon: Search,
+    badge: 'Connectivity',
+    description:
+      'Use these commands when the application logs show lookup failures, timeouts, or connection refused errors.',
+    commands: [
+      {
+        label: 'DNS lookup from inside the namespace',
+        command: `kubectl run db-dns-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nslookup ${dbHost}
+kubectl run db-dns-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nslookup ${dbHost}.svc.cluster.local`,
+      },
+      {
+        label: 'TCP port test from inside Kubernetes',
+        command: `kubectl run db-port-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nc -vz ${dbHost} 3306`,
+      },
+      {
+        label: 'Direct endpoint checks',
+        command: `kubectl run db-endpoint-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nc -vz 192.168.8.50 3306
+kubectl run db-endpoint-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nc -vz 192.168.8.51 3306
+kubectl run db-endpoint-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --restart=Never -- nc -vz 192.168.8.52 3306`,
+      },
+    ],
+    notes: [
+      'If DNS fails for the Service name, check CoreDNS and confirm the Service exists in the expected namespace.',
+      'If DNS works but port 3306 fails, check firewall rules, database listener binding, node routing, and database process health.',
+      'If only one endpoint fails, the issue is probably on that database node rather than Kubernetes service discovery.',
+    ],
+  },
+  {
+    title: 'Application Database Configuration',
+    icon: ClipboardList,
+    badge: 'Config',
+    description:
+      'Use this when backend or gateway pods crash because they still point to an old DB hostname such as db.',
+    commands: [
+      {
+        label: 'Check app DB config sources',
+        command: `kubectl get configmap pscs-config -n ${dbNamespace} -o yaml
+kubectl get secret pscs-secrets -n ${dbNamespace} -o yaml`,
+      },
+      {
+        label: 'Confirm backend and gateway environment',
+        command: `kubectl describe deployment backend -n ${dbNamespace}
+kubectl describe deployment gateway -n ${dbNamespace}`,
+      },
+      {
+        label: 'Patch DB host if it still points to db',
+        command: `kubectl patch configmap pscs-config -n ${dbNamespace} --type merge -p '{"data":{"DB_HOST":"${dbHost}","DB_PORT":"3306"}}'
+kubectl rollout restart deployment/backend -n ${dbNamespace}
+kubectl rollout restart deployment/gateway -n ${dbNamespace}`,
+      },
+    ],
+    notes: [
+      'A log like lookup db on 10.96.0.10:53: no such host means the app is using db, but no Service named db exists.',
+      'Use DB_HOST=pscs-prod-db-cluster.pscs when the database Service is in namespace pscs.',
+      'After changing ConfigMaps or Secrets, restart the deployments so new pods receive the updated environment.',
+    ],
+  },
+  {
+    title: 'Database Crash And Login Errors',
+    icon: AlertTriangle,
+    badge: 'Errors',
+    description:
+      'Use these checks when the database service resolves but the application still cannot connect or authenticate.',
+    commands: [
+      {
+        label: 'Check backend crash logs',
+        command: `kubectl get pods -n ${dbNamespace} -l app=backend
+kubectl logs -n ${dbNamespace} -l app=backend --tail=100
+kubectl logs POD_NAME -n ${dbNamespace} --previous`,
+      },
+      {
+        label: 'Check rollout after DB config changes',
+        command: `kubectl rollout status deployment/backend -n ${dbNamespace}
+kubectl rollout status deployment/gateway -n ${dbNamespace}
+kubectl get pods -n ${dbNamespace} -o wide`,
+      },
+      {
+        label: 'Check database Service events',
+        command: `kubectl describe svc ${dbService} -n ${dbNamespace}
+kubectl describe endpoints ${dbService} -n ${dbNamespace}
+kubectl get events -n ${dbNamespace} --sort-by=.lastTimestamp`,
+      },
+    ],
+    notes: [
+      'Access denied usually means DB_USER or DB_PASS is wrong, or the database user is not allowed from the Kubernetes node/pod network.',
+      'Unknown database means DB_NAME does not exist on the database cluster.',
+      'Too many connections means the database cluster is reachable but connection limits or pooling need attention.',
+      'Connection refused means the IP is reachable but MariaDB/MySQL is not listening on 3306, is blocked, or is down on that node.',
+      'Timeout usually points to firewall, routing, network policy, database overload, or a down database node.',
     ],
   },
 ];
@@ -960,7 +1086,7 @@ export function DocumentsPage() {
     <Layout>
       <PageHeader
         title="Documents"
-        description="Kubernetes deployment, restart, status, failure, and troubleshooting reference. Examples use the proxaops namespace."
+        description="Operational reference for Kubernetes cluster and database cluster troubleshooting."
       />
 
       <div className="space-y-6">
@@ -986,6 +1112,77 @@ export function DocumentsPage() {
               ))}
             </div>
           </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center gap-3">
+            <div className="h-9 w-9 rounded-md bg-emerald-50 text-emerald-700 flex items-center justify-center">
+              <Database className="h-4 w-4" />
+            </div>
+            <div>
+              <CardTitle>Database Cluster</CardTitle>
+              <p className="mt-1 text-sm text-slate-500">
+                Service discovery, endpoint, connectivity, and application DB configuration checks. Examples use pscs and pscs-prod-db-cluster.
+              </p>
+            </div>
+          </CardHeader>
+        </Card>
+
+        {databaseSections.map((section) => {
+          const Icon = section.icon;
+          return (
+            <Card key={section.title}>
+              <CardHeader>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="h-9 w-9 rounded-md bg-slate-100 text-slate-700 flex items-center justify-center">
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <CardTitle>{section.title}</CardTitle>
+                      <Badge variant="success">{section.badge}</Badge>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{section.description}</p>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {section.commands.map((command) => (
+                    <div key={command.label}>
+                      <h3 className="text-sm font-semibold text-slate-900">{command.label}</h3>
+                      <CodeBlock command={command.command} />
+                    </div>
+                  ))}
+                  <div className="rounded-md bg-slate-50 border border-slate-200 p-4">
+                    <h3 className="text-sm font-semibold text-slate-900">What to look for</h3>
+                    <ul className="mt-2 space-y-2 text-sm text-slate-600">
+                      {section.notes.map((note) => (
+                        <li key={note} className="flex gap-2">
+                          <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-slate-400" />
+                          <span>{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+
+        <Card>
+          <CardHeader className="flex flex-row items-center gap-3">
+            <div className="h-9 w-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Terminal className="h-4 w-4" />
+            </div>
+            <div>
+              <CardTitle>Kubernetes Cluster</CardTitle>
+              <p className="mt-1 text-sm text-slate-500">
+                Cluster health, deployment, registry, pod, networking, storage, and Kubernetes error troubleshooting. Examples use proxaops as a generic namespace.
+              </p>
+            </div>
+          </CardHeader>
         </Card>
 
         <Card>
