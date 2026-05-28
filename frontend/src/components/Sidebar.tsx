@@ -14,6 +14,7 @@ import {
   LogOut,
   Database,
   Cloud,
+  BarChart3,
   SquareTerminal,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -22,6 +23,7 @@ const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/clusters', icon: Server, label: 'Clusters' },
   { to: '/database-clusters', icon: Database, label: 'Databases' },
+  { to: '/monitoring', icon: BarChart3, label: 'Monitoring' },
   { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },
   { to: '/commands', icon: SquareTerminal, label: 'Commands' },
   { to: '/networks', icon: Network, label: 'Networks' },

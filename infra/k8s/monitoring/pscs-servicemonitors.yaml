@@ -1,0 +1,41 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pscs-backend
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    cluster: pscs-prod
+    environment: production
+spec:
+  namespaceSelector:
+    matchNames:
+      - pscs
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pscs-gateway
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    cluster: pscs-prod
+    environment: production
+spec:
+  namespaceSelector:
+    matchNames:
+      - pscs
+  selector:
+    matchLabels:
+      app: gateway
+  endpoints:
+    - port: gateway
+      path: /metrics
+      interval: 30s

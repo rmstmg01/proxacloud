@@ -1,0 +1,12 @@
+# Example starting point for future remote clusters.
+# Use Grafana Alloy or Prometheus Agent to remote_write metrics to the central backend.
+cluster:
+  name: future-cluster
+  environment: production
+
+remoteWrite:
+  url: http://CENTRAL_PROMETHEUS_OR_REMOTE_WRITE_BACKEND/api/v1/write
+
+labels:
+  cluster: future-cluster
+  environment: production

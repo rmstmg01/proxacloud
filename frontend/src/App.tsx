@@ -20,6 +20,7 @@ import { DatabaseClustersPage } from './pages/DatabaseClustersPage';
 import { CloudflareTunnelsPage } from './pages/CloudflareTunnelsPage';
 import { CommandCenterPage } from './pages/CommandCenterPage';
 import { DocumentsPage } from './pages/DocumentsPage';
+import { MonitoringPage } from './pages/MonitoringPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -83,6 +84,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <CloudflareTunnelsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/monitoring"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <MonitoringPage />
                 </ProtectedRoute>
               }
             />

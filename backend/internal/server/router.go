@@ -17,6 +17,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/config"
 	"k8s-proxmox-manager/backend/internal/databaseclusters"
 	"k8s-proxmox-manager/backend/internal/db"
+	"k8s-proxmox-manager/backend/internal/monitoring"
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
 	"k8s-proxmox-manager/backend/internal/rbac"
@@ -96,6 +97,7 @@ func NewApp() (*App, error) {
 		cfg.AnsibleAutoApply,
 	)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
+	monitoringService := monitoring.NewService(database, clusterService)
 
 	if len(networkService.List()) == 0 {
 		_, err = networkService.Create(networks.Profile{
@@ -123,6 +125,7 @@ func NewApp() (*App, error) {
 	clusterHandler := clusters.NewHandler(clusterService)
 	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
+	monitoringHandler := monitoring.NewHandler(monitoringService)
 
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -210,6 +213,15 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/manifest", cloudflareTunnelHandler.Manifest)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Delete)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/events", cloudflareTunnelHandler.ListEvents)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/status", monitoringHandler.Status)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/stack", monitoringHandler.GetStack)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/monitoring/stack", monitoringHandler.UpsertStack)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/stack/manifest", monitoringHandler.StackManifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/clusters", monitoringHandler.ListClusters)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/monitoring/clusters", monitoringHandler.CreateCluster)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/clusters/{id}/manifest", monitoringHandler.ClusterManifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/monitoring/clusters/{id}/sync", monitoringHandler.SyncCluster)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/monitoring/clusters/{id}", monitoringHandler.DeleteCluster)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters", clusterHandler.ListClusters)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/check-name", clusterHandler.CheckName)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/clusters/{id}", clusterHandler.GetCluster)
