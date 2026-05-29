@@ -50,6 +50,7 @@ type NetworkStore interface {
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
+	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 }
 
 type SSHKeyPairStore interface {
@@ -191,16 +192,18 @@ type ClusterNodeRecord struct {
 }
 
 type ClusterSummary struct {
-	ID                int64     `json:"id"`
-	Name              string    `json:"name"`
-	TopologyType      string    `json:"topology_type"`
-	KubernetesVersion string    `json:"kubernetes_version"`
-	NetworkProfileID  int64     `json:"network_profile_id"`
-	ControlPlaneCount int       `json:"control_plane_count"`
-	WorkerCount       int       `json:"worker_count"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                int64      `json:"id"`
+	Name              string     `json:"name"`
+	TopologyType      string     `json:"topology_type"`
+	KubernetesVersion string     `json:"kubernetes_version"`
+	NetworkProfileID  int64      `json:"network_profile_id"`
+	ControlPlaneCount int        `json:"control_plane_count"`
+	WorkerCount       int        `json:"worker_count"`
+	Status            string     `json:"status"`
+	HealthStatus      string     `json:"health_status"`
+	HealthCheckedAt   *time.Time `json:"health_checked_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type ClusterPowerActionResponse struct {
@@ -1448,7 +1451,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 
 func (s *Service) ListClusters() ([]ClusterSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, created_at, updated_at
+		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, health_status, health_checked_at, created_at, updated_at
 		 FROM clusters
 		 ORDER BY created_at DESC`,
 	)
@@ -1469,6 +1472,8 @@ func (s *Service) ListClusters() ([]ClusterSummary, error) {
 			&c.ControlPlaneCount,
 			&c.WorkerCount,
 			&c.Status,
+			&c.HealthStatus,
+			&c.HealthCheckedAt,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		); scanErr != nil {
@@ -1920,6 +1925,9 @@ func (s *Service) PowerActionCluster(clusterID int64, action string) (ClusterPow
 	if err := s.updateClusterStatus(clusterID, status); err != nil {
 		_ = s.updateClusterOperation(operationID, "failed", "update-status", 100, err.Error())
 		return ClusterPowerActionResponse{}, err
+	}
+	if err := s.updateClusterHealthStatus(clusterID, healthStatusForPowerAction(action)); err != nil {
+		log.Printf("WARN update cluster %d health status after %s: %v", clusterID, action, err)
 	}
 
 	_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
@@ -6225,6 +6233,18 @@ func (s *Service) updateClusterStatus(clusterID int64, status string) error {
 	return nil
 }
 
+func (s *Service) updateClusterHealthStatus(clusterID int64, healthStatus string) error {
+	_, err := s.db.Exec(
+		`UPDATE clusters SET health_status = $2, health_checked_at = NOW(), updated_at = NOW() WHERE id = $1`,
+		clusterID,
+		normalizeClusterHealthStatus(healthStatus),
+	)
+	if err != nil {
+		return fmt.Errorf("update cluster health status: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) getClusterBase(clusterID int64) (string, string, error) {
 	var name string
 	var kubernetesVersion string
@@ -6329,7 +6349,7 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	var c ClusterSummary
 	err := s.db.QueryRow(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, created_at, updated_at
+		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, health_status, health_checked_at, created_at, updated_at
 		 FROM clusters WHERE id = $1`,
 		clusterID,
 	).Scan(
@@ -6341,6 +6361,8 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 		&c.ControlPlaneCount,
 		&c.WorkerCount,
 		&c.Status,
+		&c.HealthStatus,
+		&c.HealthCheckedAt,
 		&c.CreatedAt,
 		&c.UpdatedAt,
 	)

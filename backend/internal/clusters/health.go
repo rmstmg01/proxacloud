@@ -1,16 +1,22 @@
 package clusters
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 // HealthChecker validates node availability against Proxmox
 type HealthChecker interface {
-	CheckNodeHealth(credentialID int64, vmName string, proxmoxNodeName string) (bool, error)
+	CheckNodeHealth(credentialID int64, vmName string, proxmoxNodeName string) (string, error)
 }
 
 // ReconciliationWorker monitors cluster health and triggers recovery
@@ -72,12 +78,12 @@ func (rw *ReconciliationWorker) Stop() {
 	}
 }
 
-// reconcileAllClusters runs health checks and recovery on all clusters with auto-recovery enabled
+// reconcileAllClusters runs health checks on all clusters and recovery on clusters with auto-recovery enabled.
 func (rw *ReconciliationWorker) reconcileAllClusters() {
 	rows, err := rw.db.Query(`
-		SELECT DISTINCT cc.cluster_id
-		FROM cluster_recovery_config cc
-		WHERE cc.auto_recovery_enabled = true
+		SELECT DISTINCT c.id
+		FROM clusters c
+		JOIN cluster_nodes cn ON cn.cluster_id = c.id
 	`)
 	if err != nil {
 		log.Printf("[ReconciliationWorker] Error querying recovery configs: %v", err)
@@ -104,10 +110,6 @@ func (rw *ReconciliationWorker) reconcileCluster(clusterID int64) {
 		return
 	}
 
-	if !cfg.AutoRecoveryEnabled {
-		return
-	}
-
 	// Get all nodes in the cluster
 	nodes, err := getClusterNodesForReconciliation(rw.db, clusterID)
 	if err != nil {
@@ -118,19 +120,24 @@ func (rw *ReconciliationWorker) reconcileCluster(clusterID int64) {
 	for _, node := range nodes {
 		rw.checkAndRecoverNode(clusterID, node, cfg)
 	}
+
+	kubernetesStatus := checkKubernetesNodeReadiness(rw.db, clusterID, nodes)
+	if err := updateClusterAggregateHealthStatus(rw.db, clusterID, kubernetesStatus); err != nil {
+		log.Printf("[ReconciliationWorker] Failed to update aggregate health for cluster %d: %v", clusterID, err)
+	}
 }
 
 // checkAndRecoverNode checks health of a single node and triggers recovery if needed
 func (rw *ReconciliationWorker) checkAndRecoverNode(clusterID int64, node clusterNodeForReconciliation, cfg ClusterRecoveryConfig) {
 	// Check health against Proxmox
-	isHealthy, checkErr := rw.healthChecker.CheckNodeHealth(node.ProxmoxCredentialID, node.VMName, node.ProxmoxNodeName)
+	healthStatus, checkErr := rw.healthChecker.CheckNodeHealth(node.ProxmoxCredentialID, node.VMName, node.ProxmoxNodeName)
 
 	// Update health record
-	if err := updateNodeHealthStatus(rw.db, clusterID, node.ClusterNodeID, node.VMName, node.Role, isHealthy); err != nil {
+	if err := updateNodeHealthStatus(rw.db, clusterID, node.ClusterNodeID, node.VMName, node.Role, healthStatus); err != nil {
 		log.Printf("[ReconciliationWorker] Failed to update health status for node %s: %v", node.VMName, err)
 	}
 
-	if !isHealthy {
+	if (healthStatus == "unhealthy" || healthStatus == "missing") && cfg.AutoRecoveryEnabled {
 		// Increment failure count
 		failures, err := incrementNodeFailureCount(rw.db, clusterID, node.ClusterNodeID)
 		if err != nil {
@@ -150,7 +157,7 @@ func (rw *ReconciliationWorker) checkAndRecoverNode(clusterID int64, node cluste
 				logRecoveryEvent(rw.db, clusterID, sql.NullInt64{Int64: node.ClusterNodeID, Valid: true}, "recovery_triggered", node.VMName, node.Role, "in-progress", "Automatic recovery initiated")
 			}
 		}
-	} else if checkErr == nil {
+	} else if healthStatus == "healthy" && checkErr == nil {
 		// Node is healthy, reset failure count
 		if err := resetNodeFailureCount(rw.db, clusterID, node.ClusterNodeID); err != nil {
 			log.Printf("[ReconciliationWorker] Failed to reset failure count for node %s: %v", node.VMName, err)
@@ -253,11 +260,8 @@ func getRecoveryConfig(db *sql.DB, clusterID int64) (ClusterRecoveryConfig, erro
 	return cfg, err
 }
 
-func updateNodeHealthStatus(db *sql.DB, clusterID int64, clusterNodeID int64, vmName string, role string, isHealthy bool) error {
-	status := "healthy"
-	if !isHealthy {
-		status = "unhealthy"
-	}
+func updateNodeHealthStatus(db *sql.DB, clusterID int64, clusterNodeID int64, vmName string, role string, healthStatus string) error {
+	status := normalizeNodeHealthStatus(healthStatus)
 
 	_, err := db.Exec(`
 		INSERT INTO cluster_node_health (cluster_id, cluster_node_id, vm_name, role, health_status, last_check_at, updated_at)
@@ -267,6 +271,207 @@ func updateNodeHealthStatus(db *sql.DB, clusterID int64, clusterNodeID int64, vm
 	`, clusterID, clusterNodeID, vmName, role, status)
 
 	return err
+}
+
+func updateClusterAggregateHealthStatus(db *sql.DB, clusterID int64, kubernetesStatus string) error {
+	var healthyCount, unhealthyCount, missingCount, unknownCount int
+	var lifecycleStatus string
+	err := db.QueryRow(`
+		SELECT
+			COUNT(*) FILTER (WHERE health_status = 'healthy'),
+			COUNT(*) FILTER (WHERE health_status = 'unhealthy'),
+			COUNT(*) FILTER (WHERE health_status = 'missing'),
+			COUNT(*) FILTER (WHERE health_status = 'unknown')
+		FROM cluster_node_health
+		WHERE cluster_id = $1
+	`, clusterID).Scan(&healthyCount, &unhealthyCount, &missingCount, &unknownCount)
+	if err != nil {
+		return err
+	}
+	if err := db.QueryRow(`SELECT status FROM clusters WHERE id = $1`, clusterID).Scan(&lifecycleStatus); err != nil {
+		return err
+	}
+
+	status := aggregateHealthStatus(healthyCount, unhealthyCount, missingCount, unknownCount, lifecycleStatus, kubernetesStatus)
+	_, err = db.Exec(`
+		UPDATE clusters
+		SET health_status = $2, health_checked_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+	`, clusterID, status)
+	return err
+}
+
+func aggregateHealthStatus(healthyCount, unhealthyCount, missingCount, unknownCount int, lifecycleStatus string, kubernetesStatus string) string {
+	total := healthyCount + unhealthyCount + missingCount + unknownCount
+	if total == 0 {
+		return "unknown"
+	}
+	if strings.EqualFold(lifecycleStatus, "offline") && healthyCount == 0 && missingCount == 0 && unhealthyCount > 0 {
+		return "offline"
+	}
+	if missingCount > 0 || (unhealthyCount > 0 && healthyCount == 0) {
+		return "critical"
+	}
+	if unhealthyCount > 0 || unknownCount > 0 {
+		return "degraded"
+	}
+	switch normalizeClusterHealthStatus(kubernetesStatus) {
+	case "healthy":
+		return "healthy"
+	case "critical":
+		return "critical"
+	case "degraded", "unknown":
+		return "degraded"
+	}
+	return "healthy"
+}
+
+func checkKubernetesNodeReadiness(db *sql.DB, clusterID int64, nodes []clusterNodeForReconciliation) string {
+	kubeconfigPath, err := resolveClusterHealthKubeconfigPath(db, clusterID)
+	if err != nil {
+		log.Printf("[ReconciliationWorker] Kubernetes readiness skipped for cluster %d: %v", clusterID, err)
+		return "unknown"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "json")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[ReconciliationWorker] Kubernetes readiness check failed for cluster %d: %v; output: %s", clusterID, err, strings.TrimSpace(string(output)))
+		return "degraded"
+	}
+
+	var payload struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(output, &payload); err != nil {
+		log.Printf("[ReconciliationWorker] Kubernetes readiness response decode failed for cluster %d: %v", clusterID, err)
+		return "degraded"
+	}
+
+	readyByName := make(map[string]bool, len(payload.Items))
+	for _, item := range payload.Items {
+		name := strings.ToLower(strings.TrimSpace(item.Metadata.Name))
+		if name == "" {
+			continue
+		}
+		for _, condition := range item.Status.Conditions {
+			if condition.Type == "Ready" && condition.Status == "True" {
+				readyByName[name] = true
+				break
+			}
+		}
+		if _, ok := readyByName[name]; !ok {
+			readyByName[name] = false
+		}
+	}
+	if len(readyByName) == 0 {
+		return "degraded"
+	}
+
+	if len(nodes) > 0 {
+		for _, node := range nodes {
+			vmName := strings.ToLower(strings.TrimSpace(node.VMName))
+			if vmName == "" {
+				continue
+			}
+			if !readyByName[vmName] {
+				return "degraded"
+			}
+		}
+	} else {
+		for _, ready := range readyByName {
+			if !ready {
+				return "degraded"
+			}
+		}
+	}
+
+	return "healthy"
+}
+
+func resolveClusterHealthKubeconfigPath(db *sql.DB, clusterID int64) (string, error) {
+	var workDir string
+	err := db.QueryRow(`
+		SELECT work_dir
+		FROM provision_runs
+		WHERE cluster_id = $1 AND action = 'bootstrap' AND work_dir <> ''
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, clusterID).Scan(&workDir)
+	if err == nil {
+		candidate := filepath.Join(workDir, "admin.conf")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+
+	if envPath := strings.TrimSpace(os.Getenv("KUBECONFIG")); envPath != "" {
+		return resolveHealthKubeconfigFile(envPath)
+	}
+	return resolveHealthKubeconfigFile("/app/backend/.kube/config")
+}
+
+func resolveHealthKubeconfigFile(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return path, nil
+	}
+	candidate := filepath.Join(path, "config")
+	info, err = os.Stat(candidate)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("kubeconfig path %s is a directory", candidate)
+	}
+	return candidate, nil
+}
+
+func normalizeNodeHealthStatus(status string) string {
+	switch status {
+	case "healthy", "unhealthy", "missing", "unknown":
+		return status
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeClusterHealthStatus(status string) string {
+	switch status {
+	case "healthy", "degraded", "critical", "offline", "unknown":
+		return status
+	default:
+		return "unknown"
+	}
+}
+
+func healthStatusForPowerAction(action string) string {
+	switch action {
+	case "start", "restart":
+		return "healthy"
+	case "shutdown":
+		return "offline"
+	default:
+		return "unknown"
+	}
 }
 
 func incrementNodeFailureCount(db *sql.DB, clusterID int64, clusterNodeID int64) (int, error) {
@@ -342,7 +547,7 @@ func (s *Service) GetClusterHealth(clusterID int64) (ClusterHealthResponse, erro
 		LastCheckAt:  time.Now(),
 	}
 
-	var healthyCount, unhealthyCount, missingCount int
+	var healthyCount, unhealthyCount, missingCount, unknownCount int
 
 	for rows.Next() {
 		var nodeID int64
@@ -386,6 +591,8 @@ func (s *Service) GetClusterHealth(clusterID int64) (ClusterHealthResponse, erro
 			unhealthyCount++
 		case "missing":
 			missingCount++
+		case "unknown":
+			unknownCount++
 		}
 
 		if lastCheck.After(response.LastCheckAt) || response.LastCheckAt.IsZero() {
@@ -397,14 +604,12 @@ func (s *Service) GetClusterHealth(clusterID int64) (ClusterHealthResponse, erro
 	response.UnhealthyNodes = unhealthyCount
 	response.MissingNodes = missingCount
 
-	// Determine overall status
-	if missingCount > 0 || (unhealthyCount > 0 && healthyCount == 0) {
-		response.OverallStatus = "critical"
-	} else if unhealthyCount > 0 || missingCount > 0 {
-		response.OverallStatus = "degraded"
-	} else {
-		response.OverallStatus = "healthy"
+	cluster, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return ClusterHealthResponse{}, err
 	}
+	kubernetesStatus := checkKubernetesNodeReadiness(s.db, clusterID, nil)
+	response.OverallStatus = aggregateHealthStatus(healthyCount, unhealthyCount, missingCount, unknownCount, cluster.Status, kubernetesStatus)
 
 	return response, nil
 }

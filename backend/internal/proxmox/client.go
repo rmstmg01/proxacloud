@@ -153,6 +153,35 @@ func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName
 	return actualAction, nil
 }
 
+func (c *Client) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmName string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return "", errors.New("vm name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return "", err
+	}
+
+	status, err := c.getQEMUVMStatus(httpClient, base, cred, proxmoxNodeName, vm.VMID)
+	if err != nil {
+		return strings.TrimSpace(strings.ToLower(vm.Status)), nil
+	}
+
+	return strings.TrimSpace(strings.ToLower(status)), nil
+}
+
 func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second

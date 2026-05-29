@@ -131,6 +131,8 @@ export interface ClusterSummary {
   control_plane_count: number;
   worker_count: number;
   status: string;
+  health_status: string;
+  health_checked_at?: string;
   created_at: string;
   updated_at: string;
 }

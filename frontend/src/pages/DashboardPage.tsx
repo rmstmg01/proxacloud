@@ -50,8 +50,7 @@ export function DashboardPage() {
   });
 
   const failedClusters = clusters?.filter((c) => c.status.toLowerCase() === 'failed') ?? [];
-  const runningClusters =
-    clusters?.filter((c) => ['running', 'active', 'completed', 'bootstrapped'].includes(c.status.toLowerCase())) ?? [];
+  const runningClusters = clusters?.filter((c) => c.health_status?.toLowerCase() === 'healthy') ?? [];
 
   if (loadingClusters || loadingNetworks || loadingNodes) return <Layout><PageSpinner /></Layout>;
 
@@ -102,7 +101,7 @@ export function DashboardPage() {
                       {c.topology_type} · {c.kubernetes_version}
                     </p>
                   </div>
-                  <StatusBadge status={c.status} />
+                  <StatusBadge status={c.health_status || c.status} />
                 </Link>
               ))}
             </div>

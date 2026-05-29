@@ -120,6 +120,7 @@ export function ClustersPage() {
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Version</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Topology</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Nodes</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Health</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
                     <th className="px-6 py-3" />
@@ -133,6 +134,9 @@ export function ClustersPage() {
                       <td className="px-6 py-4 text-slate-600 capitalize">{c.topology_type}</td>
                       <td className="px-6 py-4 text-slate-600">
                         {c.control_plane_count}CP + {c.worker_count}W
+                      </td>
+                      <td className="px-6 py-4">
+                        <StatusBadge status={c.health_status || 'unknown'} />
                       </td>
                       <td className="px-6 py-4">
                         <StatusBadge status={c.status} />
