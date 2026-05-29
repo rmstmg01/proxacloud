@@ -1,7 +1,7 @@
 import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Play, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Check, Clipboard, Play, RefreshCw } from 'lucide-react';
 import {
   getCluster,
   getClusterRuns,
@@ -47,6 +47,7 @@ import {
   getClusterSavedManifests,
   createClusterSavedManifest,
   updateClusterSavedManifest,
+  updateGlobalSavedManifest,
   deleteClusterSavedManifest,
   applyClusterSavedManifest,
   getClusterSavedManifestRevisions,
@@ -1450,6 +1451,7 @@ function ManifestsTab({ id }: { id: number }) {
   const { data: manifests } = useQuery({ queryKey: ['cluster-saved-manifests', id], queryFn: () => getClusterSavedManifests(id) });
   const [viewing, setViewing] = useState<ClusterSavedManifestRecord | null>(null);
   const [editing, setEditing] = useState<ClusterSavedManifestRecord | null>(null);
+  const [copiedManifestID, setCopiedManifestID] = useState<number | null>(null);
   const [selectedManifestID, setSelectedManifestID] = useState(0);
   const [selectedRunID, setSelectedRunID] = useState(0);
   const [form, setForm] = useState({
@@ -1528,7 +1530,9 @@ function ManifestsTab({ id }: { id: number }) {
         raw_manifest: editForm.raw_manifest,
         is_global: editForm.is_global,
       };
-      return updateClusterSavedManifest(id, editing.id, body);
+      return editing.is_global
+        ? updateGlobalSavedManifest(editing.id, body)
+        : updateClusterSavedManifest(id, editing.id, body);
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
@@ -1565,6 +1569,12 @@ function ManifestsTab({ id }: { id: number }) {
       raw_manifest: manifest.raw_manifest,
       is_global: manifest.is_global,
     });
+  };
+
+  const copyManifest = async (manifest: ClusterSavedManifestRecord) => {
+    await navigator.clipboard.writeText(manifest.raw_manifest);
+    setCopiedManifestID(manifest.id);
+    window.setTimeout(() => setCopiedManifestID((current) => (current === manifest.id ? null : current)), 1600);
   };
 
   const selectedRun = runs?.find((run) => run.id === selectedRunID);
@@ -1731,18 +1741,20 @@ function ManifestsTab({ id }: { id: number }) {
             {viewing.description && <p className="text-sm text-slate-600">{viewing.description}</p>}
             <pre className="max-h-[60vh] overflow-auto rounded bg-slate-950 p-4 text-xs text-slate-100">{viewing.raw_manifest}</pre>
             <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => copyManifest(viewing)}>
+                {copiedManifestID === viewing.id ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
+                {copiedManifestID === viewing.id ? 'Copied' : 'Copy'}
+              </Button>
               <Button type="button" variant="secondary" onClick={() => setViewing(null)}>Close</Button>
-              {!viewing.is_global && (
-                <Button
-                  type="button"
-                  onClick={() => {
-                    startEdit(viewing);
-                    setViewing(null);
-                  }}
-                >
-                  Edit
-                </Button>
-              )}
+              <Button
+                type="button"
+                onClick={() => {
+                  startEdit(viewing);
+                  setViewing(null);
+                }}
+              >
+                Edit
+              </Button>
             </div>
           </div>
         )}
@@ -1751,15 +1763,10 @@ function ManifestsTab({ id }: { id: number }) {
       <Modal open={Boolean(editing)} onClose={closeEdit} title={editing ? `Edit Manifest: ${editing.name}` : 'Edit Manifest'} maxWidth="6xl">
         {editing && (
           <form onSubmit={(e) => { e.preventDefault(); updateMut.mutate(); }} className="space-y-4">
-            {editing.is_global && (
-              <Alert variant="info">
-                Global manifests can be applied from this cluster. Edit them from the main Manifests page.
-              </Alert>
-            )}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Input label="Manifest name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required disabled={editing.is_global} />
-              <Input label="Default namespace" value={editForm.namespace} onChange={(e) => setEditForm({ ...editForm, namespace: e.target.value })} required disabled={editing.is_global} />
-              <Input label="Description" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} disabled={editing.is_global} />
+              <Input label="Manifest name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required />
+              <Input label="Default namespace" value={editForm.namespace} onChange={(e) => setEditForm({ ...editForm, namespace: e.target.value })} required />
+              <Input label="Description" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
             </div>
             <Textarea
               label="Manifest YAML"
@@ -1768,16 +1775,15 @@ function ManifestsTab({ id }: { id: number }) {
               rows={18}
               className="font-mono text-xs"
               required
-              disabled={editing.is_global}
             />
             <label className="flex items-center gap-3">
-              <input type="checkbox" checked={editForm.is_global} disabled className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <input type="checkbox" checked={editForm.is_global} onChange={(e) => setEditForm({ ...editForm, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
               <span className="text-sm text-slate-700">Available to all clusters</span>
             </label>
             {updateMut.error && <ErrorMessage error={updateMut.error} />}
             <div className="flex justify-end gap-3">
               <Button type="button" variant="secondary" onClick={closeEdit}>Cancel</Button>
-              <Button type="submit" loading={updateMut.isPending} disabled={editing.is_global}>Save Changes</Button>
+              <Button type="submit" loading={updateMut.isPending}>Save Changes</Button>
             </div>
           </form>
         )}
