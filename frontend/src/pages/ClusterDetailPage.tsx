@@ -1448,10 +1448,18 @@ metadata:
 function ManifestsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: manifests } = useQuery({ queryKey: ['cluster-saved-manifests', id], queryFn: () => getClusterSavedManifests(id) });
+  const [viewing, setViewing] = useState<ClusterSavedManifestRecord | null>(null);
   const [editing, setEditing] = useState<ClusterSavedManifestRecord | null>(null);
   const [selectedManifestID, setSelectedManifestID] = useState(0);
   const [selectedRunID, setSelectedRunID] = useState(0);
   const [form, setForm] = useState({
+    name: '',
+    namespace: 'default',
+    description: '',
+    raw_manifest: DEFAULT_SAVED_MANIFEST,
+    is_global: false,
+  });
+  const [editForm, setEditForm] = useState({
     name: '',
     namespace: 'default',
     description: '',
@@ -1471,8 +1479,18 @@ function ManifestsTab({ id }: { id: number }) {
   });
 
   const resetForm = () => {
-    setEditing(null);
     setForm({
+      name: '',
+      namespace: 'default',
+      description: '',
+      raw_manifest: DEFAULT_SAVED_MANIFEST,
+      is_global: false,
+    });
+  };
+
+  const closeEdit = () => {
+    setEditing(null);
+    setEditForm({
       name: '',
       namespace: 'default',
       description: '',
@@ -1490,15 +1508,33 @@ function ManifestsTab({ id }: { id: number }) {
         raw_manifest: form.raw_manifest,
         is_global: form.is_global,
       };
-      return editing
-        ? updateClusterSavedManifest(id, editing.id, body)
-        : createClusterSavedManifest(id, body);
+      return createClusterSavedManifest(id, body);
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
       qc.invalidateQueries({ queryKey: ['cluster-saved-manifest-revisions', id, data.id] });
       setSelectedManifestID(data.id);
       resetForm();
+    },
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async () => {
+      if (!editing) throw new Error('No manifest selected for editing');
+      const body = {
+        name: editForm.name.trim(),
+        namespace: editForm.namespace.trim() || 'default',
+        description: editForm.description.trim(),
+        raw_manifest: editForm.raw_manifest,
+        is_global: editForm.is_global,
+      };
+      return updateClusterSavedManifest(id, editing.id, body);
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifests', id] });
+      qc.invalidateQueries({ queryKey: ['cluster-saved-manifest-revisions', id, data.id] });
+      setSelectedManifestID(data.id);
+      closeEdit();
     },
   });
 
@@ -1522,7 +1558,7 @@ function ManifestsTab({ id }: { id: number }) {
 
   const startEdit = (manifest: ClusterSavedManifestRecord) => {
     setEditing(manifest);
-    setForm({
+    setEditForm({
       name: manifest.name,
       namespace: manifest.namespace,
       description: manifest.description || '',
@@ -1536,13 +1572,13 @@ function ManifestsTab({ id }: { id: number }) {
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader><CardTitle>{editing ? 'Edit Manifest' : 'Create Manifest'}</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Create Manifest</CardTitle></CardHeader>
         <CardContent>
           <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
-              <Input label="Manifest name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required disabled={Boolean(editing?.is_global)} />
-              <Input label="Default namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required disabled={Boolean(editing?.is_global)} />
-              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} disabled={Boolean(editing?.is_global)} />
+              <Input label="Manifest name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Input label="Default namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required />
+              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </div>
             <Textarea
               label="Manifest YAML"
@@ -1551,17 +1587,14 @@ function ManifestsTab({ id }: { id: number }) {
               rows={16}
               className="font-mono text-xs"
               required
-              disabled={Boolean(editing?.is_global)}
             />
             <label className="flex items-center gap-3">
-              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} disabled={Boolean(editing)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
               <span className="text-sm text-slate-700">Make available to all clusters</span>
             </label>
             <div className="flex gap-3">
-              <Button type="submit" loading={saveMut.isPending} disabled={Boolean(editing?.is_global)}>{editing ? 'Update Manifest' : 'Save Manifest'}</Button>
-              {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+              <Button type="submit" loading={saveMut.isPending}>Save Manifest</Button>
             </div>
-            {editing?.is_global && <Alert variant="info">Global manifests can be applied from this cluster. Edit them from the main Manifests page.</Alert>}
             {saveMut.error && <ErrorMessage error={saveMut.error} />}
           </form>
         </CardContent>
@@ -1595,6 +1628,7 @@ function ManifestsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 text-slate-500">{manifest.last_applied_at ? new Date(manifest.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
                         <div className="flex justify-end gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={() => setViewing(manifest)}>View</Button>
                           <Button type="button" size="sm" variant="secondary" onClick={() => { setSelectedManifestID(manifest.id); setSelectedRunID(0); }}>History</Button>
                           <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(manifest)}>Edit</Button>
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables?.manifestID === manifest.id} onClick={() => applyMut.mutate({ manifestID: manifest.id })}>Apply</Button>
@@ -1672,6 +1706,82 @@ function ManifestsTab({ id }: { id: number }) {
           </Card>
         </div>
       )}
+
+      <Modal open={Boolean(viewing)} onClose={() => setViewing(null)} title={viewing ? `View Manifest: ${viewing.name}` : 'View Manifest'} maxWidth="6xl">
+        {viewing && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-sm">
+              <div>
+                <p className="text-xs font-medium text-slate-500">Namespace</p>
+                <p className="mt-1 text-slate-900">{viewing.namespace}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500">Scope</p>
+                <p className="mt-1 text-slate-900">{viewing.is_global ? 'Global' : 'Cluster'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500">Revision</p>
+                <p className="mt-1 text-slate-900">rev {viewing.latest_revision || 1}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-slate-500">Last applied</p>
+                <p className="mt-1 text-slate-900">{viewing.last_applied_at ? new Date(viewing.last_applied_at).toLocaleString() : '-'}</p>
+              </div>
+            </div>
+            {viewing.description && <p className="text-sm text-slate-600">{viewing.description}</p>}
+            <pre className="max-h-[60vh] overflow-auto rounded bg-slate-950 p-4 text-xs text-slate-100">{viewing.raw_manifest}</pre>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setViewing(null)}>Close</Button>
+              {!viewing.is_global && (
+                <Button
+                  type="button"
+                  onClick={() => {
+                    startEdit(viewing);
+                    setViewing(null);
+                  }}
+                >
+                  Edit
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={Boolean(editing)} onClose={closeEdit} title={editing ? `Edit Manifest: ${editing.name}` : 'Edit Manifest'} maxWidth="6xl">
+        {editing && (
+          <form onSubmit={(e) => { e.preventDefault(); updateMut.mutate(); }} className="space-y-4">
+            {editing.is_global && (
+              <Alert variant="info">
+                Global manifests can be applied from this cluster. Edit them from the main Manifests page.
+              </Alert>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <Input label="Manifest name" value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} required disabled={editing.is_global} />
+              <Input label="Default namespace" value={editForm.namespace} onChange={(e) => setEditForm({ ...editForm, namespace: e.target.value })} required disabled={editing.is_global} />
+              <Input label="Description" value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} disabled={editing.is_global} />
+            </div>
+            <Textarea
+              label="Manifest YAML"
+              value={editForm.raw_manifest}
+              onChange={(e) => setEditForm({ ...editForm, raw_manifest: e.target.value })}
+              rows={18}
+              className="font-mono text-xs"
+              required
+              disabled={editing.is_global}
+            />
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={editForm.is_global} disabled className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Available to all clusters</span>
+            </label>
+            {updateMut.error && <ErrorMessage error={updateMut.error} />}
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="secondary" onClick={closeEdit}>Cancel</Button>
+              <Button type="submit" loading={updateMut.isPending} disabled={editing.is_global}>Save Changes</Button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }
