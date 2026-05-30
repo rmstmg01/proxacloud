@@ -234,7 +234,7 @@ func (s *Service) ClusterManifest(id int64) (ManifestResponse, error) {
 		return ManifestResponse{}, err
 	}
 	manifest := cluster.LastManifest
-	if strings.TrimSpace(manifest) == "" {
+	if strings.TrimSpace(manifest) == "" || shouldRebuildClusterManifest(cluster, manifest) {
 		req := CreateClusterRequest{
 			ClusterID: cluster.ClusterID, Name: cluster.Name, Environment: cluster.Environment,
 			Mode: cluster.Mode, PrometheusURL: cluster.PrometheusURL, GrafanaURL: cluster.GrafanaURL,
@@ -364,6 +364,7 @@ func buildValuesYAML(req UpsertStackRequest) string {
 	return fmt.Sprintf(`prometheus:
   prometheusSpec:
     retention: %s
+    enableRemoteWriteReceiver: true
     externalLabels:
       cluster: management
       environment: production
@@ -482,25 +483,107 @@ spec:
 func buildClusterManifest(req CreateClusterRequest) string {
 	clusterLabel := strings.ToLower(strings.ReplaceAll(req.Name, " ", "-"))
 	if req.Mode == ClusterModeRemoteWrite {
-		return fmt.Sprintf(`# Remote cluster agent values for %s
-cluster:
+		return fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
   name: %s
-  environment: %s
-
-alloy:
-  controller:
-    type: daemonset
-  clustering:
-    enabled: true
-  configMap:
-    content: |
-      prometheus.remote_write "central" {
-        endpoint {
-          url = "%s"
-        }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: %s
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-remote-write
+  namespace: %s
+data:
+  config.alloy: |
+    prometheus.remote_write "central" {
+      endpoint {
+        url = "%s"
       }
-      prometheus.exporter.unix "node" {}
-`, req.Name, clusterLabel, req.Environment, req.RemoteWriteURL)
+
+      external_labels = {
+        cluster = "%s",
+        environment = "%s",
+      }
+    }
+
+    prometheus.exporter.unix "node" {
+      rootfs_path = "/host/root"
+      procfs_path = "/host/proc"
+      sysfs_path = "/host/sys"
+    }
+
+    prometheus.scrape "node" {
+      targets = prometheus.exporter.unix.node.targets
+      forward_to = [prometheus.remote_write.central.receiver]
+      job_name = "integrations/node_exporter"
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: %s
+  labels:
+    app: alloy
+    cluster: %s
+    environment: %s
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+        cluster: %s
+        environment: %s
+    spec:
+      serviceAccountName: alloy
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.5.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - run
+            - /etc/alloy/config.alloy
+            - --storage.path=/var/lib/alloy/data
+          ports:
+            - name: http-metrics
+              containerPort: 12345
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-remote-write
+        - name: root
+          hostPath:
+            path: /
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+`, req.AgentNamespace, req.AgentNamespace, req.AgentNamespace, req.RemoteWriteURL, clusterLabel, req.Environment, req.AgentNamespace, clusterLabel, req.Environment, clusterLabel, req.Environment)
 	}
 	return fmt.Sprintf(`apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -556,7 +639,15 @@ kubectl apply -f infra/k8s/monitoring/grafana-ingress.yaml`, namespace, namespac
 
 func buildClusterCommands(cluster MonitoredCluster) string {
 	if cluster.Mode == ClusterModeRemoteWrite {
-		return "Install Grafana Alloy or Prometheus Agent in the remote cluster with the generated values, then verify remote_write samples in the central backend."
+		return fmt.Sprintf("kubectl apply -n %s -f generated-alloy-remote-write.yaml", cluster.AgentNamespace)
 	}
 	return fmt.Sprintf("kubectl apply -n %s -f infra/k8s/monitoring/pscs-servicemonitors.yaml", cluster.AgentNamespace)
+}
+
+func shouldRebuildClusterManifest(cluster MonitoredCluster, manifest string) bool {
+	if cluster.Mode != ClusterModeRemoteWrite {
+		return false
+	}
+	trimmed := strings.TrimSpace(manifest)
+	return trimmed != "" && (!strings.Contains(trimmed, "apiVersion:") || !strings.Contains(trimmed, "kind:"))
 }

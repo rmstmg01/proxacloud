@@ -1,6 +1,7 @@
 prometheus:
   prometheusSpec:
     retention: 15d
+    enableRemoteWriteReceiver: true
     externalLabels:
       cluster: management
       environment: production
