@@ -326,7 +326,7 @@ const playbookTemplate = `---
       command: sysctl --system
       changed_when: false
 
-    - name: Install containerd and dependencies
+    - name: Install containerd, Kubernetes, and storage dependencies
       apt:
         name:
           - apt-transport-https
@@ -335,9 +335,17 @@ const playbookTemplate = `---
           - gpg
           - conntrack
           - containerd
+          - open-iscsi
+          - nfs-common
         lock_timeout: 600
         update_cache: true
         state: present
+
+    - name: Enable iSCSI daemon for Longhorn volumes
+      systemd:
+        name: iscsid
+        enabled: true
+        state: started
 
     - name: Configure containerd with systemd cgroup
       shell: |
