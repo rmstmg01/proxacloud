@@ -25,12 +25,18 @@ RUN printf 'terraform {\n  required_providers {\n    proxmox = {\n      source  
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ansible-core openssh-client curl
+RUN apk add --no-cache ansible-core openssh-client curl tar gzip
 
 # Install kubectl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
     && chmod +x kubectl \
     && mv kubectl /usr/local/bin/
+
+# Install helm for UI-driven monitoring stack installs.
+RUN curl -fsSL https://get.helm.sh/helm-v3.15.4-linux-amd64.tar.gz -o helm.tar.gz \
+    && tar -xzf helm.tar.gz \
+    && mv linux-amd64/helm /usr/local/bin/helm \
+    && rm -rf linux-amd64 helm.tar.gz
 
 RUN adduser -D -g '' appuser
 

@@ -3810,6 +3810,12 @@ func (s *Service) executeSavedManifestApply(namespace, manifest string) (string,
 	}
 
 	outputs := make([]string, 0, 3)
+	if output, err := s.ensureManifestCRDs(ctx, kubeconfigPath, manifest); err != nil {
+		if strings.TrimSpace(output) != "" {
+			outputs = append(outputs, output)
+		}
+		return strings.Join(outputs, "\n"), err
+	}
 	if strings.TrimSpace(namespace) != "" {
 		cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "namespace", namespace)
 		if output, err := cmd.CombinedOutput(); err != nil {
@@ -3839,11 +3845,135 @@ func (s *Service) executeSavedManifestApply(namespace, manifest string) (string,
 	return strings.Join(outputs, "\n"), nil
 }
 
+func (s *Service) ensureManifestCRDs(ctx context.Context, kubeconfigPath, manifest string) (string, error) {
+	requiredCRDs := requiredCRDsForManifest(manifest)
+	if len(requiredCRDs) == 0 {
+		return "", nil
+	}
+
+	outputs := make([]string, 0, len(requiredCRDs))
+	for _, required := range requiredCRDs {
+		cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "crd", required.name)
+		output, err := cmd.CombinedOutput()
+		outputs = append(outputs, string(output))
+		if err != nil {
+			return strings.Join(outputs, "\n"), fmt.Errorf("%s CRD %q is not installed; install kube-prometheus-stack or Prometheus Operator first, wait for the CRDs to be established, then apply this manifest again: %w\nOutput: %s", required.displayName, required.name, err, string(output))
+		}
+	}
+	return strings.Join(outputs, "\n"), nil
+}
+
+type manifestCRDRequirement struct {
+	name        string
+	displayName string
+}
+
+func requiredCRDsForManifest(manifest string) []manifestCRDRequirement {
+	if !strings.Contains(manifest, "monitoring.coreos.com/") {
+		return nil
+	}
+
+	requirements := make([]manifestCRDRequirement, 0, 1)
+	if strings.Contains(manifest, "kind: ServiceMonitor") || strings.Contains(manifest, "kind: \"ServiceMonitor\"") {
+		requirements = append(requirements, manifestCRDRequirement{
+			name:        "servicemonitors.monitoring.coreos.com",
+			displayName: "ServiceMonitor",
+		})
+	}
+	return requirements
+}
+
 func (s *Service) ApplyRawManifest(clusterID int64, namespace, manifest string) (string, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return "", err
 	}
 	return s.executeSavedManifestApply(namespace, manifest)
+}
+
+func (s *Service) ApplyMonitoringStack(namespace, valuesYAML, manifest string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	defer cancel()
+
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		namespace = "monitoring"
+	}
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	tmpDir, err := os.MkdirTemp("", "kpm-monitoring-*")
+	if err != nil {
+		return "", fmt.Errorf("create monitoring install workspace: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	valuesPath := filepath.Join(tmpDir, "values.yaml")
+	if err := os.WriteFile(valuesPath, []byte(valuesYAML), 0o600); err != nil {
+		return "", fmt.Errorf("write monitoring values file: %w", err)
+	}
+
+	outputs := make([]string, 0, 6)
+	commands := [][]string{
+		{"helm", "repo", "add", "prometheus-community", "https://prometheus-community.github.io/helm-charts", "--force-update"},
+		{"helm", "repo", "update"},
+		{"kubectl", "--kubeconfig", kubeconfigPath, "create", "namespace", namespace, "--dry-run=client", "-o", "yaml"},
+		{"helm", "upgrade", "--install", "kube-prometheus-stack", "prometheus-community/kube-prometheus-stack", "--namespace", namespace, "--create-namespace", "--values", valuesPath, "--kubeconfig", kubeconfigPath},
+		{"kubectl", "--kubeconfig", kubeconfigPath, "wait", "--for", "condition=Established", "crd/servicemonitors.monitoring.coreos.com", "--timeout=120s"},
+	}
+
+	for _, args := range commands[:2] {
+		output, err := runCommand(ctx, args, "")
+		outputs = append(outputs, output)
+		if err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
+	}
+
+	namespaceManifest, err := runCommand(ctx, commands[2], "")
+	outputs = append(outputs, namespaceManifest)
+	if err != nil {
+		return strings.Join(outputs, "\n"), err
+	}
+	output, err := runCommand(ctx, []string{"kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-"}, namespaceManifest)
+	outputs = append(outputs, output)
+	if err != nil {
+		return strings.Join(outputs, "\n"), err
+	}
+
+	for _, args := range commands[3:] {
+		output, err := runCommand(ctx, args, "")
+		outputs = append(outputs, output)
+		if err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
+	}
+
+	if strings.TrimSpace(manifest) != "" {
+		output, err := runCommand(ctx, []string{"kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-"}, manifest)
+		outputs = append(outputs, output)
+		if err != nil {
+			return strings.Join(outputs, "\n"), err
+		}
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
+func runCommand(ctx context.Context, args []string, stdin string) (string, error) {
+	if len(args) == 0 {
+		return "", errors.New("command is empty")
+	}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("%s failed: %w\nOutput: %s", strings.Join(args, " "), err, string(output))
+	}
+	return string(output), nil
 }
 
 func (s *Service) applyTLSSecret(ctx context.Context, kubeconfigPath, namespace string, secret appTLSSecretSpec) (string, error) {

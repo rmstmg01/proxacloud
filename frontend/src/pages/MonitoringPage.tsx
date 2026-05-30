@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, BarChart3, Clipboard, Eye, Gauge, Plus, RefreshCw, Server, Trash2 } from 'lucide-react';
 import { getClusters } from '../api/clusters';
 import {
+  applyMonitoringStack,
   createMonitoredCluster,
   deleteMonitoredCluster,
   getMonitoredClusterManifest,
@@ -102,6 +103,15 @@ export function MonitoringPage() {
     },
   });
 
+  const applyStackMutation = useMutation({
+    mutationFn: applyMonitoringStack,
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['monitoring-status'] });
+      queryClient.invalidateQueries({ queryKey: ['monitoring-stack-manifest'] });
+      setLastResult(`Monitoring stack ${resp.status}.`);
+    },
+  });
+
   const createClusterMutation = useMutation({
     mutationFn: createMonitoredCluster,
     onSuccess: (cluster) => {
@@ -181,7 +191,7 @@ export function MonitoringPage() {
             </div>
           </Alert>
         )}
-        <ErrorMessage error={statusQuery.error || clustersQuery.error || stackMutation.error || createClusterMutation.error || syncMutation.error || deleteMutation.error} />
+        <ErrorMessage error={statusQuery.error || clustersQuery.error || stackMutation.error || applyStackMutation.error || createClusterMutation.error || syncMutation.error || deleteMutation.error} />
 
         <div className="grid gap-4 md:grid-cols-4">
           <MetricCard icon={Gauge} label="Stack" value={stack?.status ?? 'Not configured'} />
@@ -196,10 +206,16 @@ export function MonitoringPage() {
               <CardTitle>Monitoring Stack</CardTitle>
               <p className="mt-1 text-sm text-slate-500">Use kube-prometheus-stack as the central monitoring foundation.</p>
             </div>
-            <Button type="button" variant="secondary" onClick={() => setManifestTarget('stack')} disabled={!stack}>
-              <Clipboard className="h-4 w-4" />
-              Manifests
-            </Button>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setManifestTarget('stack')} disabled={!stack}>
+                <Clipboard className="h-4 w-4" />
+                Manifests
+              </Button>
+              <Button type="button" onClick={() => applyStackMutation.mutate()} disabled={!stack} loading={applyStackMutation.isPending}>
+                <RefreshCw className="h-4 w-4" />
+                Install / Upgrade
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <form className="grid gap-4 lg:grid-cols-3" onSubmit={submitStack}>

@@ -128,6 +128,40 @@ func (s *Service) StackManifest() (ManifestResponse, error) {
 	}, nil
 }
 
+func (s *Service) ApplyStack() (StackApplyResponse, error) {
+	stack, err := s.Stack()
+	if err != nil {
+		return StackApplyResponse{}, err
+	}
+	values := stack.LastValuesYAML
+	if strings.TrimSpace(values) == "" {
+		values = buildValuesYAML(stackRequestFromStack(stack))
+	}
+	manifest := stack.LastManifest
+	if strings.TrimSpace(manifest) == "" {
+		manifest = buildStackManifest(stackRequestFromStack(stack))
+	}
+
+	output, applyErr := s.applier.ApplyMonitoringStack(stack.Namespace, values, manifest)
+	status := "installed"
+	if applyErr != nil {
+		status = "install_failed"
+		output = output + "\n" + applyErr.Error()
+	}
+	_, err = s.db.Exec(`
+		UPDATE monitoring_stacks
+		SET status=$1, last_values_yaml=$2, last_manifest=$3,
+		    last_apply_output=$4, last_applied_at=NOW(), updated_at=NOW()
+		WHERE id=$5`, status, values, manifest, output, stack.ID)
+	if err != nil {
+		return StackApplyResponse{}, err
+	}
+	if applyErr != nil {
+		return StackApplyResponse{}, applyErr
+	}
+	return StackApplyResponse{StackID: stack.ID, Status: status, Output: output}, nil
+}
+
 func (s *Service) ListClusters() ([]MonitoredCluster, error) {
 	rows, err := s.db.Query(`
 		SELECT mc.id, mc.cluster_id, COALESCE(c.name, ''), mc.name, mc.environment,

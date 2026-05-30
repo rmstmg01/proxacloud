@@ -67,6 +67,19 @@ func (h *Handler) StackManifest(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ApplyStack(w http.ResponseWriter, _ *http.Request) {
+	resp, err := h.service.ApplyStack()
+	if err != nil {
+		if errors.Is(err, ErrStackNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListClusters(w http.ResponseWriter, _ *http.Request) {
 	resp, err := h.service.ListClusters()
 	if err != nil {

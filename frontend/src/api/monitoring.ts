@@ -81,6 +81,12 @@ export interface MonitoringManifestResponse {
   commands: string;
 }
 
+export interface ApplyMonitoringStackResponse {
+  stack_id: number;
+  status: string;
+  output: string;
+}
+
 export interface SyncMonitoringClusterResponse {
   cluster_id: number;
   status: string;
@@ -96,6 +102,9 @@ export const upsertMonitoringStack = (body: UpsertMonitoringStackRequest) =>
 
 export const getMonitoringStackManifest = () =>
   client.get<MonitoringManifestResponse>('/monitoring/stack/manifest').then((r) => r.data);
+
+export const applyMonitoringStack = () =>
+  client.post<ApplyMonitoringStackResponse>('/monitoring/stack/apply').then((r) => r.data);
 
 export const getMonitoredClusters = () =>
   client.get<MonitoredCluster[]>('/monitoring/clusters').then((r) => r.data);

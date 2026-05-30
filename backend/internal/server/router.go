@@ -217,6 +217,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/stack", monitoringHandler.GetStack)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/monitoring/stack", monitoringHandler.UpsertStack)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/stack/manifest", monitoringHandler.StackManifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/monitoring/stack/apply", monitoringHandler.ApplyStack)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/clusters", monitoringHandler.ListClusters)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/monitoring/clusters", monitoringHandler.CreateCluster)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/clusters/{id}/manifest", monitoringHandler.ClusterManifest)

@@ -21,6 +21,7 @@ var (
 
 type ManifestApplier interface {
 	ApplyRawManifest(clusterID int64, namespace, manifest string) (string, error)
+	ApplyMonitoringStack(namespace, valuesYAML, manifest string) (string, error)
 }
 
 type MonitoringStack struct {
@@ -104,6 +105,12 @@ type ManifestResponse struct {
 	ValuesYAML string `json:"values_yaml,omitempty"`
 	Manifest   string `json:"manifest"`
 	Commands   string `json:"commands"`
+}
+
+type StackApplyResponse struct {
+	StackID int64  `json:"stack_id"`
+	Status  string `json:"status"`
+	Output  string `json:"output"`
 }
 
 type SyncResponse struct {
