@@ -15,6 +15,7 @@ import {
   deployMetalLB,
   getMetalLB,
   deployIngressController,
+  deployLonghorn,
   deployApp,
   getApplicationManifests,
   getApplicationManifestRevision,
@@ -65,7 +66,7 @@ import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
 import type { ClusterConfigMapRecord, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'secrets' | 'configmaps' | 'manifests' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'manifests' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -73,6 +74,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'bootstrap', label: 'Bootstrap' },
   { key: 'day2', label: 'Day-2 Ops' },
   { key: 'metallb', label: 'MetalLB' },
+  { key: 'storage', label: 'Storage' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'configmaps', label: 'ConfigMaps' },
   { key: 'manifests', label: 'Manifests' },
@@ -533,6 +535,82 @@ function Day2Tab({ id }: { id: number }) {
             </Alert>
           )}
           {rotateMut.error && <ErrorMessage error={rotateMut.error} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function StorageTab({ id }: { id: number }) {
+  const deployMut = useMutation({ mutationFn: (b: Parameters<typeof deployLonghorn>[1]) => deployLonghorn(id, b) });
+  const [form, setForm] = useState({
+    version: 'v1.7.2',
+    set_default: true,
+    wait: true,
+  });
+
+  const handleDeploy = (event: FormEvent) => {
+    event.preventDefault();
+    deployMut.mutate(form);
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>Longhorn Storage</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={handleDeploy} className="space-y-4 max-w-xl">
+            <Alert variant="warning" title="Node packages required">
+              Install open-iscsi and nfs-common on every Kubernetes node before using Longhorn volumes.
+            </Alert>
+            <Input
+              label="Longhorn version"
+              value={form.version}
+              onChange={(e) => setForm({ ...form, version: e.target.value })}
+              placeholder="v1.7.2"
+              required
+            />
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={form.set_default}
+                onChange={(e) => setForm({ ...form, set_default: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Set longhorn as default StorageClass</span>
+            </label>
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={form.wait}
+                onChange={(e) => setForm({ ...form, wait: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+              />
+              <span className="text-sm text-slate-700">Wait for Longhorn rollout</span>
+            </label>
+            <Button type="submit" loading={deployMut.isPending}>Install Longhorn</Button>
+            {deployMut.data && (
+              <Alert variant="success" title="Longhorn action completed">
+                <div className="space-y-2">
+                  <p>Status: {deployMut.data.status}</p>
+                  <p>Version: {deployMut.data.version}</p>
+                  {deployMut.data.warnings.map((warning) => (
+                    <p key={warning} className="text-xs">{warning}</p>
+                  ))}
+                </div>
+              </Alert>
+            )}
+            {deployMut.error && <ErrorMessage error={deployMut.error} />}
+          </form>
+          {deployMut.data?.output && (
+            <Textarea
+              label="kubectl output"
+              value={deployMut.data.output}
+              readOnly
+              rows={12}
+              className="mt-4 font-mono text-xs"
+            />
+          )}
         </CardContent>
       </Card>
     </div>
@@ -2596,6 +2674,7 @@ export function ClusterDetailPage() {
       {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
       {activeTab === 'day2' && <Day2Tab id={clusterId} />}
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
+      {activeTab === 'storage' && <StorageTab id={clusterId} />}
       {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
       {activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
       {activeTab === 'manifests' && <ManifestsTab id={clusterId} />}

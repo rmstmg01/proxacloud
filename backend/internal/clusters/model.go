@@ -336,6 +336,20 @@ type DeployIngressControllerResponse struct {
 	Warnings  []string `json:"warnings"`
 }
 
+type DeployLonghornRequest struct {
+	Version    string `json:"version"`
+	SetDefault bool   `json:"set_default"`
+	Wait       bool   `json:"wait"`
+}
+
+type DeployLonghornResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Status    string   `json:"status"`
+	Version   string   `json:"version"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings"`
+}
+
 type DeployCertificateManagerRequest struct {
 	Namespace    string `json:"namespace"`
 	Version      string `json:"version"`
@@ -2447,6 +2461,39 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 	}, nil
 }
 
+func (s *Service) DeployLonghorn(clusterID int64, req DeployLonghornRequest) (DeployLonghornResponse, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return DeployLonghornResponse{}, err
+	}
+	version := strings.TrimSpace(req.Version)
+	if version == "" {
+		version = "v1.7.2"
+	}
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+
+	output, err := s.executeLonghornDeployment(version, req.SetDefault, req.Wait)
+	warnings := []string{"Longhorn requires open-iscsi and nfs-common on every Kubernetes node before volumes can attach reliably."}
+	if err != nil {
+		return DeployLonghornResponse{}, fmt.Errorf("failed to deploy longhorn: %w", err)
+	}
+	status := "longhorn-deployed"
+	if req.SetDefault {
+		status = "longhorn-default-storage"
+	}
+	if err := s.insertProvisionRun(clusterID, "longhorn-deploy", status, version, output); err != nil {
+		return DeployLonghornResponse{}, err
+	}
+	return DeployLonghornResponse{
+		ClusterID: clusterID,
+		Status:    status,
+		Version:   version,
+		Output:    output,
+		Warnings:  warnings,
+	}, nil
+}
+
 func (s *Service) DeployCertificateManager(clusterID int64, req DeployCertificateManagerRequest) (DeployCertificateManagerResponse, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return DeployCertificateManagerResponse{}, err
@@ -3658,6 +3705,68 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, re
 	outputs = append(outputs, string(output))
 	if err != nil {
 		return strings.Join(outputs, "\n"), fmt.Errorf("get ingress services: %w\nOutput: %s", err, string(output))
+	}
+
+	return strings.Join(outputs, "\n"), nil
+}
+
+func (s *Service) executeLonghornDeployment(version string, setDefault bool, wait bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+
+	outputs := make([]string, 0, 6)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
+	output, err := cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("kubectl cluster connectivity test failed: %w\nOutput: %s", err, string(output))
+	}
+
+	manifestURL := fmt.Sprintf("https://raw.githubusercontent.com/longhorn/longhorn/%s/deploy/longhorn.yaml", version)
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", manifestURL, "--validate=false")
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("apply longhorn manifest: %w\nOutput: %s", err, string(output))
+	}
+
+	if wait {
+		for _, deployment := range []string{"longhorn-driver-deployer", "longhorn-ui"} {
+			cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "rollout", "status", "--namespace", "longhorn-system", "deployment/"+deployment, "--timeout=600s")
+			output, err = cmd.CombinedOutput()
+			outputs = append(outputs, string(output))
+			if err != nil {
+				return strings.Join(outputs, "\n"), fmt.Errorf("wait for %s rollout: %w\nOutput: %s\nDiagnostics:\n%s", deployment, err, string(output), s.kubeNamespaceDiagnostics(kubeconfigPath, "longhorn-system", "deployment/"+deployment))
+			}
+		}
+		cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "pods", "--namespace", "longhorn-system", "-o", "wide")
+		output, err = cmd.CombinedOutput()
+		outputs = append(outputs, string(output))
+		if err != nil {
+			return strings.Join(outputs, "\n"), fmt.Errorf("get longhorn pods: %w\nOutput: %s", err, string(output))
+		}
+	}
+
+	if setDefault {
+		patch := `{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}`
+		cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "patch", "storageclass", "longhorn", "-p", patch)
+		output, err = cmd.CombinedOutput()
+		outputs = append(outputs, string(output))
+		if err != nil {
+			return strings.Join(outputs, "\n"), fmt.Errorf("set longhorn as default storageclass: %w\nOutput: %s", err, string(output))
+		}
+	}
+
+	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "storageclass")
+	output, err = cmd.CombinedOutput()
+	outputs = append(outputs, string(output))
+	if err != nil {
+		return strings.Join(outputs, "\n"), fmt.Errorf("get storageclasses: %w\nOutput: %s", err, string(output))
 	}
 
 	return strings.Join(outputs, "\n"), nil

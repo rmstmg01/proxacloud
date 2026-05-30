@@ -303,6 +303,14 @@ export interface DeployIngressControllerResponse {
   warnings: string[];
 }
 
+export interface DeployLonghornResponse {
+  cluster_id: number;
+  status: string;
+  version: string;
+  output?: string;
+  warnings: string[];
+}
+
 export interface DeployAppResponse {
   cluster_id: number;
   status: string;

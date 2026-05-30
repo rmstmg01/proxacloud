@@ -18,6 +18,7 @@ import type {
   DeployMetalLBResponse,
   MetalLBStatusResponse,
   DeployIngressControllerResponse,
+  DeployLonghornResponse,
   DeployAppResponse,
   ClusterSecretRecord,
   ClusterSecretProvider,
@@ -267,6 +268,14 @@ export const deployIngressController = (
 ) =>
   client
     .post<DeployIngressControllerResponse>(`/clusters/${id}/ingress-controller/deploy`, body)
+    .then((r) => r.data);
+
+export const deployLonghorn = (
+  id: number,
+  body: { version: string; set_default: boolean; wait: boolean },
+) =>
+  client
+    .post<DeployLonghornResponse>(`/clusters/${id}/longhorn/deploy`, body)
     .then((r) => r.data);
 
 export const deployApp = (
