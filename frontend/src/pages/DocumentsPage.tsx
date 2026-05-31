@@ -466,6 +466,167 @@ kubectl get events -n ${dbNamespace} --sort-by=.lastTimestamp`,
       'Timeout usually points to firewall, routing, network policy, database overload, or a down database node.',
     ],
   },
+  {
+    title: 'Galera Primary Component Loss',
+    icon: AlertTriangle,
+    badge: 'Galera outage',
+    description:
+      'Use this when every MariaDB node is down and systemd logs say the node cannot reach a primary view.',
+    commands: [
+      {
+        label: 'Check MariaDB status and recent Galera logs on every DB VM',
+        command: `sudo systemctl status mariadb --no-pager
+sudo journalctl -u mariadb --since "2 hours ago" --no-pager`,
+      },
+      {
+        label: 'Typical primary-loss log pattern',
+        command: `WSREP: failed to open gcomm backend connection
+WSREP: failed to reach primary view
+WSREP: Failed to open channel 'pscs' at 'gcomm://192.168.8.50,192.168.8.51,192.168.8.52'
+WSREP: gcs connect failed: Connection timed out`,
+      },
+      {
+        label: 'Check Galera network ports between database VMs',
+        command: `nc -vz 192.168.8.50 4567
+nc -vz 192.168.8.51 4567
+nc -vz 192.168.8.52 4567
+
+# Also allow TCP 4568 for IST, TCP 4444 for SST, and UDP 4567 where required.`,
+      },
+    ],
+    notes: [
+      'A Galera cluster needs a primary component. If all nodes restart or lose quorum together, normal systemctl start mariadb attempts can fail on every VM.',
+      'This is distinct from a Kubernetes storage issue. PSCS backend and gateway are stateless pods and use the external MariaDB Service.',
+      'Likely triggers include simultaneous VM or host restarts, network interruption between database VMs, firewall changes, prolonged infrastructure instability, or an unsafe shutdown.',
+      'Longhorn does not store PSCS MariaDB data in this architecture, but a broader node or network incident during Longhorn rollout can coincide with a Galera outage.',
+    ],
+  },
+  {
+    title: 'Safe Galera Cluster Recovery',
+    icon: Shield,
+    badge: 'Recovery',
+    description:
+      'Recover a fully stopped Galera cluster by selecting exactly one authoritative node, bootstrapping it, and joining the remaining nodes normally.',
+    commands: [
+      {
+        label: 'Stop MariaDB and recover the last committed position on each DB VM',
+        command: `sudo systemctl stop mariadb
+sudo galera_recovery 2>&1 | grep "Recovered position"
+sudo cat /var/lib/mysql/grastate.dat`,
+      },
+      {
+        label: 'Example node comparison',
+        command: `pscs-db-1: b99bbdcc-5761-11f1-b125-83df3d3dfdc4:3926  safe_to_bootstrap: 0
+pscs-db-2: b99bbdcc-5761-11f1-b125-83df3d3dfdc4:3927  safe_to_bootstrap: 0
+pscs-db-3: b99bbdcc-5761-11f1-b125-83df3d3dfdc4:3928  safe_to_bootstrap: 1
+
+# Select pscs-db-3 because it has the highest recovered sequence number and is safe to bootstrap.`,
+      },
+      {
+        label: 'Bootstrap only the selected node',
+        command: `# Run on the selected authoritative node only.
+sudo galera_new_cluster
+sudo systemctl status mariadb --no-pager`,
+      },
+      {
+        label: 'Join the other nodes one at a time',
+        command: `# Run on each remaining DB VM, one node at a time.
+sudo systemctl start mariadb
+sudo systemctl status mariadb --no-pager`,
+      },
+      {
+        label: 'If every node reports safe_to_bootstrap: 0',
+        command: `# Choose the node with the highest galera_recovery sequence number.
+# On that node only, edit /var/lib/mysql/grastate.dat and change:
+safe_to_bootstrap: 0
+# to:
+safe_to_bootstrap: 1
+
+sudo galera_new_cluster`,
+      },
+    ],
+    notes: [
+      'Never run galera_new_cluster on more than one node. Bootstrapping multiple nodes can create split-brain and data divergence.',
+      'Prefer a node with safe_to_bootstrap: 1. If none exists, compare galera_recovery positions and select the node with the highest sequence number.',
+      'All recovered positions should normally have the same UUID. Investigate carefully before proceeding if UUIDs differ.',
+      'A grastate.dat seqno of -1 after an unclean shutdown is expected. Use galera_recovery to discover the actual recoverable position.',
+      'Take a VM snapshot or filesystem backup before manual recovery when the data is critical and your platform allows it.',
+    ],
+  },
+  {
+    title: 'Validate Galera And Restore PSCS',
+    icon: CheckCircle2,
+    badge: 'Validation',
+    description:
+      'Confirm that Galera is healthy, then verify Kubernetes endpoints and restart PSCS workloads if stale crashlooping pods remain.',
+    commands: [
+      {
+        label: 'Verify Galera health with an administrative database account',
+        command: `mariadb -u root -p
+
+SHOW STATUS WHERE Variable_name IN (
+  'wsrep_cluster_size',
+  'wsrep_cluster_status',
+  'wsrep_ready',
+  'wsrep_local_state_comment'
+);`,
+      },
+      {
+        label: 'Expected healthy Galera status',
+        command: `wsrep_cluster_size          3
+wsrep_cluster_status        Primary
+wsrep_ready                 ON
+wsrep_local_state_comment   Synced`,
+      },
+      {
+        label: 'Verify application recovery from Kubernetes',
+        command: `kubectl get pods -n ${dbNamespace} -o wide
+kubectl get endpoints backend gateway -n ${dbNamespace}`,
+      },
+      {
+        label: 'Restart PSCS workloads if stale pods remain',
+        command: `kubectl rollout restart deployment/backend deployment/gateway -n ${dbNamespace}
+kubectl rollout status deployment/backend -n ${dbNamespace} --timeout=300s
+kubectl rollout status deployment/gateway -n ${dbNamespace} --timeout=300s`,
+      },
+    ],
+    notes: [
+      'The backend Service should list three endpoints on port 8080 and the gateway Service should list three endpoints on port 7777 after a clean recovery.',
+      'A local ERROR 1045 Access denied response from mariadb without -p means the root account requires a password. It does not mean Galera recovery failed.',
+      'If Galera is healthy but only pods on one Kubernetes node keep failing, test direct connectivity from that node and inspect CNI, kube-proxy, firewall, and routing health.',
+    ],
+  },
+  {
+    title: 'Prevent Future Galera Outages',
+    icon: Shield,
+    badge: 'Prevention',
+    description:
+      'Use these operational checks after recovery and before infrastructure maintenance to reduce the chance of another full-cluster outage.',
+    commands: [
+      {
+        label: 'Check Galera health before maintenance',
+        command: `mariadb -u root -p -e "SHOW STATUS WHERE Variable_name IN ('wsrep_cluster_size','wsrep_cluster_status','wsrep_ready','wsrep_local_state_comment');"`,
+      },
+      {
+        label: 'Check listener and firewall-relevant ports on each DB VM',
+        command: `sudo ss -lntup | grep -E '(:3306|:4444|:4567|:4568)'
+sudo systemctl status mariadb --no-pager`,
+      },
+      {
+        label: 'Check Kubernetes and infrastructure stability',
+        command: `kubectl get nodes -o wide
+kubectl get pods -A
+kubectl get events -A --sort-by=.lastTimestamp`,
+      },
+    ],
+    notes: [
+      'Avoid restarting every Galera VM at once. Restart one node at a time and wait for wsrep_local_state_comment=Synced before moving to the next node.',
+      'Monitor wsrep_cluster_size, wsrep_cluster_status, wsrep_ready, and wsrep_local_state_comment. Alert when the cluster is no longer Primary or the size falls below the expected replica count.',
+      'Allow MariaDB client traffic on TCP 3306 and Galera replication traffic between DB nodes on TCP/UDP 4567, TCP 4568, and TCP 4444.',
+      'Keep database VM backups and periodically rehearse recovery. Galera replication is high availability, not a substitute for backups.',
+      'When Kubernetes nodes flap, investigate the underlying network, hypervisor, and storage health before making additional platform changes.',
+    ],
+  },
 ];
 
 const commonErrors = [
@@ -1230,7 +1391,7 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
             <div>
               <CardTitle>Database Cluster</CardTitle>
               <p className="mt-1 text-sm text-slate-500">
-                Service discovery, endpoint, connectivity, and application DB configuration checks. Examples use pscs and pscs-prod-db-cluster.
+                Service discovery, connectivity, application configuration, Galera outage recovery, validation, and prevention checks. Examples use pscs and pscs-prod-db-cluster.
               </p>
             </div>
           </CardHeader>
