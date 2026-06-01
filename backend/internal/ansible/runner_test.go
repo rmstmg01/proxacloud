@@ -42,9 +42,7 @@ func TestRenderPlaybookConfiguresKubeVIPForBootstrapAndSecondaryControlPlanes(t 
 
 	for _, expected := range []string{
 		"--control-plane-endpoint=192.168.8.85:6443",
-		"Configure kube-vip Kubernetes client kubeconfig",
-		"- name: k8s_config_file",
-		"value: /etc/kubernetes/admin.conf",
+		"--k8sConfigPath /etc/kubernetes/admin.conf",
 		"Use super-admin kubeconfig for kube-vip during kubeadm initialization",
 		"replace: '/etc/kubernetes/super-admin.conf'",
 		"Use admin kubeconfig for kube-vip after kubeadm initialization",

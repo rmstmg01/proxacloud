@@ -485,15 +485,8 @@ const playbookTemplate = `---
           --controlplane \
           --services \
           --arp \
-          --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
-      args:
-        executable: /bin/bash
-
-    - name: Configure kube-vip Kubernetes client kubeconfig
-      shell: |
-        if ! grep -q '^[[:space:]]*- name: k8s_config_file$' /etc/kubernetes/manifests/kube-vip.yaml; then
-          sed -i '/^[[:space:]]*env:$/a\    - name: k8s_config_file\n      value: /etc/kubernetes/admin.conf' /etc/kubernetes/manifests/kube-vip.yaml
-        fi
+          --leaderElection \
+          --k8sConfigPath /etc/kubernetes/admin.conf > /etc/kubernetes/manifests/kube-vip.yaml
       args:
         executable: /bin/bash
 
@@ -607,15 +600,8 @@ const playbookTemplate = `---
           --controlplane \
           --services \
           --arp \
-          --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
-      args:
-        executable: /bin/bash
-
-    - name: Configure kube-vip Kubernetes client kubeconfig
-      shell: |
-        if ! grep -q '^[[:space:]]*- name: k8s_config_file$' /etc/kubernetes/manifests/kube-vip.yaml; then
-          sed -i '/^[[:space:]]*env:$/a\    - name: k8s_config_file\n      value: /etc/kubernetes/admin.conf' /etc/kubernetes/manifests/kube-vip.yaml
-        fi
+          --leaderElection \
+          --k8sConfigPath /etc/kubernetes/admin.conf > /etc/kubernetes/manifests/kube-vip.yaml
       args:
         executable: /bin/bash
 {{- end }}
