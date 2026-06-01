@@ -44,7 +44,7 @@ export function ProvisionClusterPage() {
     node_ip_pool_start_by_node: {} as Record<string, string>,
     bootstrap_after_provision: false,
     bootstrap_ssh_user: 'ubuntu',
-    bootstrap_deploy_kube_vip: false,
+    bootstrap_deploy_kube_vip: true,
     bootstrap_control_plane_vip: '',
     bootstrap_pod_cidr: '10.244.0.0/16',
     bootstrap_service_cidr: '10.96.0.0/12',
