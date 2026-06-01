@@ -1388,7 +1388,14 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		_ = s.appendOperationEvent(operationID, "ansible-apply", "info", "Ansible bootstrap started")
 
 		go func() {
-			runResult, runErr := s.ansibleRunner.Apply(workDir)
+			runResult, runErr := s.ansibleRunner.ApplyWithProgress(workDir, func(output string) {
+				message := "Ansible bootstrap is still running; waiting for new command output"
+				if output != "" {
+					message = "Ansible progress:\n" + output
+				}
+				_ = s.updateClusterOperation(operationID, "running", "ansible-apply", 35, "")
+				_ = s.appendOperationEvent(operationID, "ansible-apply", "info", message)
+			})
 			runStatus := runResult.Status
 			runOutput := runResult.Output
 			if runErr != nil {

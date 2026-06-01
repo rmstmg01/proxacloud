@@ -9,8 +9,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
+)
+
+const (
+	ansibleProgressInterval = 5 * time.Second
+	maxProgressOutputLength = 8000
 )
 
 type Node struct {
@@ -101,6 +107,10 @@ func (r *Runner) PrepareWorkspace(spec BootstrapSpec) (string, error) {
 }
 
 func (r *Runner) Apply(workDir string) (RunResult, error) {
+	return r.ApplyWithProgress(workDir, nil)
+}
+
+func (r *Runner) ApplyWithProgress(workDir string, onProgress func(string)) (RunResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
@@ -108,22 +118,80 @@ func (r *Runner) Apply(workDir string) (RunResult, error) {
 	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(), "ANSIBLE_HOST_KEY_CHECKING=False")
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var output synchronizedBuffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
 
-	err := cmd.Run()
-	combined := stdout.String() + stderr.String()
-	if err != nil {
-		trimmed := strings.TrimSpace(combined)
-		if trimmed == "" {
-			return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w", err)
-		}
-		return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w\nansible output:\n%s", err, trimmed)
+	if err := cmd.Start(); err != nil {
+		return RunResult{WorkDir: workDir, Status: "failed"}, fmt.Errorf("start ansible playbook: %w", err)
 	}
 
-	return RunResult{WorkDir: workDir, Output: combined, Status: "bootstrapped"}, nil
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	lastOutputLength := 0
+	emitProgress := func(allowEmpty bool) {
+		if onProgress == nil {
+			return
+		}
+		snapshot := output.String()
+		if len(snapshot) == lastOutputLength && !allowEmpty {
+			return
+		}
+		chunk := snapshot[lastOutputLength:]
+		lastOutputLength = len(snapshot)
+		onProgress(compactProgressOutput(chunk))
+	}
+
+	ticker := time.NewTicker(ansibleProgressInterval)
+	defer ticker.Stop()
+
+	var err error
+	for {
+		select {
+		case err = <-done:
+			emitProgress(false)
+			combined := output.String()
+			if err != nil {
+				trimmed := strings.TrimSpace(combined)
+				if trimmed == "" {
+					return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w", err)
+				}
+				return RunResult{WorkDir: workDir, Output: combined, Status: "failed"}, fmt.Errorf("run ansible playbook: %w\nansible output:\n%s", err, trimmed)
+			}
+
+			return RunResult{WorkDir: workDir, Output: combined, Status: "bootstrapped"}, nil
+		case <-ticker.C:
+			emitProgress(true)
+		}
+	}
+}
+
+type synchronizedBuffer struct {
+	mu  sync.RWMutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.buf.String()
+}
+
+func compactProgressOutput(output string) string {
+	output = strings.TrimSpace(output)
+	if len(output) <= maxProgressOutputLength {
+		return output
+	}
+	return "[output truncated; showing latest updates]\n" + output[len(output)-maxProgressOutputLength:]
 }
 
 func renderInventory(spec BootstrapSpec, keyPath string) (string, error) {
@@ -421,6 +489,14 @@ const playbookTemplate = `---
       args:
         executable: /bin/bash
 
+    - name: Configure kube-vip Kubernetes client kubeconfig
+      shell: |
+        if ! grep -q '^[[:space:]]*- name: k8s_config_file$' /etc/kubernetes/manifests/kube-vip.yaml; then
+          sed -i '/^[[:space:]]*env:$/a\    - name: k8s_config_file\n      value: /etc/kubernetes/admin.conf' /etc/kubernetes/manifests/kube-vip.yaml
+        fi
+      args:
+        executable: /bin/bash
+
     - name: Use super-admin kubeconfig for kube-vip during kubeadm initialization
       replace:
         path: /etc/kubernetes/manifests/kube-vip.yaml
@@ -532,6 +608,14 @@ const playbookTemplate = `---
           --services \
           --arp \
           --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
+      args:
+        executable: /bin/bash
+
+    - name: Configure kube-vip Kubernetes client kubeconfig
+      shell: |
+        if ! grep -q '^[[:space:]]*- name: k8s_config_file$' /etc/kubernetes/manifests/kube-vip.yaml; then
+          sed -i '/^[[:space:]]*env:$/a\    - name: k8s_config_file\n      value: /etc/kubernetes/admin.conf' /etc/kubernetes/manifests/kube-vip.yaml
+        fi
       args:
         executable: /bin/bash
 {{- end }}

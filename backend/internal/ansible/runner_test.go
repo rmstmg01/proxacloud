@@ -5,6 +5,24 @@ import (
 	"testing"
 )
 
+func TestCompactProgressOutputPreservesShortOutput(t *testing.T) {
+	if got := compactProgressOutput("  TASK [example]  \n"); got != "TASK [example]" {
+		t.Fatalf("unexpected compact output %q", got)
+	}
+}
+
+func TestCompactProgressOutputKeepsLatestOutputWhenTruncated(t *testing.T) {
+	input := strings.Repeat("a", maxProgressOutputLength) + "latest"
+	got := compactProgressOutput(input)
+
+	if !strings.HasPrefix(got, "[output truncated; showing latest updates]\n") {
+		t.Fatalf("expected truncation notice, got %q", got)
+	}
+	if !strings.HasSuffix(got, "latest") {
+		t.Fatalf("expected latest output to be retained, got %q", got)
+	}
+}
+
 func TestRenderPlaybookConfiguresKubeVIPForBootstrapAndSecondaryControlPlanes(t *testing.T) {
 	spec := BootstrapSpec{
 		KubernetesVersion: "v1.31.0",
@@ -24,6 +42,9 @@ func TestRenderPlaybookConfiguresKubeVIPForBootstrapAndSecondaryControlPlanes(t 
 
 	for _, expected := range []string{
 		"--control-plane-endpoint=192.168.8.85:6443",
+		"Configure kube-vip Kubernetes client kubeconfig",
+		"- name: k8s_config_file",
+		"value: /etc/kubernetes/admin.conf",
 		"Use super-admin kubeconfig for kube-vip during kubeadm initialization",
 		"replace: '/etc/kubernetes/super-admin.conf'",
 		"Use admin kubeconfig for kube-vip after kubeadm initialization",
