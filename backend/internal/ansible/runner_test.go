@@ -44,9 +44,11 @@ func TestRenderPlaybookConfiguresKubeVIPForBootstrapAndSecondaryControlPlanes(t 
 		"--control-plane-endpoint=192.168.8.85:6443",
 		"--k8sConfigPath /etc/kubernetes/admin.conf",
 		"Use super-admin kubeconfig for kube-vip during kubeadm initialization",
-		"replace: '/etc/kubernetes/super-admin.conf'",
+		"regexp: 'path: /etc/kubernetes/admin\\.conf'",
+		"replace: 'path: /etc/kubernetes/super-admin.conf'",
 		"Use admin kubeconfig for kube-vip after kubeadm initialization",
-		"regexp: '/etc/kubernetes/super-admin\\.conf'",
+		"regexp: 'path: /etc/kubernetes/super-admin\\.conf'",
+		"replace: 'path: /etc/kubernetes/admin.conf'",
 		"Generate kube-vip static pod manifest on secondary control plane",
 	} {
 		if !strings.Contains(playbook, expected) {

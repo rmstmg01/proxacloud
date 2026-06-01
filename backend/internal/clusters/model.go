@@ -1229,7 +1229,14 @@ func (s *Service) runProvisionApplyAsync(clusterID int64, applyWork []provisionA
 			SSHPassword:    cred.Password,
 		}
 
-		runResult, runErr := s.terraformRunner.Apply(work.Workspace, auth)
+		runResult, runErr := s.terraformRunner.ApplyWithProgress(work.Workspace, auth, func(output string) {
+			message := fmt.Sprintf("Terraform apply for credential_id=%d is still running; waiting for new command output", work.CredentialID)
+			if output != "" {
+				message = "Terraform progress:\n" + output
+			}
+			_ = s.updateClusterOperation(operationID, "running", stepLabel, progress, "")
+			_ = s.appendOperationEvent(operationID, stepLabel, "info", message)
+		})
 		outputs = append(outputs, fmt.Sprintf("### credential_id=%d workspace=%s\n%s", work.CredentialID, work.Workspace, strings.TrimSpace(runResult.Output)))
 		if runErr != nil {
 			failureOutput := strings.Join(outputs, "\n\n")

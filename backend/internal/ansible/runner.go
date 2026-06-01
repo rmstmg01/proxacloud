@@ -493,8 +493,8 @@ const playbookTemplate = `---
     - name: Use super-admin kubeconfig for kube-vip during kubeadm initialization
       replace:
         path: /etc/kubernetes/manifests/kube-vip.yaml
-        regexp: '/etc/kubernetes/admin\.conf'
-        replace: '/etc/kubernetes/super-admin.conf'
+        regexp: 'path: /etc/kubernetes/admin\.conf'
+        replace: 'path: /etc/kubernetes/super-admin.conf'
 {{- end }}
 
     - name: Initialize first control plane
@@ -511,8 +511,8 @@ const playbookTemplate = `---
     - name: Use admin kubeconfig for kube-vip after kubeadm initialization
       replace:
         path: /etc/kubernetes/manifests/kube-vip.yaml
-        regexp: '/etc/kubernetes/super-admin\.conf'
-        replace: '/etc/kubernetes/admin.conf'
+        regexp: 'path: /etc/kubernetes/super-admin\.conf'
+        replace: 'path: /etc/kubernetes/admin.conf'
 {{- end }}
 
     - name: Create join command

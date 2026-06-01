@@ -13,8 +13,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
+)
+
+const (
+	terraformProgressInterval        = 5 * time.Second
+	maxTerraformProgressOutputLength = 8000
 )
 
 const defaultProxmoxSSHPort = 9846
@@ -187,6 +193,10 @@ func buildEnv(authEnv []string) []string {
 }
 
 func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	return r.ApplyWithProgress(workDir, auth, nil)
+}
+
+func (r *Runner) ApplyWithProgress(workDir string, auth ProxmoxAuth, onProgress func(string)) (RunResult, error) {
 	if err := r.writeStaticWorkspaceFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
 	}
@@ -201,7 +211,10 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	}
 
 	for _, args := range steps {
-		cmdOutput, err := r.execTerraform(workDir, authEnv, args...)
+		if onProgress != nil {
+			onProgress(fmt.Sprintf("$ terraform %s", strings.Join(args, " ")))
+		}
+		cmdOutput, err := r.execTerraformWithProgress(workDir, authEnv, onProgress, args...)
 		output.WriteString(cmdOutput)
 		output.WriteString("\n")
 		if err != nil {
@@ -248,6 +261,10 @@ func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
 }
 
 func (r *Runner) execTerraform(workDir string, env []string, args ...string) (string, error) {
+	return r.execTerraformWithProgress(workDir, env, nil, args...)
+}
+
+func (r *Runner) execTerraformWithProgress(workDir string, env []string, onProgress func(string), args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
@@ -255,18 +272,73 @@ func (r *Runner) execTerraform(workDir string, env []string, args ...string) (st
 	cmd.Dir = workDir
 	cmd.Env = env
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	var output synchronizedBuffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
 
-	err := cmd.Run()
-	combined := stdout.String() + stderr.String()
-	if err != nil {
-		return combined, fmt.Errorf("terraform %s failed: %w", strings.Join(args, " "), err)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start terraform %s: %w", strings.Join(args, " "), err)
 	}
 
-	return combined, nil
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	lastOutputLength := 0
+	emitProgress := func(allowEmpty bool) {
+		if onProgress == nil {
+			return
+		}
+		snapshot := output.String()
+		if len(snapshot) == lastOutputLength && !allowEmpty {
+			return
+		}
+		chunk := snapshot[lastOutputLength:]
+		lastOutputLength = len(snapshot)
+		onProgress(compactTerraformProgressOutput(chunk))
+	}
+
+	ticker := time.NewTicker(terraformProgressInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			emitProgress(false)
+			combined := output.String()
+			if err != nil {
+				return combined, fmt.Errorf("terraform %s failed: %w", strings.Join(args, " "), err)
+			}
+			return combined, nil
+		case <-ticker.C:
+			emitProgress(true)
+		}
+	}
+}
+
+type synchronizedBuffer struct {
+	mu  sync.RWMutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.buf.String()
+}
+
+func compactTerraformProgressOutput(output string) string {
+	output = strings.TrimSpace(output)
+	if len(output) <= maxTerraformProgressOutputLength {
+		return output
+	}
+	return output[len(output)-maxTerraformProgressOutputLength:]
 }
 
 func (r *Runner) writeStaticWorkspaceFiles(workDir string, endpoint string) error {
