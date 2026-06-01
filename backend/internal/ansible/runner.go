@@ -420,6 +420,12 @@ const playbookTemplate = `---
           --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
       args:
         executable: /bin/bash
+
+    - name: Use super-admin kubeconfig for kube-vip during kubeadm initialization
+      replace:
+        path: /etc/kubernetes/manifests/kube-vip.yaml
+        regexp: '/etc/kubernetes/admin\.conf'
+        replace: '/etc/kubernetes/super-admin.conf'
 {{- end }}
 
     - name: Initialize first control plane
@@ -431,6 +437,14 @@ const playbookTemplate = `---
         {{ .InitEndpointArg }}
       args:
         creates: /etc/kubernetes/admin.conf
+
+{{- if .DeployKubeVIP }}
+    - name: Use admin kubeconfig for kube-vip after kubeadm initialization
+      replace:
+        path: /etc/kubernetes/manifests/kube-vip.yaml
+        regexp: '/etc/kubernetes/super-admin\.conf'
+        replace: '/etc/kubernetes/admin.conf'
+{{- end }}
 
     - name: Create join command
       command: kubeadm token create --print-join-command
@@ -496,6 +510,31 @@ const playbookTemplate = `---
       shell: "{{ "{{ cp_join_script.content | b64decode }}" }}"
       args:
         creates: /etc/kubernetes/kubelet.conf
+
+{{- if .DeployKubeVIP }}
+    - name: Detect default network interface for kube-vip
+      shell: ip -o -4 route show to default | awk '{print $5}' | head -n1
+      register: kubevip_interface
+      changed_when: false
+
+    - name: Validate detected kube-vip interface
+      fail:
+        msg: "Unable to detect default network interface for kube-vip"
+      when: kubevip_interface.stdout | trim == ""
+
+    - name: Generate kube-vip static pod manifest on secondary control plane
+      shell: |
+        ctr --namespace k8s.io image pull ghcr.io/kube-vip/kube-vip:v0.8.2
+        ctr --namespace k8s.io run --rm --net-host ghcr.io/kube-vip/kube-vip:v0.8.2 vip /kube-vip manifest pod \
+          --interface {{ "{{ kubevip_interface.stdout | trim }}" }} \
+          --address {{ .ControlPlaneVIP }} \
+          --controlplane \
+          --services \
+          --arp \
+          --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
+      args:
+        executable: /bin/bash
+{{- end }}
 
 - hosts: workers
   become: true
