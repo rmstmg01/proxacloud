@@ -373,37 +373,41 @@ type DeployCertificateManagerResponse struct {
 }
 
 type DeployAppRequest struct {
-	Name                 string  `json:"name"`
-	Namespace            string  `json:"namespace"`
-	Manifest             string  `json:"manifest"`
-	Hostname             string  `json:"hostname"`
-	IngressClass         string  `json:"ingress_class"`
-	TLSSecretName        string  `json:"tls_secret_name"`
-	TLSCertificateID     int64   `json:"tls_certificate_id"`
-	TLSFullchainPEM      string  `json:"tls_fullchain_pem"`
-	TLSPrivateKeyPEM     string  `json:"tls_private_key_pem"`
-	SelectedSecretIDs    []int64 `json:"selected_secret_ids"`
-	ApplySelectedSecrets bool    `json:"apply_selected_secrets"`
-	SelectedConfigMapIDs []int64 `json:"selected_config_map_ids"`
-	ApplyConfigMaps      bool    `json:"apply_config_maps"`
-	Apply                bool    `json:"apply"`
+	Name                       string  `json:"name"`
+	Namespace                  string  `json:"namespace"`
+	Manifest                   string  `json:"manifest"`
+	Hostname                   string  `json:"hostname"`
+	IngressClass               string  `json:"ingress_class"`
+	TLSSecretName              string  `json:"tls_secret_name"`
+	TLSCertificateID           int64   `json:"tls_certificate_id"`
+	TLSFullchainPEM            string  `json:"tls_fullchain_pem"`
+	TLSPrivateKeyPEM           string  `json:"tls_private_key_pem"`
+	SelectedSecretIDs          []int64 `json:"selected_secret_ids"`
+	ApplySelectedSecrets       bool    `json:"apply_selected_secrets"`
+	SelectedConfigMapIDs       []int64 `json:"selected_config_map_ids"`
+	ApplyConfigMaps            bool    `json:"apply_config_maps"`
+	SelectedImagePullSecretIDs []int64 `json:"selected_image_pull_secret_ids"`
+	ApplyImagePullSecrets      bool    `json:"apply_image_pull_secrets"`
+	InjectImagePullSecrets     bool    `json:"inject_image_pull_secrets"`
+	Apply                      bool    `json:"apply"`
 }
 
 type DeployAppResponse struct {
-	ClusterID      int64    `json:"cluster_id"`
-	Status         string   `json:"status"`
-	Name           string   `json:"name"`
-	Namespace      string   `json:"namespace"`
-	AppID          int64    `json:"app_id,omitempty"`
-	RevisionID     int64    `json:"revision_id,omitempty"`
-	Revision       int      `json:"revision,omitempty"`
-	Hostname       string   `json:"hostname,omitempty"`
-	IngressClass   string   `json:"ingress_class,omitempty"`
-	TLSSecretName  string   `json:"tls_secret_name,omitempty"`
-	SecretNames    []string `json:"secret_names,omitempty"`
-	ConfigMapNames []string `json:"config_map_names,omitempty"`
-	Output         string   `json:"output,omitempty"`
-	Warnings       []string `json:"warnings"`
+	ClusterID            int64    `json:"cluster_id"`
+	Status               string   `json:"status"`
+	Name                 string   `json:"name"`
+	Namespace            string   `json:"namespace"`
+	AppID                int64    `json:"app_id,omitempty"`
+	RevisionID           int64    `json:"revision_id,omitempty"`
+	Revision             int      `json:"revision,omitempty"`
+	Hostname             string   `json:"hostname,omitempty"`
+	IngressClass         string   `json:"ingress_class,omitempty"`
+	TLSSecretName        string   `json:"tls_secret_name,omitempty"`
+	SecretNames          []string `json:"secret_names,omitempty"`
+	ConfigMapNames       []string `json:"config_map_names,omitempty"`
+	ImagePullSecretNames []string `json:"image_pull_secret_names,omitempty"`
+	Output               string   `json:"output,omitempty"`
+	Warnings             []string `json:"warnings"`
 }
 
 type ClusterSecretItem struct {
@@ -491,6 +495,43 @@ type ApplyClusterConfigMapResponse struct {
 	Status      string   `json:"status"`
 	Output      string   `json:"output,omitempty"`
 	Warnings    []string `json:"warnings"`
+}
+
+type ClusterImagePullSecretRecord struct {
+	ID             int64      `json:"id"`
+	ClusterID      int64      `json:"cluster_id"`
+	Name           string     `json:"name"`
+	Namespace      string     `json:"namespace"`
+	RegistryServer string     `json:"registry_server"`
+	Username       string     `json:"username"`
+	Email          string     `json:"email"`
+	Description    string     `json:"description"`
+	IsGlobal       bool       `json:"is_global"`
+	LastAppliedAt  *time.Time `json:"last_applied_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+type UpsertClusterImagePullSecretRequest struct {
+	Name           string `json:"name"`
+	Namespace      string `json:"namespace"`
+	RegistryServer string `json:"registry_server"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
+	Email          string `json:"email"`
+	Description    string `json:"description"`
+	IsGlobal       bool   `json:"is_global"`
+}
+
+type ApplyClusterImagePullSecretResponse struct {
+	ClusterID         int64    `json:"cluster_id"`
+	ImagePullSecretID int64    `json:"image_pull_secret_id"`
+	Name              string   `json:"name"`
+	Namespace         string   `json:"namespace"`
+	RegistryServer    string   `json:"registry_server"`
+	Status            string   `json:"status"`
+	Output            string   `json:"output,omitempty"`
+	Warnings          []string `json:"warnings"`
 }
 
 type ClusterSavedManifestRecord struct {
@@ -3001,6 +3042,174 @@ func (s *Service) ApplyClusterConfigMap(clusterID, configMapID int64) (ApplyClus
 	}, nil
 }
 
+func (s *Service) ListClusterImagePullSecrets(clusterID int64) ([]ClusterImagePullSecretRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, registry_server, username, email, description,
+		        is_global, last_applied_at, created_at, updated_at
+		 FROM cluster_image_pull_secrets
+		 WHERE cluster_id = $1 OR is_global = TRUE
+		 ORDER BY is_global DESC, namespace ASC, name ASC`,
+		clusterID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list cluster image pull secrets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterImagePullSecretRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterImagePullSecret(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
+func (s *Service) CreateClusterImagePullSecret(clusterID int64, req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
+	if _, err := s.getClusterSummary(clusterID); err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	return s.createClusterImagePullSecret(clusterID, req)
+}
+
+func (s *Service) CreateGlobalImagePullSecret(req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
+	req.IsGlobal = true
+	return s.createClusterImagePullSecret(0, req)
+}
+
+func (s *Service) createClusterImagePullSecret(clusterID int64, req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
+	req = normalizeClusterImagePullSecretRequest(req)
+	if err := validateClusterImagePullSecretRequest(req, true); err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	if s.secrets == nil {
+		return ClusterImagePullSecretRecord{}, errors.New("secret store is not configured")
+	}
+
+	var id int64
+	clusterIDValue := sql.NullInt64{Int64: clusterID, Valid: clusterID > 0}
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_image_pull_secrets
+		 (cluster_id, name, namespace, registry_server, username, email, description, is_global)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING id`,
+		clusterIDValue, req.Name, req.Namespace, req.RegistryServer, req.Username, req.Email, req.Description, req.IsGlobal,
+	).Scan(&id)
+	if err != nil {
+		return ClusterImagePullSecretRecord{}, fmt.Errorf("create cluster image pull secret: %w", err)
+	}
+	if err := s.storeClusterImagePullSecretPassword(clusterID, id, req.Password); err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	return s.GetClusterImagePullSecret(clusterID, id)
+}
+
+func (s *Service) GetClusterImagePullSecret(clusterID, secretID int64) (ClusterImagePullSecretRecord, error) {
+	if clusterID > 0 {
+		if _, err := s.getClusterSummary(clusterID); err != nil {
+			return ClusterImagePullSecretRecord{}, err
+		}
+	}
+	row := s.db.QueryRow(
+		`SELECT id, cluster_id, name, namespace, registry_server, username, email, description,
+		        is_global, last_applied_at, created_at, updated_at
+		 FROM cluster_image_pull_secrets
+		 WHERE id = $2 AND (($1 > 0 AND cluster_id = $1) OR is_global = TRUE)`,
+		clusterID,
+		secretID,
+	)
+	rec, err := scanClusterImagePullSecret(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ClusterImagePullSecretRecord{}, ErrApplicationManifestNotFound
+		}
+		return ClusterImagePullSecretRecord{}, fmt.Errorf("get cluster image pull secret: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *Service) UpdateClusterImagePullSecret(clusterID, secretID int64, req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
+	rec, err := s.GetClusterImagePullSecret(clusterID, secretID)
+	if err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	if rec.ClusterID != clusterID {
+		return ClusterImagePullSecretRecord{}, errors.New("global image pull secret can only be edited from its owning scope")
+	}
+	req = normalizeClusterImagePullSecretRequest(req)
+	if err := validateClusterImagePullSecretRequest(req, false); err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	_, err = s.db.Exec(
+		`UPDATE cluster_image_pull_secrets
+		 SET name = $3, namespace = $4, registry_server = $5, username = $6, email = $7,
+		     description = $8, is_global = $9, updated_at = NOW()
+		 WHERE cluster_id = $1 AND id = $2`,
+		clusterID, secretID, req.Name, req.Namespace, req.RegistryServer, req.Username, req.Email, req.Description, req.IsGlobal,
+	)
+	if err != nil {
+		return ClusterImagePullSecretRecord{}, fmt.Errorf("update cluster image pull secret: %w", err)
+	}
+	if strings.TrimSpace(req.Password) != "" {
+		if err := s.storeClusterImagePullSecretPassword(clusterID, secretID, req.Password); err != nil {
+			return ClusterImagePullSecretRecord{}, err
+		}
+	}
+	return s.GetClusterImagePullSecret(clusterID, secretID)
+}
+
+func (s *Service) DeleteClusterImagePullSecret(clusterID, secretID int64) error {
+	rec, err := s.GetClusterImagePullSecret(clusterID, secretID)
+	if err != nil {
+		return err
+	}
+	if rec.ClusterID != clusterID {
+		return errors.New("global image pull secret can only be deleted from its owning scope")
+	}
+	var ref string
+	_ = s.db.QueryRow(`SELECT COALESCE(password_ref, '') FROM cluster_image_pull_secrets WHERE id = $1`, secretID).Scan(&ref)
+	res, err := s.db.Exec(`DELETE FROM cluster_image_pull_secrets WHERE cluster_id = $1 AND id = $2`, clusterID, secretID)
+	if err != nil {
+		return fmt.Errorf("delete cluster image pull secret: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrApplicationManifestNotFound
+	}
+	if s.secrets != nil && strings.TrimSpace(ref) != "" {
+		if err := s.secrets.Delete(context.Background(), ref); err != nil && !errors.Is(err, secrets.ErrSecretNotFound) {
+			return fmt.Errorf("delete stored image pull secret token: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) ApplyClusterImagePullSecret(clusterID, secretID int64) (ApplyClusterImagePullSecretResponse, error) {
+	rec, err := s.GetClusterImagePullSecret(clusterID, secretID)
+	if err != nil {
+		return ApplyClusterImagePullSecretResponse{}, err
+	}
+	output, err := s.applyClusterImagePullSecretRecord(rec)
+	if err != nil {
+		return ApplyClusterImagePullSecretResponse{}, err
+	}
+	_, _ = s.db.Exec(`UPDATE cluster_image_pull_secrets SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, secretID)
+	return ApplyClusterImagePullSecretResponse{
+		ClusterID:         clusterID,
+		ImagePullSecretID: secretID,
+		Name:              rec.Name,
+		Namespace:         rec.Namespace,
+		RegistryServer:    rec.RegistryServer,
+		Status:            "applied",
+		Output:            output,
+	}, nil
+}
+
 func (s *Service) ListGlobalSavedManifests() ([]ClusterSavedManifestRecord, error) {
 	rows, err := s.db.Query(
 		`SELECT m.id, COALESCE(m.cluster_id, 0), m.name, m.namespace, m.description, m.raw_manifest, m.is_global,
@@ -3377,6 +3586,18 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 		warnings = append(warnings, fmt.Sprintf("%d predefined cluster config map(s) selected for this deployment", len(selectedConfigMaps)))
 		warnings = append(warnings, fmt.Sprintf("selected ConfigMaps will be applied into namespace %s for this app deployment", namespace))
 	}
+	selectedImagePullSecrets, err := s.resolveSelectedClusterImagePullSecrets(clusterID, namespace, req.SelectedImagePullSecretIDs)
+	if err != nil {
+		return DeployAppResponse{}, err
+	}
+	if len(selectedImagePullSecrets) > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d image pull secret(s) selected for this deployment", len(selectedImagePullSecrets)))
+		warnings = append(warnings, fmt.Sprintf("image pull secrets will be applied into namespace %s for this app deployment", namespace))
+	}
+	if req.InjectImagePullSecrets && len(selectedImagePullSecrets) > 0 {
+		renderedManifest = injectImagePullSecretsIntoManifest(renderedManifest, imagePullSecretNamesOnly(selectedImagePullSecrets))
+		warnings = append(warnings, "selected image pull secrets were injected into supported workload pod templates")
+	}
 	appID, revisionID, revisionNumber, err := s.createApplicationManifestRevision(applicationManifestRevisionInput{
 		ClusterID:        clusterID,
 		Name:             name,
@@ -3399,6 +3620,9 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if err := s.replaceApplicationManifestConfigMaps(appID, req.SelectedConfigMapIDs); err != nil {
 		return DeployAppResponse{}, err
 	}
+	if err := s.replaceApplicationManifestImagePullSecrets(appID, req.SelectedImagePullSecretIDs); err != nil {
+		return DeployAppResponse{}, err
+	}
 	if req.Apply {
 		status = "app-deployed"
 		applyOutput, err := s.executeAppManifestApply(namespace, renderedManifest, appTLSSecretSpec{
@@ -3406,7 +3630,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		}, selectedSecrets, req.ApplySelectedSecrets, selectedConfigMaps, req.ApplyConfigMaps)
+		}, selectedSecrets, req.ApplySelectedSecrets, selectedConfigMaps, req.ApplyConfigMaps, selectedImagePullSecrets, req.ApplyImagePullSecrets)
 		output = applyOutput
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(revisionID, "failed", output, err.Error())
@@ -3429,20 +3653,21 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 
 	return DeployAppResponse{
-		ClusterID:      clusterID,
-		Status:         status,
-		Name:           name,
-		Namespace:      namespace,
-		AppID:          appID,
-		RevisionID:     revisionID,
-		Revision:       revisionNumber,
-		Hostname:       hostname,
-		IngressClass:   ingressClass,
-		TLSSecretName:  tlsSecretName,
-		SecretNames:    clusterSecretNames(selectedSecrets),
-		ConfigMapNames: clusterConfigMapNames(selectedConfigMaps),
-		Output:         output,
-		Warnings:       warnings,
+		ClusterID:            clusterID,
+		Status:               status,
+		Name:                 name,
+		Namespace:            namespace,
+		AppID:                appID,
+		RevisionID:           revisionID,
+		Revision:             revisionNumber,
+		Hostname:             hostname,
+		IngressClass:         ingressClass,
+		TLSSecretName:        tlsSecretName,
+		SecretNames:          clusterSecretNames(selectedSecrets),
+		ConfigMapNames:       clusterConfigMapNames(selectedConfigMaps),
+		ImagePullSecretNames: clusterImagePullSecretNames(selectedImagePullSecrets),
+		Output:               output,
+		Warnings:             warnings,
 	}, nil
 }
 
@@ -3602,7 +3827,7 @@ func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req Redepl
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
 			CreateFromUpload: hasTLSPEMs,
-		}, nil, false, nil, false)
+		}, nil, false, nil, false, nil, false)
 		if err != nil {
 			_ = s.updateApplicationManifestRevision(newRevisionID, "failed", output, err.Error())
 			_ = s.insertProvisionRun(clusterID, "app-redeploy", "failed", app.Name, output)
@@ -3848,7 +4073,7 @@ type appTLSSecretSpec struct {
 	CreateFromUpload bool
 }
 
-func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool, selectedConfigMaps []ClusterConfigMapRecord, applyConfigMaps bool) (string, error) {
+func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool, selectedConfigMaps []ClusterConfigMapRecord, applyConfigMaps bool, selectedImagePullSecrets []ClusterImagePullSecretRecord, applyImagePullSecrets bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -3895,6 +4120,16 @@ func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret 
 				return strings.Join(outputs, "\n"), err
 			}
 			_, _ = s.db.Exec(`UPDATE cluster_config_maps SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, selected.ID)
+		}
+	}
+	if applyImagePullSecrets {
+		for _, selected := range selectedImagePullSecrets {
+			secretOutput, err := s.applyClusterImagePullSecretRecordWithContext(ctx, kubeconfigPath, selected)
+			outputs = append(outputs, secretOutput)
+			if err != nil {
+				return strings.Join(outputs, "\n"), err
+			}
+			_, _ = s.db.Exec(`UPDATE cluster_image_pull_secrets SET last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, selected.ID)
 		}
 	}
 
@@ -4336,6 +4571,30 @@ func (s *Service) resolveSelectedClusterConfigMaps(clusterID int64, appNamespace
 	return out, nil
 }
 
+func (s *Service) resolveSelectedClusterImagePullSecrets(clusterID int64, appNamespace string, ids []int64) ([]ClusterImagePullSecretRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]ClusterImagePullSecretRecord, 0, len(ids))
+	seen := map[int64]struct{}{}
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		rec, err := s.GetClusterImagePullSecret(clusterID, id)
+		if err != nil {
+			return nil, err
+		}
+		rec.Namespace = appNamespace
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 func (s *Service) replaceApplicationManifestSecrets(appID int64, secretIDs []int64) error {
 	_, err := s.db.Exec(`DELETE FROM application_manifest_secrets WHERE application_manifest_id = $1`, appID)
 	if err != nil {
@@ -4375,6 +4634,28 @@ func (s *Service) replaceApplicationManifestConfigMaps(appID int64, configMapIDs
 			configMapID,
 		); err != nil {
 			return fmt.Errorf("record application config map selection: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Service) replaceApplicationManifestImagePullSecrets(appID int64, secretIDs []int64) error {
+	_, err := s.db.Exec(`DELETE FROM application_manifest_image_pull_secrets WHERE application_manifest_id = $1`, appID)
+	if err != nil {
+		return fmt.Errorf("clear application image pull secret selections: %w", err)
+	}
+	for _, secretID := range secretIDs {
+		if secretID <= 0 {
+			continue
+		}
+		if _, err := s.db.Exec(
+			`INSERT INTO application_manifest_image_pull_secrets (application_manifest_id, cluster_image_pull_secret_id)
+			 VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`,
+			appID,
+			secretID,
+		); err != nil {
+			return fmt.Errorf("record application image pull secret selection: %w", err)
 		}
 	}
 	return nil
@@ -4425,6 +4706,38 @@ func (s *Service) applyClusterSecretRecordWithContext(ctx context.Context, kubec
 	return string(output), nil
 }
 
+func (s *Service) applyClusterImagePullSecretRecord(rec ClusterImagePullSecretRecord) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	if err != nil {
+		return "", err
+	}
+	return s.applyClusterImagePullSecretRecordWithContext(ctx, kubeconfigPath, rec)
+}
+
+func (s *Service) applyClusterImagePullSecretRecordWithContext(ctx context.Context, kubeconfigPath string, rec ClusterImagePullSecretRecord) (string, error) {
+	manifest, err := s.buildClusterImagePullSecretApplyManifest(ctx, rec)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "--namespace", rec.Namespace, "-f", "-", "--validate=false")
+	cmd.Stdin = strings.NewReader(manifest)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("apply image pull secret %s/%s: %w\nOutput: %s", rec.Namespace, rec.Name, err, string(output))
+	}
+	return string(output), nil
+}
+
+func (s *Service) buildClusterImagePullSecretApplyManifest(ctx context.Context, rec ClusterImagePullSecretRecord) (string, error) {
+	password, err := s.loadClusterImagePullSecretPassword(ctx, rec.ID)
+	if err != nil {
+		return "", err
+	}
+	return buildDockerConfigJSONSecretManifest(rec, password), nil
+}
+
 func (s *Service) buildClusterSecretApplyManifest(ctx context.Context, rec ClusterSecretRecord) (string, error) {
 	switch rec.Provider {
 	case "native":
@@ -4469,6 +4782,44 @@ func (s *Service) loadClusterSecretValues(ctx context.Context, secretID int64) (
 	return out, nil
 }
 
+func (s *Service) storeClusterImagePullSecretPassword(clusterID, secretID int64, password string) error {
+	if s.secrets == nil {
+		return errors.New("secret store is not configured")
+	}
+	ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/image-pull-secrets/%d", clusterID, secretID), "password", []byte(password))
+	if err != nil {
+		return fmt.Errorf("store image pull secret token: %w", err)
+	}
+	sum := sha256.Sum256([]byte(password))
+	_, err = s.db.Exec(
+		`UPDATE cluster_image_pull_secrets
+		 SET password_ref = $2, password_sha256 = $3, updated_at = NOW()
+		 WHERE id = $1`,
+		secretID,
+		ref,
+		hex.EncodeToString(sum[:]),
+	)
+	if err != nil {
+		return fmt.Errorf("update image pull secret token ref: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) loadClusterImagePullSecretPassword(ctx context.Context, secretID int64) (string, error) {
+	var ref string
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(password_ref, '') FROM cluster_image_pull_secrets WHERE id = $1`, secretID).Scan(&ref); err != nil {
+		return "", fmt.Errorf("load image pull secret ref: %w", err)
+	}
+	if strings.TrimSpace(ref) == "" {
+		return "", errors.New("image pull secret token is empty")
+	}
+	value, err := s.secrets.Get(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("load image pull secret token: %w", err)
+	}
+	return string(value), nil
+}
+
 func normalizeClusterSecretRequest(req UpsertClusterSecretRequest) UpsertClusterSecretRequest {
 	req.Name = sanitizeKubernetesName(req.Name)
 	req.Namespace = sanitizeKubernetesName(req.Namespace)
@@ -4488,6 +4839,23 @@ func normalizeClusterSecretRequest(req UpsertClusterSecretRequest) UpsertCluster
 	if req.ProviderConfig == nil {
 		req.ProviderConfig = map[string]interface{}{}
 	}
+	return req
+}
+
+func normalizeClusterImagePullSecretRequest(req UpsertClusterImagePullSecretRequest) UpsertClusterImagePullSecretRequest {
+	req.Name = sanitizeKubernetesName(req.Name)
+	req.Namespace = sanitizeKubernetesName(req.Namespace)
+	if req.Namespace == "" {
+		req.Namespace = "default"
+	}
+	req.RegistryServer = strings.TrimSpace(req.RegistryServer)
+	if req.RegistryServer == "" {
+		req.RegistryServer = "ghcr.io"
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	req.Password = strings.TrimSpace(req.Password)
+	req.Email = strings.TrimSpace(req.Email)
+	req.Description = strings.TrimSpace(req.Description)
 	return req
 }
 
@@ -4551,6 +4919,25 @@ func validateClusterSecretRequest(req UpsertClusterSecretRequest, requireData bo
 	return nil
 }
 
+func validateClusterImagePullSecretRequest(req UpsertClusterImagePullSecretRequest, requirePassword bool) error {
+	if req.Name == "" {
+		return errors.New("name is required")
+	}
+	if req.Namespace == "" {
+		return errors.New("namespace is required")
+	}
+	if req.RegistryServer == "" {
+		return errors.New("registry server is required")
+	}
+	if req.Username == "" {
+		return errors.New("registry username is required")
+	}
+	if requirePassword && req.Password == "" {
+		return errors.New("registry token/password is required")
+	}
+	return nil
+}
+
 func buildNativeKubernetesSecretManifest(rec ClusterSecretRecord, values map[string]string) string {
 	var b strings.Builder
 	b.WriteString("apiVersion: v1\nkind: Secret\nmetadata:\n")
@@ -4563,6 +4950,29 @@ func buildNativeKubernetesSecretManifest(rec ClusterSecretRecord, values map[str
 		b.WriteString(fmt.Sprintf("  %s: %s\n", key, base64.StdEncoding.EncodeToString([]byte(values[key]))))
 	}
 	return b.String()
+}
+
+func buildDockerConfigJSONSecretManifest(rec ClusterImagePullSecretRecord, password string) string {
+	auth := base64.StdEncoding.EncodeToString([]byte(rec.Username + ":" + password))
+	dockerConfig := map[string]interface{}{
+		"auths": map[string]interface{}{
+			rec.RegistryServer: map[string]string{
+				"username": rec.Username,
+				"password": password,
+				"email":    rec.Email,
+				"auth":     auth,
+			},
+		},
+	}
+	raw, _ := json.Marshal(dockerConfig)
+	values := map[string]string{
+		".dockerconfigjson": string(raw),
+	}
+	return buildNativeKubernetesSecretManifest(ClusterSecretRecord{
+		Name:      rec.Name,
+		Namespace: rec.Namespace,
+		Type:      "kubernetes.io/dockerconfigjson",
+	}, values)
 }
 
 func buildNativeKubernetesConfigMapManifest(rec ClusterConfigMapRecord) string {
@@ -4630,6 +5040,105 @@ func clusterConfigMapNames(records []ClusterConfigMapRecord) []string {
 		out = append(out, fmt.Sprintf("%s/%s", rec.Namespace, rec.Name))
 	}
 	return out
+}
+
+func clusterImagePullSecretNames(records []ClusterImagePullSecretRecord) []string {
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		out = append(out, fmt.Sprintf("%s/%s", rec.Namespace, rec.Name))
+	}
+	return out
+}
+
+func imagePullSecretNamesOnly(records []ClusterImagePullSecretRecord) []string {
+	out := make([]string, 0, len(records))
+	seen := map[string]struct{}{}
+	for _, rec := range records {
+		name := strings.TrimSpace(rec.Name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func injectImagePullSecretsIntoManifest(manifest string, names []string) string {
+	if strings.TrimSpace(manifest) == "" || len(names) == 0 {
+		return manifest
+	}
+	docs := strings.Split(manifest, "\n---")
+	for i, doc := range docs {
+		docs[i] = injectImagePullSecretsIntoDocument(doc, names)
+	}
+	return strings.Join(docs, "\n---")
+}
+
+func injectImagePullSecretsIntoDocument(doc string, names []string) string {
+	lines := strings.Split(doc, "\n")
+	if !isSupportedImagePullSecretWorkload(lines) || documentHasImagePullSecrets(lines) {
+		return doc
+	}
+	previousContent := ""
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "spec:" && previousContent == "template:" {
+			indent := leadingSpaces(line)
+			insert := make([]string, 0, 1+len(names))
+			prefix := strings.Repeat(" ", indent+2)
+			insert = append(insert, prefix+"imagePullSecrets:")
+			for _, name := range names {
+				insert = append(insert, prefix+fmt.Sprintf("  - name: %s", name))
+			}
+			out := append([]string{}, lines[:i+1]...)
+			out = append(out, insert...)
+			out = append(out, lines[i+1:]...)
+			return strings.Join(out, "\n")
+		}
+		previousContent = trimmed
+	}
+	return doc
+}
+
+func isSupportedImagePullSecretWorkload(lines []string) bool {
+	kind := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "kind:") {
+			kind = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "kind:")), `"'`)
+			break
+		}
+	}
+	switch kind {
+	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "ReplicationController", "Job", "CronJob":
+		return true
+	default:
+		return false
+	}
+}
+
+func documentHasImagePullSecrets(lines []string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "imagePullSecrets:" {
+			return true
+		}
+	}
+	return false
+}
+
+func leadingSpaces(line string) int {
+	count := 0
+	for count < len(line) && line[count] == ' ' {
+		count++
+	}
+	return count
 }
 
 func quoteYAMLString(value string) string {
@@ -6215,6 +6724,36 @@ func (s *Service) getClusterSavedManifestRevision(clusterID, manifestID, revisio
 			return ClusterSavedManifestRevisionRecord{}, ErrSavedManifestNotFound
 		}
 		return ClusterSavedManifestRevisionRecord{}, fmt.Errorf("get saved manifest revision: %w", err)
+	}
+	return rec, nil
+}
+
+func scanClusterImagePullSecret(row clusterConfigMapScanner) (ClusterImagePullSecretRecord, error) {
+	var rec ClusterImagePullSecretRecord
+	var clusterID sql.NullInt64
+	var lastApplied sql.NullTime
+	err := row.Scan(
+		&rec.ID,
+		&clusterID,
+		&rec.Name,
+		&rec.Namespace,
+		&rec.RegistryServer,
+		&rec.Username,
+		&rec.Email,
+		&rec.Description,
+		&rec.IsGlobal,
+		&lastApplied,
+		&rec.CreatedAt,
+		&rec.UpdatedAt,
+	)
+	if err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	if clusterID.Valid {
+		rec.ClusterID = clusterID.Int64
+	}
+	if lastApplied.Valid {
+		rec.LastAppliedAt = &lastApplied.Time
 	}
 	return rec, nil
 }

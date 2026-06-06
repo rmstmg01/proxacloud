@@ -813,6 +813,96 @@ func (h *Handler) ApplyClusterConfigMap(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListClusterImagePullSecrets(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	resp, err := h.service.ListClusterImagePullSecrets(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) CreateClusterImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	var req UpsertClusterImagePullSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateClusterImagePullSecret(clusterID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) CreateGlobalImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	var req UpsertClusterImagePullSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateGlobalImagePullSecret(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateClusterImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	clusterID, secretID, ok := parseClusterAndImagePullSecretIDs(w, r)
+	if !ok {
+		return
+	}
+	var req UpsertClusterImagePullSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateClusterImagePullSecret(clusterID, secretID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteClusterImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	clusterID, secretID, ok := parseClusterAndImagePullSecretIDs(w, r)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteClusterImagePullSecret(clusterID, secretID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": secretID, "deleted": true})
+}
+
+func (h *Handler) ApplyClusterImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	clusterID, secretID, ok := parseClusterAndImagePullSecretIDs(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ApplyClusterImagePullSecret(clusterID, secretID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListGlobalSavedManifests(w http.ResponseWriter, _ *http.Request) {
 	resp, err := h.service.ListGlobalSavedManifests()
 	if err != nil {
@@ -1173,6 +1263,20 @@ func parseClusterAndConfigMapIDs(w http.ResponseWriter, r *http.Request) (int64,
 		return 0, 0, false
 	}
 	return clusterID, configMapID, true
+}
+
+func parseClusterAndImagePullSecretIDs(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return 0, 0, false
+	}
+	secretID, err := strconv.ParseInt(chi.URLParam(r, "secretID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image pull secret id"})
+		return 0, 0, false
+	}
+	return clusterID, secretID, true
 }
 
 func parseClusterAndManifestIDs(w http.ResponseWriter, r *http.Request) (int64, int64, bool) {

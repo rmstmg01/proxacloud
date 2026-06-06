@@ -25,6 +25,8 @@ import type {
   ApplyClusterSecretResponse,
   ClusterConfigMapRecord,
   ApplyClusterConfigMapResponse,
+  ClusterImagePullSecretRecord,
+  ApplyClusterImagePullSecretResponse,
   ClusterSavedManifestRecord,
   ClusterSavedManifestRevisionRecord,
   ClusterSavedManifestApplyRunRecord,
@@ -294,6 +296,9 @@ export const deployApp = (
     apply_selected_secrets: boolean;
     selected_config_map_ids: number[];
     apply_config_maps: boolean;
+    selected_image_pull_secret_ids: number[];
+    apply_image_pull_secrets: boolean;
+    inject_image_pull_secrets: boolean;
     apply: boolean;
   },
 ) =>
@@ -412,6 +417,59 @@ export const deleteClusterConfigMap = (id: number, configMapID: number) =>
 
 export const applyClusterConfigMap = (id: number, configMapID: number) =>
   client.post<ApplyClusterConfigMapResponse>(`/clusters/${id}/config-maps/${configMapID}/apply`).then((r) => r.data);
+
+export const getClusterImagePullSecrets = (id: number) =>
+  client.get<ClusterImagePullSecretRecord[]>(`/clusters/${id}/image-pull-secrets`).then((r) => r.data);
+
+export const createClusterImagePullSecret = (
+  id: number,
+  body: {
+    name: string;
+    namespace: string;
+    registry_server: string;
+    username: string;
+    password: string;
+    email: string;
+    description: string;
+    is_global: boolean;
+  },
+) => client.post<ClusterImagePullSecretRecord>(`/clusters/${id}/image-pull-secrets`, body).then((r) => r.data);
+
+export const createGlobalImagePullSecret = (
+  body: {
+    name: string;
+    namespace: string;
+    registry_server: string;
+    username: string;
+    password: string;
+    email: string;
+    description: string;
+    is_global: boolean;
+  },
+) => client.post<ClusterImagePullSecretRecord>('/image-pull-secrets', body).then((r) => r.data);
+
+export const updateClusterImagePullSecret = (
+  id: number,
+  secretID: number,
+  body: {
+    name: string;
+    namespace: string;
+    registry_server: string;
+    username: string;
+    password: string;
+    email: string;
+    description: string;
+    is_global: boolean;
+  },
+) => client.put<ClusterImagePullSecretRecord>(`/clusters/${id}/image-pull-secrets/${secretID}`, body).then((r) => r.data);
+
+export const deleteClusterImagePullSecret = (id: number, secretID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/clusters/${id}/image-pull-secrets/${secretID}`).then((r) => r.data);
+
+export const applyClusterImagePullSecret = (id: number, secretID: number) =>
+  client
+    .post<ApplyClusterImagePullSecretResponse>(`/clusters/${id}/image-pull-secrets/${secretID}/apply`)
+    .then((r) => r.data);
 
 export const updateClusterConfigMapKey = (id: number, configMapID: number, key: string, value: string) =>
   client

@@ -45,6 +45,11 @@ import {
   applyClusterConfigMap,
   updateClusterConfigMapKey,
   deleteClusterConfigMapKey,
+  getClusterImagePullSecrets,
+  createClusterImagePullSecret,
+  updateClusterImagePullSecret,
+  deleteClusterImagePullSecret,
+  applyClusterImagePullSecret,
   getClusterSavedManifests,
   createClusterSavedManifest,
   updateClusterSavedManifest,
@@ -64,9 +69,9 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
-import type { ClusterConfigMapRecord, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
+import type { ClusterConfigMapRecord, ClusterImagePullSecretRecord, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'manifests' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'pullsecrets' | 'manifests' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -77,6 +82,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'storage', label: 'Storage' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'configmaps', label: 'ConfigMaps' },
+  { key: 'pullsecrets', label: 'Pull Secrets' },
   { key: 'manifests', label: 'Manifests' },
   { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
@@ -1519,6 +1525,165 @@ function ConfigMapsTab({ id }: { id: number }) {
   );
 }
 
+function ImagePullSecretsTab({ id }: { id: number }) {
+  const qc = useQueryClient();
+  const { data: pullSecrets } = useQuery({ queryKey: ['cluster-image-pull-secrets', id], queryFn: () => getClusterImagePullSecrets(id) });
+  const [editing, setEditing] = useState<ClusterImagePullSecretRecord | null>(null);
+  const [form, setForm] = useState({
+    name: 'ghcr-pull-secret',
+    namespace: 'default',
+    registry_server: 'ghcr.io',
+    username: '',
+    password: '',
+    email: '',
+    description: '',
+    is_global: false,
+  });
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      name: 'ghcr-pull-secret',
+      namespace: 'default',
+      registry_server: 'ghcr.io',
+      username: '',
+      password: '',
+      email: '',
+      description: '',
+      is_global: false,
+    });
+  };
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name: form.name.trim() || 'ghcr-pull-secret',
+        namespace: form.namespace.trim() || 'default',
+        registry_server: form.registry_server.trim() || 'ghcr.io',
+        username: form.username.trim(),
+        password: form.password,
+        email: form.email.trim(),
+        description: form.description.trim(),
+        is_global: form.is_global,
+      };
+      return editing
+        ? updateClusterImagePullSecret(id, editing.id, body)
+        : createClusterImagePullSecret(id, body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-image-pull-secrets', id] });
+      resetForm();
+    },
+  });
+
+  const applyMut = useMutation({
+    mutationFn: (secretID: number) => applyClusterImagePullSecret(id, secretID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-image-pull-secrets', id] }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (secretID: number) => deleteClusterImagePullSecret(id, secretID),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-image-pull-secrets', id] }),
+  });
+
+  const startEdit = (secret: ClusterImagePullSecretRecord) => {
+    setEditing(secret);
+    setForm({
+      name: secret.name,
+      namespace: secret.namespace,
+      registry_server: secret.registry_server || 'ghcr.io',
+      username: secret.username,
+      password: '',
+      email: secret.email || '',
+      description: secret.description || '',
+      is_global: secret.is_global,
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader><CardTitle>{editing ? 'Edit Image Pull Secret' : 'Create Image Pull Secret'}</CardTitle></CardHeader>
+        <CardContent>
+          <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
+              <Input label="Secret name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+              <Input label="Namespace" value={form.namespace} onChange={(e) => setForm({ ...form, namespace: e.target.value })} required />
+              <Input label="Registry server" value={form.registry_server} onChange={(e) => setForm({ ...form, registry_server: e.target.value })} required />
+              <Input label="Username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
+              <Input
+                label={editing ? 'New token/password' : 'Token/password'}
+                type="password"
+                value={form.password}
+                onChange={(e) => setForm({ ...form, password: e.target.value })}
+                required={!editing}
+                helperText={editing ? 'Leave blank to keep the existing registry token.' : 'For GHCR, use a GitHub token with package read access.'}
+              />
+              <Input label="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+              <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </div>
+            <label className="flex items-center gap-3">
+              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Available to all clusters</span>
+            </label>
+            <div className="flex gap-3">
+              <Button type="submit" loading={saveMut.isPending}>{editing ? 'Save Pull Secret' : 'Create Pull Secret'}</Button>
+              {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+            </div>
+            {saveMut.error && <ErrorMessage error={saveMut.error} />}
+          </form>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Image Pull Secrets</CardTitle></CardHeader>
+        <CardContent>
+          {!pullSecrets?.length ? (
+            <p className="text-sm text-slate-400">No image pull secrets yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Name</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Namespace</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Registry</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Username</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Scope</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
+                    <th className="px-4 py-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {pullSecrets.map((secret) => (
+                    <tr key={secret.id} className="border-b border-slate-100">
+                      <td className="px-4 py-2 font-medium text-slate-900">{secret.name}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.namespace}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.registry_server}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.username}</td>
+                      <td className="px-4 py-2 text-slate-600">{secret.is_global ? 'Global' : 'Cluster'}</td>
+                      <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
+                          <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === secret.id} onClick={() => applyMut.mutate(secret.id)}>Apply</Button>
+                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => deleteMut.mutate(secret.id)}>Delete</Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {applyMut.error && <ErrorMessage error={applyMut.error} />}
+          {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 const DEFAULT_SAVED_MANIFEST = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -1875,6 +2040,7 @@ function ApplicationsTab({ id }: { id: number }) {
   const { data: sslCertificates } = useQuery({ queryKey: ['ssl-certificates'], queryFn: getSSLCertificates });
   const { data: clusterSecrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
   const { data: clusterConfigMaps } = useQuery({ queryKey: ['cluster-config-maps', id], queryFn: () => getClusterConfigMaps(id) });
+  const { data: clusterImagePullSecrets } = useQuery({ queryKey: ['cluster-image-pull-secrets', id], queryFn: () => getClusterImagePullSecrets(id) });
   const { data: clusterSavedManifests } = useQuery({ queryKey: ['cluster-saved-manifests', id], queryFn: () => getClusterSavedManifests(id) });
   const { data: appHistory } = useQuery({ queryKey: ['application-manifests', id], queryFn: () => getApplicationManifests(id) });
   const ingressMut = useMutation({ mutationFn: (b: Parameters<typeof deployIngressController>[1]) => deployIngressController(id, b) });
@@ -1929,6 +2095,9 @@ function ApplicationsTab({ id }: { id: number }) {
     apply_selected_secrets: true,
     selected_config_map_ids: [] as number[],
     apply_config_maps: true,
+    selected_image_pull_secret_ids: [] as number[],
+    apply_image_pull_secrets: true,
+    inject_image_pull_secrets: true,
     selected_saved_manifest_id: 0,
     manifest: SAMPLE_APP_MANIFEST,
     apply: true,
@@ -1961,6 +2130,9 @@ function ApplicationsTab({ id }: { id: number }) {
       apply_selected_secrets: true,
       selected_config_map_ids: [],
       apply_config_maps: true,
+      selected_image_pull_secret_ids: [],
+      apply_image_pull_secrets: true,
+      inject_image_pull_secrets: true,
       selected_saved_manifest_id: 0,
       manifest: revision.raw_manifest,
       apply: true,
@@ -1993,6 +2165,9 @@ function ApplicationsTab({ id }: { id: number }) {
       apply_selected_secrets: appForm.apply_selected_secrets,
       selected_config_map_ids: appForm.selected_config_map_ids,
       apply_config_maps: appForm.apply_config_maps,
+      selected_image_pull_secret_ids: appForm.selected_image_pull_secret_ids,
+      apply_image_pull_secrets: appForm.apply_image_pull_secrets,
+      inject_image_pull_secrets: appForm.inject_image_pull_secrets,
       manifest: appForm.manifest,
       apply: appForm.apply,
     });
@@ -2001,6 +2176,7 @@ function ApplicationsTab({ id }: { id: number }) {
   const selectedHistoryApp = appHistory?.find((app) => app.id === selectedHistoryAppID);
   const availableSecrets = clusterSecrets ?? [];
   const availableConfigMaps = clusterConfigMaps ?? [];
+  const availableImagePullSecrets = clusterImagePullSecrets ?? [];
   const availableSavedManifests = clusterSavedManifests ?? [];
   const toggleAppSecret = (secretID: number) => {
     setAppForm((prev) => ({
@@ -2016,6 +2192,14 @@ function ApplicationsTab({ id }: { id: number }) {
       selected_config_map_ids: prev.selected_config_map_ids.includes(configMapID)
         ? prev.selected_config_map_ids.filter((id) => id !== configMapID)
         : [...prev.selected_config_map_ids, configMapID],
+    }));
+  };
+  const toggleAppImagePullSecret = (secretID: number) => {
+    setAppForm((prev) => ({
+      ...prev,
+      selected_image_pull_secret_ids: prev.selected_image_pull_secret_ids.includes(secretID)
+        ? prev.selected_image_pull_secret_ids.filter((id) => id !== secretID)
+        : [...prev.selected_image_pull_secret_ids, secretID],
     }));
   };
   const loadSavedManifestIntoAppForm = (manifest: ClusterSavedManifestRecord) => {
@@ -2203,6 +2387,56 @@ function ApplicationsTab({ id }: { id: number }) {
             <div className="border border-slate-200 rounded-md p-4 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div>
+                  <p className="text-sm font-medium text-slate-900">Image Pull Secrets</p>
+                  <p className="text-xs text-slate-500">Select registry credentials to apply before the manifest and reference from pod templates.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={appForm.apply_image_pull_secrets}
+                      onChange={(e) => setAppForm({ ...appForm, apply_image_pull_secrets: e.target.checked })}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                    />
+                    <span className="text-sm text-slate-700">Apply selected</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={appForm.inject_image_pull_secrets}
+                      onChange={(e) => setAppForm({ ...appForm, inject_image_pull_secrets: e.target.checked })}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                    />
+                    <span className="text-sm text-slate-700">Inject into workloads</span>
+                  </label>
+                </div>
+              </div>
+              {!availableImagePullSecrets.length ? (
+                <p className="text-sm text-slate-400">No image pull secrets found.</p>
+              ) : (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  {availableImagePullSecrets.map((secret) => (
+                    <label key={secret.id} className="flex items-start gap-3 rounded border border-slate-200 p-3">
+                      <input
+                        type="checkbox"
+                        checked={appForm.selected_image_pull_secret_ids.includes(secret.id)}
+                        onChange={() => toggleAppImagePullSecret(secret.id)}
+                        className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-slate-900">{secret.name}</span>
+                        <span className="block text-xs text-slate-500">
+                          {secret.registry_server} · source namespace: {secret.namespace} · {secret.username}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="border border-slate-200 rounded-md p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
                   <p className="text-sm font-medium text-slate-900">Predefined ConfigMaps</p>
                   <p className="text-xs text-slate-500">Select non-sensitive config in the same namespace to apply before the manifest.</p>
                 </div>
@@ -2346,6 +2580,7 @@ function ApplicationsTab({ id }: { id: number }) {
                   {appMut.data.tls_secret_name && <p>TLS secret: {appMut.data.tls_secret_name}</p>}
                   {appMut.data.secret_names?.length ? <p>Secrets: {appMut.data.secret_names.join(', ')}</p> : null}
                   {appMut.data.config_map_names?.length ? <p>ConfigMaps: {appMut.data.config_map_names.join(', ')}</p> : null}
+                  {appMut.data.image_pull_secret_names?.length ? <p>Image pull secrets: {appMut.data.image_pull_secret_names.join(', ')}</p> : null}
                 </div>
               </Alert>
             )}
@@ -2677,6 +2912,7 @@ export function ClusterDetailPage() {
       {activeTab === 'storage' && <StorageTab id={clusterId} />}
       {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
       {activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
+      {activeTab === 'pullsecrets' && <ImagePullSecretsTab id={clusterId} />}
       {activeTab === 'manifests' && <ManifestsTab id={clusterId} />}
       {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
       {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}

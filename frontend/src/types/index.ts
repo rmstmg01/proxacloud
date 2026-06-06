@@ -324,6 +324,7 @@ export interface DeployAppResponse {
   tls_secret_name?: string;
   secret_names?: string[];
   config_map_names?: string[];
+  image_pull_secret_names?: string[];
   output?: string;
   warnings: string[];
 }
@@ -385,6 +386,32 @@ export interface ApplyClusterConfigMapResponse {
   config_map_id: number;
   name: string;
   namespace: string;
+  status: string;
+  output?: string;
+  warnings: string[];
+}
+
+export interface ClusterImagePullSecretRecord {
+  id: number;
+  cluster_id: number;
+  name: string;
+  namespace: string;
+  registry_server: string;
+  username: string;
+  email: string;
+  description: string;
+  is_global: boolean;
+  last_applied_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApplyClusterImagePullSecretResponse {
+  cluster_id: number;
+  image_pull_secret_id: number;
+  name: string;
+  namespace: string;
+  registry_server: string;
   status: string;
   output?: string;
   warnings: string[];
