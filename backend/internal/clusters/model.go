@@ -168,10 +168,15 @@ type BootstrapResponse struct {
 }
 
 type BootstrapConfigRecord struct {
-	ClusterID    int64         `json:"cluster_id"`
-	SSHUser      string        `json:"ssh_user"`
-	LastSSHKeyID sql.NullInt64 `json:"last_ssh_key_id"`
-	UpdatedAt    time.Time     `json:"updated_at"`
+	ClusterID       int64         `json:"cluster_id"`
+	SSHUser         string        `json:"ssh_user"`
+	LastSSHKeyID    sql.NullInt64 `json:"last_ssh_key_id"`
+	DeployKubeVIP   bool          `json:"deploy_kube_vip"`
+	ControlPlaneVIP string        `json:"control_plane_vip"`
+	PodCIDR         string        `json:"pod_cidr"`
+	ServiceCIDR     string        `json:"service_cidr"`
+	CNI             string        `json:"cni"`
+	UpdatedAt       time.Time     `json:"updated_at"`
 }
 
 type BootstrapSSHKeyRecord struct {
@@ -1165,6 +1170,11 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 		return ProvisionAndBootstrapResponse{}, err
 	}
 
+	if err := s.saveBootstrapSettingsForDeferredStart(provisionResp.ClusterID, bootstrapReq); err != nil {
+		_ = s.appendLatestOperationEvent(provisionResp.ClusterID, "auto-bootstrap", "error", fmt.Sprintf("Failed to save bootstrap settings for automatic bootstrap: %v", err))
+		return ProvisionAndBootstrapResponse{}, err
+	}
+
 	go s.runBootstrapAfterProvision(provisionResp.ClusterID, bootstrapReq)
 
 	warnings := append([]string{}, provisionResp.Warnings...)
@@ -1223,6 +1233,34 @@ func (s *Service) runBootstrapAfterProvision(clusterID int64, req BootstrapReque
 		}
 
 		time.Sleep(interval)
+	}
+}
+
+func (s *Service) saveBootstrapSettingsForDeferredStart(clusterID int64, req BootstrapRequest) error {
+	if err := s.hydrateBootstrapSSHUser(&req); err != nil {
+		return err
+	}
+	if err := validateBootstrapRequest(req); err != nil {
+		return err
+	}
+	_, keyID, err := s.resolveBootstrapSSHKey(clusterID, req)
+	if err != nil {
+		return err
+	}
+	return s.upsertBootstrapConfig(clusterID, req, keyID)
+}
+
+func (s *Service) runBootstrapAfterRedeploy(clusterID int64) {
+	req, err := s.savedBootstrapRequest(clusterID)
+	if err != nil {
+		_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "warn", fmt.Sprintf("Redeploy completed, but bootstrap was not started: %v", err))
+		return
+	}
+	_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "info", "Redeploy completed; starting bootstrap with saved SSH settings")
+	req.Apply = true
+	if _, bootErr := s.Bootstrap(clusterID, req); bootErr != nil {
+		log.Printf("ERROR bootstrap after redeploy for cluster %d: %v", clusterID, bootErr)
+		_ = s.appendLatestOperationEvent(clusterID, "auto-bootstrap", "error", fmt.Sprintf("Bootstrap after redeploy failed to start: %v", bootErr))
 	}
 }
 
@@ -1324,7 +1362,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 		return BootstrapResponse{}, err
 	}
 
-	if err := s.upsertBootstrapConfig(clusterID, req.SSHUser, keyID); err != nil {
+	if err := s.upsertBootstrapConfig(clusterID, req, keyID); err != nil {
 		return BootstrapResponse{}, err
 	}
 
@@ -1763,14 +1801,36 @@ func (s *Service) RedeployCluster(clusterID int64) (ClusterRedeployResponse, err
 		return ClusterRedeployResponse{}, err
 	}
 
-	go s.runProvisionApplyAsync(clusterID, applyWork, primaryWorkspace, operationID)
+	warnings := []string{"terraform apply is running in background; check cluster run history for progress"}
+	bootstrapAvailable := true
+	if _, bootstrapErr := s.savedBootstrapRequest(clusterID); bootstrapErr != nil {
+		bootstrapAvailable = false
+		warnings = append(warnings, fmt.Sprintf("ansible bootstrap will not auto-start after redeploy: %v", bootstrapErr))
+	} else {
+		warnings = append(warnings, "ansible bootstrap will start automatically after redeploy apply succeeds")
+	}
+
+	go func() {
+		s.runProvisionApplyAsync(clusterID, applyWork, primaryWorkspace, operationID)
+		if !bootstrapAvailable {
+			return
+		}
+		summary, summaryErr := s.getClusterSummary(clusterID)
+		if summaryErr != nil {
+			log.Printf("ERROR checking redeploy status before bootstrap for cluster %d: %v", clusterID, summaryErr)
+			return
+		}
+		if strings.EqualFold(strings.TrimSpace(summary.Status), "applied") {
+			s.runBootstrapAfterRedeploy(clusterID)
+		}
+	}()
 
 	return ClusterRedeployResponse{
 		ClusterID: clusterID,
 		Action:    "redeploy",
 		Status:    "redeploying",
 		WorkDirs:  workDirs,
-		Warnings:  []string{"terraform apply is running in background; check cluster run history for progress"},
+		Warnings:  warnings,
 	}, nil
 }
 
@@ -7170,11 +7230,21 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 func (s *Service) getBootstrapConfig(clusterID int64) (BootstrapConfigRecord, error) {
 	var out BootstrapConfigRecord
 	err := s.db.QueryRow(
-		`SELECT cluster_id, ssh_user, last_ssh_key_id, updated_at
+		`SELECT cluster_id, ssh_user, last_ssh_key_id, deploy_kube_vip, control_plane_vip, pod_cidr, service_cidr, cni, updated_at
 		 FROM cluster_bootstrap_configs
 		 WHERE cluster_id = $1`,
 		clusterID,
-	).Scan(&out.ClusterID, &out.SSHUser, &out.LastSSHKeyID, &out.UpdatedAt)
+	).Scan(
+		&out.ClusterID,
+		&out.SSHUser,
+		&out.LastSSHKeyID,
+		&out.DeployKubeVIP,
+		&out.ControlPlaneVIP,
+		&out.PodCIDR,
+		&out.ServiceCIDR,
+		&out.CNI,
+		&out.UpdatedAt,
+	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return BootstrapConfigRecord{}, errors.New("bootstrap ssh config not found")
@@ -7210,25 +7280,85 @@ func (s *Service) getBootstrapSSHKeys(clusterID int64) ([]BootstrapSSHKeyRecord,
 	return out, nil
 }
 
-func (s *Service) upsertBootstrapConfig(clusterID int64, sshUser string, lastSSHKeyID int64) error {
+func (s *Service) upsertBootstrapConfig(clusterID int64, req BootstrapRequest, lastSSHKeyID int64) error {
+	podCIDR := strings.TrimSpace(req.PodCIDR)
+	if podCIDR == "" {
+		podCIDR = "10.244.0.0/16"
+	}
+	serviceCIDR := strings.TrimSpace(req.ServiceCIDR)
+	if serviceCIDR == "" {
+		serviceCIDR = "10.96.0.0/12"
+	}
+	cni := strings.TrimSpace(req.CNI)
+	if cni == "" {
+		cni = "calico"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO cluster_bootstrap_configs (cluster_id, ssh_user, ssh_private_key_path, last_ssh_key_id)
-		 VALUES ($1, $2, '', $3)
+		`INSERT INTO cluster_bootstrap_configs (
+		     cluster_id, ssh_user, ssh_private_key_path, last_ssh_key_id,
+		     deploy_kube_vip, control_plane_vip, pod_cidr, service_cidr, cni
+		 )
+		 VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8)
 		 ON CONFLICT (cluster_id)
 		 DO UPDATE SET
 		   ssh_user = EXCLUDED.ssh_user,
 		   ssh_private_key_path = EXCLUDED.ssh_private_key_path,
 		   last_ssh_key_id = EXCLUDED.last_ssh_key_id,
+		   deploy_kube_vip = EXCLUDED.deploy_kube_vip,
+		   control_plane_vip = EXCLUDED.control_plane_vip,
+		   pod_cidr = EXCLUDED.pod_cidr,
+		   service_cidr = EXCLUDED.service_cidr,
+		   cni = EXCLUDED.cni,
 		   updated_at = NOW()`,
 		clusterID,
-		strings.TrimSpace(sshUser),
+		strings.TrimSpace(req.SSHUser),
 		lastSSHKeyID,
+		req.DeployKubeVIP,
+		strings.TrimSpace(req.ControlPlaneVIP),
+		podCIDR,
+		serviceCIDR,
+		cni,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert bootstrap ssh config: %w", err)
 	}
 
 	return nil
+}
+
+func (s *Service) savedBootstrapRequest(clusterID int64) (BootstrapRequest, error) {
+	cfg, err := s.getBootstrapConfig(clusterID)
+	if err != nil {
+		return BootstrapRequest{}, err
+	}
+	if !cfg.LastSSHKeyID.Valid || cfg.LastSSHKeyID.Int64 <= 0 {
+		return BootstrapRequest{}, errors.New("no saved bootstrap SSH key is available")
+	}
+
+	podCIDR := strings.TrimSpace(cfg.PodCIDR)
+	if podCIDR == "" {
+		podCIDR = "10.244.0.0/16"
+	}
+	serviceCIDR := strings.TrimSpace(cfg.ServiceCIDR)
+	if serviceCIDR == "" {
+		serviceCIDR = "10.96.0.0/12"
+	}
+	cni := strings.TrimSpace(cfg.CNI)
+	if cni == "" {
+		cni = "calico"
+	}
+
+	return BootstrapRequest{
+		SSHUser:         strings.TrimSpace(cfg.SSHUser),
+		SSHKeyID:        cfg.LastSSHKeyID.Int64,
+		DeployKubeVIP:   cfg.DeployKubeVIP,
+		ControlPlaneVIP: strings.TrimSpace(cfg.ControlPlaneVIP),
+		PodCIDR:         podCIDR,
+		ServiceCIDR:     serviceCIDR,
+		CNI:             cni,
+		NodeIPs:         map[string]string{},
+		Apply:           true,
+	}, nil
 }
 
 func (s *Service) resolveBootstrapSSHKey(clusterID int64, req BootstrapRequest) (string, int64, error) {

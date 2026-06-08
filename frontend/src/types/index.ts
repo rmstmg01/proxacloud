@@ -217,6 +217,11 @@ export interface BootstrapConfigRecord {
   cluster_id: number;
   ssh_user: string;
   last_ssh_key_id?: number | null;
+  deploy_kube_vip: boolean;
+  control_plane_vip: string;
+  pod_cidr: string;
+  service_cidr: string;
+  cni: string;
   updated_at: string;
 }
 
