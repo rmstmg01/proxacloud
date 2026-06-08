@@ -1,77 +1,151 @@
 # K8s Proxmox Manager
 
-K8s Proxmox Manager is a self-hosted admin portal and API for provisioning and operating Kubernetes clusters on Proxmox. It targets homelab and private-cloud environments where Kubernetes nodes are created as Ubuntu 24 cloud-init VMs, then bootstrapped with kubeadm.
+K8s Proxmox Manager is a self-hosted operations portal for building and running Kubernetes-focused infrastructure on Proxmox. It combines a React admin UI, a Go API, PostgreSQL persistence, Proxmox inventory discovery, Terraform VM provisioning, Ansible kubeadm bootstrap, Kubernetes application operations, database-cluster automation, monitoring, Cloudflare tunnels, and reusable manifest/config catalogs.
 
-The application combines a React admin UI, a Go backend API, PostgreSQL persistence, Proxmox node discovery, Terraform VM provisioning, Ansible Kubernetes bootstrap, and day-2 cluster operations.
+The project is intended for homelab, private-cloud, and small platform-team environments where Kubernetes and supporting services are created from Proxmox VMs and then operated from a single UI.
 
-## What It Does
+## Current Capabilities
 
-- Stores users, roles, network profiles, SSH keys, Proxmox credentials, discovered Proxmox nodes, clusters, operation history, and health data in PostgreSQL.
-- Discovers Proxmox nodes from configured Proxmox credentials and tracks CPU, memory, disk, status, and placement eligibility.
-- Plans cluster placement across single-node, dual-node, or tri-node Proxmox topologies.
-- Generates Terraform workspaces for Ubuntu cloud-init VMs on Proxmox.
-- Optionally runs Terraform apply to create VMs.
-- Generates Ansible workspaces and kubeadm bootstrap playbooks.
-- Optionally runs Ansible to bootstrap Kubernetes control-plane and worker nodes.
-- Supports cluster lifecycle APIs for listing, detail views, run history, scaling, upgrade planning, node replacement, and kubeconfig token rotation.
-- Generates production-oriented three-node MariaDB Galera database-cluster workspaces on Proxmox VMs and Kubernetes external database manifests.
-- Generates MetalLB deployment manifests and helper commands.
-- Generates observability configuration for Prometheus/Grafana-style deployments.
-- Tracks etcd snapshot and restore plans.
-- Runs background Proxmox refresh and cluster node health/recovery checks.
-- Provides a web UI for common admin workflows.
+- JWT login with role-based access control.
+- User management with seeded super-admin bootstrap.
+- Proxmox credential storage, discovery, inventory refresh, node enablement, and resource tracking.
+- Network profiles, reserved IPs, Proxmox node network tags, bridges, VLANs, gateways, and DNS settings.
+- SSH key-pair and SSL certificate catalogs.
+- Topology planning for single, dual, and tri-node Proxmox layouts.
+- Kubernetes cluster provisioning through generated Terraform workspaces.
+- Optional Terraform apply from the backend.
+- Kubernetes bootstrap through generated Ansible/kubeadm workspaces.
+- Optional Ansible execution from the backend.
+- Provision-and-bootstrap workflow with live operation progress and event logs.
+- Cluster lifecycle operations: start, shutdown, restart, redeploy, scale, upgrade plan, node replacement, kubeconfig rotation, and delete.
+- Cluster health checks, node health reconciliation, recovery configuration, and manual recovery trigger.
+- Cluster node command and kubectl command execution with persisted output.
+- MetalLB, Traefik ingress controller, Longhorn, cert-manager, application manifest, observability, etcd snapshot, and etcd restore workflows.
+- Cluster-scoped and global Secrets, ConfigMaps, image pull secrets, and saved manifests.
+- Application deployment history, manifest revisions, redeploy, and kubectl apply logs.
+- MariaDB/Galera database-cluster planning, provisioning, Terraform apply, bootstrap, event log, and Kubernetes manifest generation.
+- Cloudflare Tunnel records, Kubernetes manifests, deployment, and event logs.
+- Central monitoring stack configuration, stack manifest generation/apply, remote cluster sync, and remote-cluster agent manifests.
+- Built-in Kubernetes troubleshooting and command reference pages.
 
-## Project Structure
+## Project Layout
 
 ```text
 .
-|-- backend/                 Go API server
-|   |-- cmd/api-server/      Backend entrypoint
-|   |-- internal/            Feature packages
-|   `-- migrations/          PostgreSQL migrations
-|-- frontend/                React/Vite admin portal
+|-- backend/
+|   |-- cmd/api-server/              Go API entrypoint
+|   |-- internal/
+|   |   |-- ansible/                 Ansible runner
+|   |   |-- auth/                    JWT and auth middleware
+|   |   |-- cloudflaretunnels/       Cloudflare Tunnel model, handler, manifest service
+|   |   |-- clusters/                Cluster provisioning, operations, health, commands, apps
+|   |   |-- config/                  Environment configuration
+|   |   |-- databaseclusters/        MariaDB/Galera cluster automation
+|   |   |-- db/                      PostgreSQL connection and migration runner
+|   |   |-- monitoring/              Central monitoring stack and remote agents
+|   |   |-- networks/                Network profiles, reserved IPs, node tags
+|   |   |-- proxmox/                 Proxmox API client, credentials, discovery
+|   |   |-- rbac/                    Role names
+|   |   |-- secrets/                 Encrypted secret storage helper
+|   |   |-- server/                  Router composition
+|   |   |-- sshkeys/                 SSH key-pair catalog
+|   |   |-- sslcerts/                SSL certificate catalog
+|   |   |-- terraform/               Terraform runner
+|   |   |-- topology/                Proxmox placement planner
+|   |   `-- users/                   Users, login, seed admin
+|   `-- migrations/                  PostgreSQL schema migrations
+|-- frontend/
+|   |-- src/api/                     Axios API clients
+|   |-- src/components/              Layout, sidebar, protected routes, UI primitives
+|   |-- src/context/                 Auth context
+|   |-- src/pages/                   Main application pages
+|   `-- Dockerfile                   Production nginx image
 |-- infra/
-|   |-- ansible/             Ansible-related assets
-|   `-- terraform/           Terraform-related assets
-|-- certs/                   TLS certificates for the frontend nginx container
-|-- docs/                    Step/API implementation notes
-|-- scripts/                 Utility scripts
-|-- docker-compose.yml       Local/container stack
-`-- .env.example             Example runtime configuration
+|   |-- ansible/                     Generated/bootstrap Ansible assets
+|   |-- k8s/                         Deployment and monitoring Kubernetes manifests
+|   `-- terraform/                   Generated/provisioning Terraform assets
+|-- docs/                            API notes and operational documentation
+|-- docker-compose.yml               Local/container deployment
+|-- .env.example                     Example environment configuration
+`-- README.md
 ```
 
 ## Architecture
 
+```text
+Browser
+  |
+  | HTTPS/HTTP
+  v
+Frontend container
+  - nginx
+  - built React/Vite application
+  |
+  | /api/v1 requests
+  v
+Backend container
+  - Go API server
+  - JWT auth and RBAC
+  - PostgreSQL persistence
+  - Proxmox API client
+  - Terraform runner
+  - Ansible runner
+  - kubectl/operation helpers
+  - background discovery and health loops
+  |
+  | SQL
+  v
+PostgreSQL
+
+Backend also talks to:
+  - Proxmox API for credentials, nodes, inventory, and VM operations
+  - Terraform for VM provisioning workspaces
+  - Ansible for kubeadm bootstrap workspaces
+  - kubectl through KUBECONFIG for Kubernetes manifests and commands
+  - Cloudflare Tunnel manifests generated for Kubernetes deployment
+```
+
 ### Frontend
 
-The frontend is a React 18 application built with Vite, TypeScript, Tailwind CSS, React Router, TanStack Query, Axios, and lucide-react icons.
+The frontend is a React 18 application using Vite, TypeScript, Tailwind CSS, React Router, TanStack Query, Axios, and lucide-react icons.
 
-Main UI routes:
+Main routes:
 
-- `/login` - sign in
-- `/dashboard` - overview
-- `/clusters` - cluster list
-- `/clusters/new` - provision a new cluster
-- `/clusters/:id` - cluster detail and operations
-- `/networks` - network profiles, reserved IPs, node network tags
-- `/proxmox` - Proxmox credentials and discovered nodes
-- `/topology` - topology planning
-- `/users` - user management
-- `/ssh-keys` - SSH key management
-
-MariaDB Galera database-cluster APIs are available under `/api/v1/database-clusters`. See `docs/mariadb-galera-cluster.md` for the workflow.
+| Route | Purpose |
+| --- | --- |
+| `/login` | Sign in |
+| `/dashboard` | Platform overview |
+| `/clusters` | Kubernetes cluster list |
+| `/clusters/new` | Provision a Kubernetes cluster |
+| `/clusters/:id` | Cluster detail, lifecycle, apps, health, command, backup, and add-on operations |
+| `/database-clusters` | MariaDB/Galera database clusters |
+| `/monitoring` | Central monitoring stack and remote cluster agents |
+| `/cloudflare-tunnels` | Cloudflare Tunnel records and manifests |
+| `/commands` | Command reference and command center |
+| `/networks` | Network profiles, reserved IPs, and Proxmox node tags |
+| `/proxmox` | Proxmox credentials and discovered nodes |
+| `/topology` | Placement/topology planner |
+| `/users` | User administration |
+| `/ssh-keys` | SSH key catalog |
+| `/ssl-certificates` | TLS certificate catalog |
+| `/secrets` | Global/unattached Secret catalog |
+| `/configmaps` | Global/unattached ConfigMap catalog |
+| `/manifests` | Global saved manifest catalog |
+| `/documents` | Kubernetes/database troubleshooting documents |
 
 ### Backend
 
 The backend is a Go API using:
 
-- `go-chi/chi` for routing
-- JWT authentication
-- Role-based access control
-- PostgreSQL via `database/sql` and `lib/pq`
-- A startup migration runner
-- Background Proxmox discovery refresh
-- Background cluster health reconciliation
+- `go-chi/chi` routing.
+- JWT authentication.
+- Role-based middleware.
+- PostgreSQL through `database/sql` and `lib/pq`.
+- Startup migrations.
+- Encrypted secret storage for sensitive values.
+- Background Proxmox auto-discovery.
+- Background cluster health reconciliation.
+- Terraform, Ansible, and Kubernetes operation runners.
 
 The backend entrypoint is:
 
@@ -79,25 +153,59 @@ The backend entrypoint is:
 backend/cmd/api-server/main.go
 ```
 
+Router wiring lives in:
+
+```text
+backend/internal/server/router.go
+```
+
 ### Database
 
-PostgreSQL stores application state. Migrations live in:
+PostgreSQL stores users, credentials, inventory, cluster records, operation history, generated workspace metadata, health status, catalogs, database-cluster records, monitoring configuration, and Cloudflare Tunnel data.
+
+Migrations live in:
 
 ```text
 backend/migrations/
 ```
 
-Migration coverage includes users/roles, network profiles, Proxmox inventory, cluster provisioning, day-2 operations, observability/backup data, bootstrap config, SSH key pairs, cluster operations, reserved IPs, node tags, Proxmox node resource usage, and cluster node health.
+Migration coverage currently includes:
 
-## User Roles
+- users and roles
+- network profiles
+- Proxmox credentials and inventory
+- Kubernetes cluster provisioning
+- day-2 cluster operations
+- observability and backup state
+- bootstrap configuration and SSH keys
+- MetalLB configuration
+- cluster operations and event logs
+- Proxmox node resource metrics
+- reserved IPs and node network tags
+- cluster node health and recovery events
+- SSL certificates
+- application manifest history
+- managed secrets
+- application secrets and ConfigMaps
+- global secret/config catalog items
+- saved manifests
+- MariaDB/Galera database clusters and events
+- Cloudflare tunnels
+- monitoring stack and remote cluster records
+- cluster image pull secrets
+- aggregate cluster health status
 
-The app has three roles:
+## Roles And Access
 
-- `normal_user` - authenticated access to permitted read/workflow views
-- `super_user` - operational user for cluster, network, topology, SSH key, and most cluster actions
-- `super_admin` - full admin access, including user creation and Proxmox credential management
+The application uses three roles:
 
-The backend seeds a super admin on startup if one does not already exist.
+| Role | Description |
+| --- | --- |
+| `normal_user` | Authenticated user. Suitable for limited read/workflow access where routes allow it. |
+| `super_user` | Operational user. Can manage clusters, networks, topology, SSH keys, add-ons, database clusters, monitoring, tunnels, and catalogs. |
+| `super_admin` | Full administrator. Also manages users, Proxmox credentials, and Proxmox node enablement. |
+
+The backend seeds a super admin on startup if no matching user exists.
 
 Default development credentials:
 
@@ -106,225 +214,45 @@ Username: k8s-admin
 Password: ChangeMeNow!
 ```
 
-Change these values before using the app outside local development.
+Change these before any non-local deployment.
 
-## Core Workflow
+## Runtime Configuration
 
-1. Start the stack.
-2. Log in as the seeded super admin.
-3. Add Proxmox credentials.
-4. Discover Proxmox nodes.
-5. Enable or disable Proxmox nodes for placement.
-6. Configure network profiles, reserved IPs, node network tags, and SSH keys.
-7. Use topology planning to select single, dual, or tri-node placement.
-8. Provision VMs with Terraform workspace generation.
-9. Optionally apply Terraform to create the VMs.
-10. Bootstrap Kubernetes with generated Ansible/kubeadm workspaces.
-11. Manage the cluster through day-2 operations.
-
-## Topology Planning
-
-Supported topology types:
-
-- `single` - requires at least one enabled Proxmox node; not highly available
-- `dual` - requires at least two enabled Proxmox nodes; weaker quorum than tri-node
-- `tri` - requires at least three enabled Proxmox nodes; preferred HA layout
-
-The planner sorts enabled Proxmox nodes by available memory and distributes control-plane and worker VM placements across the selected nodes. Nodes with less than 4 GB free memory are limited to one VM placement and generate warnings.
-
-## Cluster Provisioning
-
-Provisioning accepts cluster settings such as:
-
-- Cluster name
-- Topology type
-- Control-plane count
-- Worker count
-- Kubernetes version
-- Ubuntu image
-- Network profile
-- Optional per-Proxmox-node network profile overrides
-- Optional per-Proxmox-node IP pool starts
-- SSH public key or stored SSH key pair
-- Control-plane and worker CPU/RAM/disk settings
-- Proxmox credential or per-node credential overrides
-- `apply` flag
-
-The backend creates a cluster record, allocates VM names/IPs, writes Terraform workspace files, stores run history, and either returns the generated workspace or runs Terraform depending on request/config.
-
-Terraform apply is disabled by default in Docker Compose:
-
-```text
-TERRAFORM_AUTO_APPLY=false
-```
-
-## Kubernetes Bootstrap
-
-Bootstrap accepts settings such as:
-
-- SSH user
-- SSH private key, stored key pair, or existing bootstrap SSH key
-- Optional kube-vip control-plane VIP
-- Pod CIDR
-- Service CIDR
-- CNI choice
-- Node IP mapping
-- `apply` flag
-
-The backend writes Ansible inventory/playbook material for kubeadm bootstrap and either returns the generated workspace or runs `ansible-playbook` depending on request/config.
-
-Ansible apply is disabled by default in Docker Compose:
-
-```text
-ANSIBLE_AUTO_APPLY=false
-```
-
-## Day-2 Operations
-
-Implemented cluster operation areas include:
-
-- Cluster list/detail
-- Provision run history
-- Latest operation status
-- Operation event polling
-- Cluster node listing
-- Worker scaling
-- Kubernetes version upgrade planning
-- Unhealthy node replacement
-- Kubeconfig token rotation
-- MetalLB manifest generation
-- Observability values/manifest generation
-- etcd snapshot tracking
-- etcd restore tracking
-- Cluster health status
-- Recovery configuration
-- Manual recovery trigger
-
-Some operation endpoints generate plans, manifests, or helper commands rather than directly applying changes. Apply behavior is controlled by endpoint request flags and runtime configuration.
-
-## API Overview
-
-Base API path:
-
-```text
-/api/v1
-```
-
-Public endpoints:
-
-- `GET /health`
-- `POST /api/v1/auth/login`
-
-Authenticated endpoints include:
-
-- `GET /api/v1/auth/me`
-- `GET /api/v1/users`
-- `POST /api/v1/users`
-- `GET /api/v1/networks`
-- `POST /api/v1/networks`
-- `PUT /api/v1/networks/{id}`
-- `POST /api/v1/networks/{id}/set-default`
-- `GET /api/v1/networks/{id}/reserved-ips`
-- `POST /api/v1/networks/{id}/reserved-ips`
-- `DELETE /api/v1/networks/{id}/reserved-ips/{reservedId}`
-- `GET /api/v1/networks/node-tags`
-- `PUT /api/v1/networks/node-tags/{nodeName}`
-- `DELETE /api/v1/networks/node-tags/{nodeName}`
-- `POST /api/v1/proxmox/credentials`
-- `GET /api/v1/proxmox/credentials`
-- `PUT /api/v1/proxmox/credentials/{id}`
-- `DELETE /api/v1/proxmox/credentials/{id}`
-- `POST /api/v1/proxmox/credentials/{id}/discover-nodes`
-- `GET /api/v1/proxmox/nodes`
-- `PATCH /api/v1/proxmox/nodes/{id}`
-- `GET /api/v1/ssh-keys`
-- `POST /api/v1/ssh-keys`
-- `DELETE /api/v1/ssh-keys/{id}`
-- `POST /api/v1/topology/plan`
-- `GET /api/v1/clusters`
-- `GET /api/v1/clusters/check-name`
-- `POST /api/v1/clusters/provision`
-- `POST /api/v1/clusters/provision-and-bootstrap`
-- `GET /api/v1/clusters/{id}`
-- `DELETE /api/v1/clusters/{id}`
-- `GET /api/v1/clusters/{id}/runs`
-- `GET /api/v1/clusters/{id}/operations/latest`
-- `GET /api/v1/clusters/{id}/operations/events`
-- `GET /api/v1/clusters/{id}/nodes`
-- `GET /api/v1/clusters/{id}/bootstrap-config`
-- `GET /api/v1/clusters/{id}/bootstrap-keys`
-- `POST /api/v1/clusters/{id}/start`
-- `POST /api/v1/clusters/{id}/restart`
-- `POST /api/v1/clusters/{id}/shutdown`
-- `POST /api/v1/clusters/{id}/bootstrap`
-- `POST /api/v1/clusters/{id}/scale`
-- `POST /api/v1/clusters/{id}/upgrade`
-- `POST /api/v1/clusters/{id}/replace-node`
-- `POST /api/v1/clusters/{id}/rotate-kubeconfig`
-- `POST /api/v1/clusters/{id}/metallb/deploy`
-- `GET /api/v1/clusters/{id}/metallb`
-- `POST /api/v1/clusters/{id}/ingress-controller/deploy`
-- `POST /api/v1/clusters/{id}/cert-manager/deploy`
-- `GET /api/v1/clusters/{id}/secrets`
-- `POST /api/v1/clusters/{id}/secrets`
-- `PUT /api/v1/clusters/{id}/secrets/{secretID}`
-- `DELETE /api/v1/clusters/{id}/secrets/{secretID}`
-- `POST /api/v1/clusters/{id}/secrets/{secretID}/apply`
-- `GET /api/v1/clusters/{id}/config-maps`
-- `POST /api/v1/clusters/{id}/config-maps`
-- `PUT /api/v1/clusters/{id}/config-maps/{configMapID}`
-- `DELETE /api/v1/clusters/{id}/config-maps/{configMapID}`
-- `POST /api/v1/clusters/{id}/config-maps/{configMapID}/apply`
-- `POST /api/v1/clusters/{id}/apps/deploy`
-- `POST /api/v1/clusters/{id}/observability/deploy`
-- `GET /api/v1/clusters/{id}/observability`
-- `POST /api/v1/clusters/{id}/etcd/snapshot`
-- `GET /api/v1/clusters/{id}/etcd/snapshots`
-- `POST /api/v1/clusters/{id}/etcd/restore`
-- `GET /api/v1/clusters/{id}/health`
-- `POST /api/v1/clusters/{id}/recovery/config`
-- `POST /api/v1/clusters/{id}/recovery/trigger`
-
-Role restrictions are enforced in the backend router. Proxmox credential management is super-admin only. Most cluster, network, topology, and SSH key operations require `super_user` or `super_admin`.
-
-## Configuration
-
-Copy `.env.example` to `.env` and adjust values.
-
-Important variables:
+Copy `.env.example` to `.env` and update values for your environment.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `APP_ENV` | `dev` | Application environment label |
 | `APP_ADDR` | `:8080` | Backend listen address |
-| `DATABASE_URL` | local PostgreSQL URL | Backend PostgreSQL connection |
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/k8s_proxmox?sslmode=disable` | PostgreSQL connection string |
 | `AUTO_MIGRATE` | `true` | Run migrations on backend startup |
+| `TERRAFORM_BINARY` | `terraform` | Terraform executable |
+| `TERRAFORM_WORKDIR` | `infra/terraform/runs` | Terraform run/workspace directory |
+| `TERRAFORM_PLUGIN_DIR` | `/terraform-providers` | Terraform provider plugin directory |
+| `TERRAFORM_AUTO_APPLY` | `false` | Allow backend-triggered Terraform apply |
+| `ANSIBLE_BINARY` | `ansible-playbook` | Ansible executable |
+| `ANSIBLE_WORKDIR` | `infra/ansible/runs` | Ansible run/workspace directory |
+| `ANSIBLE_AUTO_APPLY` | `false` | Allow backend-triggered Ansible execution |
+| `OPERATIONS_WORKDIR` | `data/operations/runs` | Generated Kubernetes operation manifests and scripts |
+| `KUBECONFIG_DIR` | `/root/.kube` | Host kubeconfig directory mounted into backend and kubectl-runner |
 | `JWT_SECRET` | `change-me-in-prod` | JWT signing secret |
-| `SECRET_ENCRYPTION_KEY` | `dev-only-change-me-secret-key` | Secret-store encryption key; set to a unique high-entropy value before non-local use |
+| `SECRET_ENCRYPTION_KEY` | `dev-only-change-me-secret-key` | Encryption key for stored secrets |
 | `JWT_TTL_MINUTES` | `120` | JWT lifetime |
 | `SUPER_ADMIN_USERNAME` | `k8s-admin` | Seeded admin username |
 | `SUPER_ADMIN_PASSWORD` | `ChangeMeNow!` | Seeded admin password |
 | `DEFAULT_NETWORK_NAME` | `homelab-default` | Seeded network profile name |
 | `DEFAULT_NETWORK_CIDR` | `192.168.8.0/24` | Seeded network CIDR |
-| `DEFAULT_NETWORK_GATEWAY` | `192.168.8.1` | Seeded network gateway |
+| `DEFAULT_NETWORK_GATEWAY` | `192.168.8.1` | Seeded gateway |
 | `DEFAULT_NETWORK_DNS` | `1.1.1.1,8.8.8.8` | Seeded DNS servers |
-| `DEFAULT_NETWORK_BRIDGE` | `vmbr0` | Proxmox bridge |
-| `DEFAULT_NETWORK_VLAN` | `0` | Proxmox VLAN tag |
-| `TERRAFORM_BINARY` | `terraform` | Terraform executable |
-| `TERRAFORM_WORKDIR` | `infra/terraform/runs` | Local Terraform run directory |
-| `TERRAFORM_PLUGIN_DIR` | `/terraform-providers` | Terraform plugin directory |
-| `TERRAFORM_AUTO_APPLY` | `false` | Allow backend-triggered Terraform apply |
-| `ANSIBLE_BINARY` | `ansible-playbook` | Ansible executable |
-| `ANSIBLE_WORKDIR` | `infra/ansible/runs` | Local Ansible run directory |
-| `ANSIBLE_AUTO_APPLY` | `false` | Allow backend-triggered Ansible execution |
-| `KUBECONFIG_DIR` | `/root/.kube` | Host kubeconfig directory mounted into the backend and kubectl-runner containers |
-| `OPERATIONS_WORKDIR` | `data/operations/runs` | Generated operation manifests/scripts |
-| `HTTP_PORT` | `80` | Frontend HTTP port in Docker Compose |
-| `HTTPS_PORT` | `443` | Frontend HTTPS port in Docker Compose |
-| `TLS_CERTS_DIR` | `./certs` | Host TLS cert directory for frontend nginx |
+| `DEFAULT_NETWORK_BRIDGE` | `vmbr0` | Default Proxmox bridge |
+| `DEFAULT_NETWORK_VLAN` | `0` | Default VLAN tag |
+| `HTTP_PORT` | `80` | Frontend HTTP port |
+| `HTTPS_PORT` | `443` | Frontend HTTPS port |
+| `TLS_CERTS_DIR` | `./certs` | Host TLS certificate directory mounted into nginx |
 
-## Run With Docker Compose
+## Docker Compose Deployment
 
-Build and start the full stack:
+Build and start the stack:
 
 ```powershell
 docker compose up -d --build
@@ -346,20 +274,26 @@ Default service endpoints:
 
 - Backend API: `http://localhost:8080`
 - PostgreSQL: `localhost:5432`
-- Frontend portal: `https://<your-domain>` or `https://localhost` depending on TLS/browser setup
+- Frontend portal: `https://localhost` or the configured domain/port
 
-The Compose stack includes:
+Compose services:
 
-- `postgres` - PostgreSQL 16
-- `backend` - Go API server
-- `frontend` - nginx serving the built React app with HTTPS support
-- `kubectl-runner` - optional ops profile container for running kubectl commands against generated manifests
+| Service | Description |
+| --- | --- |
+| `postgres` | PostgreSQL 16 database |
+| `backend` | Go API server with generated data volumes |
+| `frontend` | nginx serving the built React app |
+| `kubectl-runner` | Optional ops-profile container for running kubectl against generated manifests |
 
-## Run Backend Locally
+Start the optional kubectl runner:
 
-1. Start PostgreSQL and make sure `DATABASE_URL` points to it.
-2. Copy `.env.example` to `.env` and update values.
-3. Start the API:
+```powershell
+docker compose --profile ops up -d kubectl-runner
+```
+
+## Local Development
+
+Run backend locally:
 
 ```powershell
 cd backend
@@ -367,15 +301,14 @@ go mod tidy
 go run ./cmd/api-server
 ```
 
-Default backend address:
+Run backend tests:
 
-```text
-http://localhost:8080
+```powershell
+cd backend
+go test ./...
 ```
 
-## Run Frontend Locally
-
-Install dependencies and start Vite:
+Run frontend locally:
 
 ```powershell
 cd frontend
@@ -383,23 +316,333 @@ npm install
 npm run dev
 ```
 
-Build production assets:
+Build frontend:
 
 ```powershell
 cd frontend
 npm run build
 ```
 
+## Core Kubernetes Cluster Workflow
+
+### 1. Prepare Access And Inventory
+
+1. Start the stack.
+2. Log in as the seeded super admin.
+3. Add Proxmox credentials.
+4. Discover Proxmox nodes.
+5. Enable the Proxmox nodes that can receive Kubernetes VMs.
+6. Review CPU, memory, disk, node status, and placement eligibility.
+7. Create or update network profiles.
+8. Reserve IPs that should not be assigned to generated VMs.
+9. Configure node network tags for Proxmox-node-specific bridges, VLANs, or network intent.
+10. Create SSH key pairs if the bootstrap workflow should use stored keys.
+
+### 2. Plan Topology
+
+Supported topology types:
+
+| Topology | Requirement | Notes |
+| --- | --- | --- |
+| `single` | At least one enabled Proxmox node | Not highly available |
+| `dual` | At least two enabled Proxmox nodes | Better spread, weaker quorum than tri-node |
+| `tri` | At least three enabled Proxmox nodes | Preferred HA placement |
+
+The topology planner evaluates enabled Proxmox nodes, available memory, and placement rules. It returns placements for control-plane and worker VMs plus warnings when resources or topology are weak.
+
+### 3. Provision VMs
+
+Cluster provisioning collects:
+
+- cluster name
+- topology type
+- Kubernetes version
+- Ubuntu cloud image
+- network profile
+- optional per-node network profile overrides
+- optional per-node IP pool starts
+- Proxmox credential or per-node credential overrides
+- SSH public key or stored SSH key pair
+- control-plane CPU, memory, and disk sizes
+- worker CPU, memory, and disk sizes
+- optional Terraform apply flag
+- optional auto-bootstrap settings
+- optional MetalLB settings for post-bootstrap deployment
+
+The backend creates:
+
+- a cluster record
+- node records
+- VM names and IP assignments
+- Terraform workspace files
+- provision run records
+- live operation records and timeline events
+
+If `TERRAFORM_AUTO_APPLY=false`, the backend generates the workspace and returns metadata without applying it. If apply is allowed and requested, Terraform runs in the configured work directory.
+
+### 4. Bootstrap Kubernetes
+
+Bootstrap settings include:
+
+- SSH user
+- private key, stored key pair, or existing bootstrap key reference
+- kube-vip control-plane VIP
+- pod CIDR
+- service CIDR
+- CNI selection
+- node IP mapping
+- optional apply flag
+
+The backend writes Ansible inventory/playbook material and stores bootstrap run history. If `ANSIBLE_AUTO_APPLY=false`, the workspace is generated but not executed. If apply is allowed and requested, `ansible-playbook` runs from the backend.
+
+When bootstrap succeeds, the backend can export the generated `admin.conf` into the mounted kubeconfig path:
+
+```text
+/app/backend/.kube/config
+```
+
+In Docker Compose that path maps to:
+
+```text
+${KUBECONFIG_DIR:-/root/.kube}/config
+```
+
+### 5. Track Live Operation Status
+
+Long-running operations create:
+
+- a latest operation record
+- current step
+- status
+- progress percentage
+- started/updated/finished timestamps
+- error summary when failed
+- event timeline entries
+
+The cluster detail Runs tab polls the latest operation and its events. This is used for provisioning, bootstrap, auto-bootstrap, apply, and other cluster operations.
+
+## Day-2 Cluster Operations
+
+Cluster detail pages expose operational areas for:
+
+- cluster details and run history
+- live operation timeline
+- node inventory and health
+- start, restart, shutdown, and redeploy
+- worker scaling
+- Kubernetes upgrade planning
+- unhealthy node replacement
+- kubeconfig token rotation
+- MetalLB deployment/status
+- Traefik ingress controller deployment
+- Longhorn deployment
+- cert-manager and Let's Encrypt issuer deployment
+- application manifest deployment
+- saved manifests and revision history
+- cluster Secrets, ConfigMaps, and image pull secrets
+- kubectl command execution
+- node-level command execution
+- observability deployment/status
+- etcd snapshots and restore planning
+- health and recovery configuration
+
+Some workflows directly apply manifests using the configured kubeconfig. Others generate manifests, scripts, plans, or helper commands for review before manual execution.
+
+## Application And Catalog Workflows
+
+### Secrets
+
+Cluster Secrets can be:
+
+- native Kubernetes Secrets with values stored through the backend encrypted secret store
+- provider-backed references for external secret systems
+- marked global for reuse across clusters
+- created from a cluster page or as unattached global catalog entries
+- applied to a cluster namespace before application deployment
+
+Supported provider-style references include Vault, External Secrets Operator, AWS Secrets Manager, Azure Key Vault, Google Secret Manager, and Bitnami Sealed Secrets.
+
+### ConfigMaps
+
+Cluster ConfigMaps store non-sensitive application configuration. They can be:
+
+- cluster-scoped
+- marked global
+- created as unattached global catalog items
+- copied into an application namespace during deployment
+- updated key-by-key
+
+Do not put credentials, tokens, private keys, kubeconfigs, or database passwords in ConfigMaps.
+
+### Image Pull Secrets
+
+Image pull secrets can be created globally or per cluster and applied into target namespaces before deploying workloads that reference private registries.
+
+### Saved Manifests
+
+Saved manifests provide a reusable YAML catalog. They support:
+
+- global saved manifests
+- cluster-scoped saved manifests
+- updates and deletes
+- revision history
+- apply runs
+- kubectl output capture
+
+### Application Deployments
+
+Application deployments can select predefined Secrets, ConfigMaps, image pull secrets, and YAML manifests. The backend applies selected supporting resources first, then applies the application manifest and records revision and output history.
+
+## Add-On Workflows
+
+### MetalLB
+
+MetalLB deployment collects namespace, version, address pool, address ranges, and optional L2 interfaces. When applied automatically after bootstrap, the backend waits for controller rollout and records diagnostics when rollout does not become ready.
+
+Generated MetalLB artifacts are written under the configured operations work directory.
+
+### Traefik Ingress
+
+The ingress controller workflow creates Traefik resources, RBAC, an ingress class, deployment, and a `LoadBalancer` service so MetalLB can allocate an external IP.
+
+### cert-manager
+
+The cert-manager workflow can install cert-manager resources and create a Let's Encrypt issuer for Traefik HTTP-01 validation. Public DNS and ports 80/443 must be reachable for HTTP-01 certificates. Private-only addresses need public forwarding or a DNS-01 style workflow.
+
+### Longhorn
+
+The Longhorn workflow prepares and applies Kubernetes storage resources for clusters where persistent storage should be managed through Longhorn.
+
+### Observability
+
+Cluster observability deployment stores dashboard and manifest metadata. The separate Monitoring page manages the central monitoring stack and remote monitored cluster agents.
+
+### etcd Backup And Restore
+
+The etcd workflows track snapshot and restore operations. Restore operations should be treated as high-risk maintenance actions and reviewed carefully before applying in production-like environments.
+
+## Database Cluster Workflow
+
+The database-cluster module focuses on MariaDB/Galera clusters on Proxmox VMs with Kubernetes integration manifests.
+
+Typical workflow:
+
+1. Create a database cluster plan.
+2. Review topology, node placement, network settings, and credentials.
+3. Provision database VMs through generated Terraform.
+4. Optionally run Terraform apply.
+5. Bootstrap MariaDB/Galera through generated Ansible.
+6. Review event logs and run history.
+7. Generate Kubernetes manifests for applications that consume the external database service.
+
+Database-cluster APIs live under:
+
+```text
+/api/v1/database-clusters
+```
+
+More detail is available in:
+
+```text
+docs/mariadb-galera-cluster.md
+```
+
+## Cloudflare Tunnel Workflow
+
+Cloudflare Tunnel records provide a way to define tunnel-backed ingress manifests for Kubernetes workloads.
+
+Typical workflow:
+
+1. Create a tunnel record.
+2. Review tunnel configuration.
+3. Generate the Kubernetes manifest.
+4. Deploy the tunnel resources to the target cluster.
+5. Review deployment events.
+
+Cloudflare Tunnel APIs live under:
+
+```text
+/api/v1/cloudflare-tunnels
+```
+
+## Monitoring Workflow
+
+The monitoring module manages a central observability stack plus remote cluster registrations.
+
+Central stack workflow:
+
+1. View monitoring status.
+2. Create or update stack configuration.
+3. Generate stack manifests.
+4. Apply the stack.
+
+Remote cluster workflow:
+
+1. Register a remote cluster.
+2. Generate the remote cluster agent manifest.
+3. Apply or sync the remote cluster.
+4. Review status and remove stale registrations when needed.
+
+Monitoring APIs live under:
+
+```text
+/api/v1/monitoring
+```
+
+Additional Kubernetes monitoring assets are in:
+
+```text
+infra/k8s/monitoring/
+```
+
+## API Overview
+
+Base API path:
+
+```text
+/api/v1
+```
+
+Public endpoints:
+
+- `GET /health`
+- `POST /api/v1/auth/login`
+
+Authenticated endpoint groups:
+
+| Group | Examples |
+| --- | --- |
+| Auth | `GET /auth/me` |
+| Users | `GET /users`, `POST /users` |
+| Networks | `GET /networks`, `POST /networks`, reserved IPs, node tags |
+| Proxmox | credentials, discovery, node listing, node enablement |
+| SSH keys | list, create, delete |
+| SSL certificates | list, create, delete |
+| Topology | `POST /topology/plan` |
+| Database clusters | list, plan, provision, runs, events, Terraform apply, bootstrap, manifests |
+| Cloudflare tunnels | list, create, get, deploy, manifest, delete, events |
+| Monitoring | status, stack config, stack manifest/apply, remote clusters |
+| Kubernetes clusters | list, check name, get, delete, provision, provision-and-bootstrap |
+| Cluster operations | runs, latest operation, operation events, nodes, health, recovery |
+| Cluster lifecycle | start, restart, shutdown, redeploy, bootstrap, scale, upgrade, replace node, rotate kubeconfig |
+| Cluster add-ons | MetalLB, ingress controller, Longhorn, cert-manager, observability, etcd |
+| Catalogs | global Secrets, ConfigMaps, image pull secrets, saved manifests |
+| Cluster resources | cluster Secrets, ConfigMaps, image pull secrets, saved manifests |
+| Applications | deploy, list revisions, inspect revisions, redeploy |
+| Commands | kubectl command runs and node command runs |
+
+Role restrictions are enforced in `backend/internal/server/router.go`. Proxmox credential management and Proxmox node enablement require `super_admin`. Most operational workflows require `super_user` or `super_admin`.
+
 ## HTTPS Certificates
 
-The frontend container expects existing certificate files mounted at:
+The frontend container expects certificates mounted at:
 
 ```text
 /etc/nginx/certs/fullchain.pem
 /etc/nginx/certs/privkey.pem
 ```
 
-To use existing Let's Encrypt certificates, place them in the local `certs/` directory:
+Place existing certificates in the configured host directory:
 
 ```powershell
 mkdir certs -Force
@@ -408,7 +651,7 @@ Copy-Item <path-to-privkey.pem> certs/privkey.pem
 docker compose up -d --build frontend
 ```
 
-You can change host ports or certificate location with:
+Adjust ports and certificate location with:
 
 ```text
 HTTP_PORT=80
@@ -416,114 +659,81 @@ HTTPS_PORT=443
 TLS_CERTS_DIR=./certs
 ```
 
-## Applying MetalLB From Docker
+## Generated Files And Work Directories
 
-When bootstrap runs automatically after provision apply, the backend fetches:
+The backend writes generated artifacts to configured work directories:
 
-```text
-/app/backend/data/ansible/runs/<cluster>/admin.conf
-```
+| Artifact | Default path |
+| --- | --- |
+| Terraform cluster workspaces | `infra/terraform/runs` or `/app/backend/data/terraform/runs` in Compose |
+| Ansible bootstrap workspaces | `infra/ansible/runs` or `/app/backend/data/ansible/runs` in Compose |
+| Kubernetes operation manifests/scripts | `data/operations/runs` or `/app/backend/data/operations/runs` in Compose |
+| Backend kubeconfig mount | `/app/backend/.kube/config` in Compose |
 
-After Ansible succeeds, the backend writes that file to `/app/backend/.kube/config` with mode `0600`. In Docker Compose, `/app/backend/.kube` is mounted from `KUBECONFIG_DIR`, which defaults to `/root/.kube` on the hosted Linux server. This automates the equivalent of:
-
-```bash
-docker cp k8s-proxmox-backend:/app/backend/data/ansible/runs/<cluster>/admin.conf /root/.kube/config
-chmod 600 /root/.kube/config
-```
-
-If "Deploy MetalLB automatically after bootstrap" is enabled during cluster provisioning, the backend deploys MetalLB immediately after this kubeconfig export succeeds. The new cluster form collects the MetalLB namespace, version, address pool, address ranges, and optional L2 interfaces up front.
-
-The automated deploy waits up to 10 minutes for the MetalLB controller rollout. If the controller still does not become ready, the operation event includes deployment, pod, and namespace event diagnostics from `metallb-system`.
-
-The cluster detail Applications tab can deploy Traefik as the ingress controller. It creates a `traefik` namespace, RBAC, default `IngressClass`, Traefik deployment, and a `LoadBalancer` service so MetalLB can assign an external IP. The same tab can apply application YAML manifests through the backend kubeconfig.
-
-The Applications tab can also deploy cert-manager and a Let's Encrypt `ClusterIssuer` for Traefik HTTP-01 certificates. Public DNS for each app hostname must resolve to Traefik's external IP, and ports 80/443 must be reachable by Let's Encrypt. Private-only addresses such as `192.168.x.x` require public port forwarding or a future DNS-01 issuer.
-
-The cluster Secrets tab manages reusable application secrets per cluster and namespace. Native secrets store values through the encrypted backend secret store, while HashiCorp Vault, External Secrets Operator, AWS Secrets Manager, Azure Key Vault, Google Secret Manager, and Bitnami Sealed Secrets can be registered as provider-backed references. Application deployments can select predefined secrets in the target namespace and apply them before the app manifest.
-
-The cluster ConfigMaps tab manages reusable non-sensitive application configuration per cluster and namespace. Application deployments can select predefined ConfigMaps in the target namespace and apply them before the app manifest. Credentials, tokens, private keys, kubeconfigs, and database passwords should use Secrets rather than ConfigMaps.
-
-Secrets and ConfigMaps can be marked global so they are available for deployment selection from other clusters. Global entries keep their original owning cluster for edits and deletes, and individual keys can be updated without replacing the full Secret or ConfigMap.
-
-Secrets and ConfigMaps can also be created from the left navigation without choosing a target cluster. Those entries are stored as unattached global catalog items and can be selected later from any cluster's application deployment flow when the namespace matches.
-
-During application deployment, selected predefined Secrets and ConfigMaps are copied into the app deployment namespace before the manifest is applied. This lets teams reuse global or cross-namespace catalog entries without manually recreating them for each namespace.
-
-After preparing MetalLB through the API/UI, use the generated `manifest_dir` with the optional `kubectl-runner` service.
-
-PowerShell example:
-
-```powershell
-docker compose --profile ops up -d kubectl-runner
-docker compose run --rm kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
-```
-
-Bash example:
-
-```bash
-docker compose --profile ops up -d kubectl-runner
-docker compose run --rm kubectl-runner "cd /app/backend/data/operations/runs/<cluster>/metallb && ./apply-metallb.sh"
-```
-
-Replace `<cluster>` with the cluster slug shown in `manifest_dir`.
+Generated files should be reviewed before use when auto-apply is disabled.
 
 ## Security Notes
 
 - Change `JWT_SECRET`, `SECRET_ENCRYPTION_KEY`, `SUPER_ADMIN_USERNAME`, and `SUPER_ADMIN_PASSWORD` before non-local use.
-- Proxmox token secrets, SSH private keys, TLS private keys, and bootstrap keys are stored through the encrypted backend secret store. Existing legacy plaintext rows remain readable as migration fallback.
-- Use a 32-byte random `SECRET_ENCRYPTION_KEY`, preferably base64 encoded, and keep it outside Git and database backups.
-- Keep `TERRAFORM_AUTO_APPLY=false` and `ANSIBLE_AUTO_APPLY=false` until you are comfortable with the generated workspaces and operational flow.
-- Use least-privilege Proxmox API tokens where possible.
-- Review generated Terraform, Ansible, MetalLB, observability, and etcd operation files before applying them in production-like environments.
+- Use a unique high-entropy `SECRET_ENCRYPTION_KEY`; keep it outside Git and normal database backups.
+- Proxmox token secrets, SSH private keys, TLS private keys, bootstrap keys, and native Kubernetes Secret values should be stored through the encrypted backend secret store.
+- Keep `TERRAFORM_AUTO_APPLY=false` and `ANSIBLE_AUTO_APPLY=false` until you have reviewed generated workspaces and trust the operational flow.
+- Use least-privilege Proxmox API tokens.
+- Protect the mounted kubeconfig directory. It can grant administrative access to provisioned clusters.
+- Review generated Terraform, Ansible, Kubernetes, monitoring, tunnel, database, and restore manifests before applying them in production-like environments.
+- Treat etcd restore, node replacement, and destructive cluster/database deletion operations as maintenance-window tasks.
 
-## Development Notes
-
-Useful commands:
+## Useful Commands
 
 ```powershell
-# Backend
-cd backend
-go test ./...
-go run ./cmd/api-server
-
-# Frontend
-cd frontend
-npm run build
-npm run dev
-
 # Full stack
 docker compose up -d --build
 docker compose logs -f backend
+docker compose down
+
+# Optional kubectl runner
+docker compose --profile ops up -d kubectl-runner
+
+# Backend tests
+cd backend
+go test ./...
+
+# Frontend build
+cd frontend
+npm run build
 ```
 
-The backend runs migrations automatically when `AUTO_MIGRATE=true`. Generated Terraform, Ansible, and operations files are written under the configured work directories.
+## Implementation Status
 
-## Current Implementation Status
+Implemented:
 
-Implemented areas include:
-
-- Go backend API scaffold
-- React admin UI
-- JWT auth and RBAC
-- Seeded super admin
-- User management
-- Network profile management
-- Reserved IP and Proxmox-node network tag management
+- Go backend API server
+- React admin portal
 - PostgreSQL migrations and persistence
-- Proxmox credential management
-- Proxmox node discovery and enable/disable controls
-- Topology planner
-- Cluster provisioning workspace generation
-- Optional Terraform apply
+- JWT authentication and RBAC
+- seeded super admin
+- user management
+- encrypted secret store helper
+- network profiles, reserved IPs, and node network tags
+- Proxmox credential management and inventory discovery
+- SSH key and SSL certificate catalogs
+- topology planner
+- Kubernetes cluster provisioning workspace generation
+- optional Terraform apply
 - Ansible kubeadm bootstrap workspace generation
-- Optional Ansible execution
-- Cluster list/detail/run history
-- Operation progress and event tracking
-- Worker scaling
-- Upgrade planning
-- Node replacement
-- Kubeconfig token rotation
-- MetalLB config generation
-- Observability config generation
-- etcd snapshot/restore tracking
-- Cluster health and recovery endpoints
+- optional Ansible execution
+- provision-and-bootstrap workflow
+- live operation status and event timeline polling
+- cluster run history
+- cluster node listing and health tracking
+- cluster lifecycle operations
+- recovery configuration and trigger endpoints
+- MetalLB, Traefik, Longhorn, cert-manager, observability, etcd workflows
+- kubectl command and node command runners
+- application deployments, revisions, and redeploy
+- cluster/global Secrets, ConfigMaps, image pull secrets, and saved manifests
+- MariaDB/Galera database cluster workflow
+- Cloudflare Tunnel workflow
+- central monitoring stack and remote cluster workflow
+- Docker Compose deployment with frontend, backend, PostgreSQL, and optional kubectl runner
+

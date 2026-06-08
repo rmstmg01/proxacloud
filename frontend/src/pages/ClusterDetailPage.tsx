@@ -1,4 +1,4 @@
-import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Check, Clipboard, Play, RefreshCw } from 'lucide-react';
@@ -152,6 +152,8 @@ function OverviewTab({ id }: { id: number }) {
 }
 
 function RunsTab({ id }: { id: number }) {
+  const operationTimelineRef = useRef<HTMLDivElement | null>(null);
+
   const { data: operation } = useQuery({
     queryKey: ['cluster-operation-latest', id],
     queryFn: async () => {
@@ -176,9 +178,17 @@ function RunsTab({ id }: { id: number }) {
   });
 
   const { data: runs, isLoading } = useQuery({ queryKey: ['cluster-runs', id], queryFn: () => getClusterRuns(id) });
-  if (isLoading) return <PageSpinner />;
 
   const progressPercent = Math.max(0, Math.min(100, Number(operation?.progress_percent ?? 0)));
+  const latestEventID = events?.length ? events[events.length - 1].id : 0;
+
+  useEffect(() => {
+    const timeline = operationTimelineRef.current;
+    if (!timeline) return;
+    timeline.scrollTop = timeline.scrollHeight;
+  }, [operation?.id, latestEventID]);
+
+  if (isLoading) return <PageSpinner />;
 
   return (
     <div className="space-y-6">
@@ -215,7 +225,7 @@ function RunsTab({ id }: { id: number }) {
         <Card>
           <CardHeader><CardTitle>Operation Timeline</CardTitle></CardHeader>
           <CardContent>
-            <div className="max-h-80 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100">
+            <div ref={operationTimelineRef} className="max-h-80 overflow-auto rounded-md border border-slate-200 divide-y divide-slate-100">
               {events.map((event) => (
                 <div key={event.id} className="px-4 py-3 text-sm">
                   <div className="flex flex-wrap items-center gap-2">
