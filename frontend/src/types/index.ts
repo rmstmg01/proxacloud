@@ -300,6 +300,7 @@ export interface MetalLBStatusResponse {
 
 export interface DeployIngressControllerResponse {
   cluster_id: number;
+  operation_id?: number;
   status: string;
   namespace: string;
   image: string;

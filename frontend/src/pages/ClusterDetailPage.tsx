@@ -2292,6 +2292,7 @@ function ApplicationsTab({ id }: { id: number }) {
                   <p>Status: {ingressMut.data.status}</p>
                   <p>Namespace: {ingressMut.data.namespace}</p>
                   <p>Replicas: {ingressMut.data.replicas}</p>
+                  {ingressMut.data.operation_id && <p>Track progress in Live Operation Status.</p>}
                 </div>
               </Alert>
             )}

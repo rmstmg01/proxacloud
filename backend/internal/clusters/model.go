@@ -332,13 +332,14 @@ type DeployIngressControllerRequest struct {
 }
 
 type DeployIngressControllerResponse struct {
-	ClusterID int64    `json:"cluster_id"`
-	Status    string   `json:"status"`
-	Namespace string   `json:"namespace"`
-	Image     string   `json:"image"`
-	Replicas  int      `json:"replicas"`
-	Output    string   `json:"output,omitempty"`
-	Warnings  []string `json:"warnings"`
+	ClusterID   int64    `json:"cluster_id"`
+	OperationID int64    `json:"operation_id,omitempty"`
+	Status      string   `json:"status"`
+	Namespace   string   `json:"namespace"`
+	Image       string   `json:"image"`
+	Replicas    int      `json:"replicas"`
+	Output      string   `json:"output,omitempty"`
+	Warnings    []string `json:"warnings"`
 }
 
 type DeployLonghornRequest struct {
@@ -2549,14 +2550,27 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 	output := ""
 	warnings := []string{}
 	if req.Apply {
-		status = "ingress-controller-deployed"
-		applyOutput, err := s.executeIngressControllerDeployment(namespace, image, replicas, req.Wait)
-		output = applyOutput
+		operationID, err := s.startClusterOperation(clusterID, "ingress-controller-deploy", "queued", 5)
 		if err != nil {
-			_ = s.insertProvisionRun(clusterID, "ingress-controller-deploy", "failed", namespace, output)
-			return DeployIngressControllerResponse{}, fmt.Errorf("failed to deploy ingress controller: %w", err)
+			return DeployIngressControllerResponse{}, err
 		}
-		warnings = append(warnings, "traefik ingress controller deployed successfully")
+		_ = s.appendOperationEvent(operationID, "queued", "info", "Traefik ingress controller deployment queued")
+		if err := s.insertProvisionRun(clusterID, "ingress-controller-deploy", "running", namespace, ""); err != nil {
+			_ = s.updateClusterOperation(operationID, "failed", "save-run", 100, err.Error())
+			return DeployIngressControllerResponse{}, err
+		}
+
+		go s.runIngressControllerDeploymentAsync(clusterID, operationID, namespace, image, replicas, req.Wait)
+
+		return DeployIngressControllerResponse{
+			ClusterID:   clusterID,
+			OperationID: operationID,
+			Status:      "ingress-controller-deploying",
+			Namespace:   namespace,
+			Image:       image,
+			Replicas:    replicas,
+			Warnings:    []string{"traefik ingress controller deployment is running in background; check Live Operation Status for progress"},
+		}, nil
 	} else {
 		warnings = append(warnings, "ingress controller was not applied; enable apply to run kubectl")
 	}
@@ -2574,6 +2588,30 @@ func (s *Service) DeployIngressController(clusterID int64, req DeployIngressCont
 		Output:    output,
 		Warnings:  warnings,
 	}, nil
+}
+
+func (s *Service) runIngressControllerDeploymentAsync(clusterID int64, operationID int64, namespace string, image string, replicas int, wait bool) {
+	_ = s.updateClusterOperation(operationID, "running", "kubectl-apply", 20, "")
+	_ = s.appendOperationEvent(operationID, "kubectl-apply", "info", fmt.Sprintf("Applying Traefik ingress controller in namespace %s", namespace))
+
+	output, err := s.executeIngressControllerDeployment(namespace, image, replicas, wait, func(step, message string, progress int) {
+		_ = s.updateClusterOperation(operationID, "running", step, progress, "")
+		_ = s.appendOperationEvent(operationID, step, "info", message)
+	})
+	if err != nil {
+		_ = s.updateClusterOperation(operationID, "failed", "failed", 100, err.Error())
+		_ = s.appendOperationEvent(operationID, "failed", "error", fmt.Sprintf("Traefik ingress controller deployment failed: %v", err))
+		if dbErr := s.insertProvisionRun(clusterID, "ingress-controller-deploy", "failed", namespace, output); dbErr != nil {
+			log.Printf("ERROR saving failed ingress controller deploy run for cluster %d: %v", clusterID, dbErr)
+		}
+		return
+	}
+
+	_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
+	_ = s.appendOperationEvent(operationID, "completed", "info", "Traefik ingress controller deployed successfully")
+	if dbErr := s.insertProvisionRun(clusterID, "ingress-controller-deploy", "ingress-controller-deployed", namespace, output); dbErr != nil {
+		log.Printf("ERROR saving ingress controller deploy run for cluster %d: %v", clusterID, dbErr)
+	}
 }
 
 func (s *Service) DeployLonghorn(clusterID int64, req DeployLonghornRequest) (DeployLonghornResponse, error) {
@@ -3964,7 +4002,7 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	return nil
 }
 
-func (s *Service) executeIngressControllerDeployment(namespace, image string, replicas int, wait bool) (string, error) {
+func (s *Service) executeIngressControllerDeployment(namespace, image string, replicas int, wait bool, progress func(step, message string, progress int)) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -3974,6 +4012,9 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, re
 	}
 
 	outputs := make([]string, 0, 3)
+	if progress != nil {
+		progress("cluster-info", "Checking kubectl connectivity", 15)
+	}
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "cluster-info")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -3981,6 +4022,9 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, re
 	}
 	outputs = append(outputs, string(output))
 
+	if progress != nil {
+		progress("kubectl-apply", "Applying Traefik namespace, RBAC, ingress class, deployment, and LoadBalancer service", 35)
+	}
 	manifest := buildTraefikIngressControllerManifest(namespace, image, replicas)
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", "-", "--validate=false")
 	cmd.Stdin = strings.NewReader(manifest)
@@ -3991,14 +4035,23 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, re
 	}
 
 	if wait {
+		if progress != nil {
+			progress("rollout-status", "Waiting for Traefik deployment rollout; image pulls can take several minutes on fresh nodes", 65)
+		}
 		cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "rollout", "status", "--namespace", namespace, "deployment/traefik", "--timeout=600s")
 		output, err = cmd.CombinedOutput()
 		outputs = append(outputs, string(output))
 		if err != nil {
 			return strings.Join(outputs, "\n"), fmt.Errorf("wait for traefik rollout: %w\nOutput: %s\nDiagnostics:\n%s", err, string(output), s.kubeNamespaceDiagnostics(kubeconfigPath, namespace, "deployment/traefik"))
 		}
+		if progress != nil {
+			progress("rollout-complete", "Traefik rollout completed", 85)
+		}
 	}
 
+	if progress != nil {
+		progress("service-status", "Reading Traefik service status", 90)
+	}
 	cmd = exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "get", "svc", "--namespace", namespace, "-o", "wide")
 	output, err = cmd.CombinedOutput()
 	outputs = append(outputs, string(output))
