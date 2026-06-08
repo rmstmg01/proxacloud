@@ -69,7 +69,7 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
-import type { ClusterConfigMapRecord, ClusterImagePullSecretRecord, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
+import type { ClusterConfigMapRecord, ClusterImagePullSecretRecord, ClusterOperation, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
 type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'pullsecrets' | 'manifests' | 'applications' | 'observability' | 'etcd';
 
@@ -114,6 +114,21 @@ function suggestVip(ips: string[]): string {
     candidate += 1;
   }
   return '';
+}
+
+function shouldPollLatestOperation(operation: ClusterOperation | null | undefined) {
+  if (!operation) return 2500;
+  const status = operation.status.toLowerCase();
+  if (status === 'running') return 2500;
+
+  const action = operation.action.toLowerCase();
+  const updatedAt = Date.parse(operation.updated_at);
+  const recentlyUpdated = Number.isFinite(updatedAt) && Date.now() - updatedAt < 10 * 60 * 1000;
+  if (recentlyUpdated && (action === 'provision' || action === 'redeploy') && status === 'succeeded') {
+    return 2500;
+  }
+
+  return false;
 }
 
 // ─── Sub-tabs ────────────────────────────────────────────────────────────────
@@ -167,14 +182,14 @@ function RunsTab({ id }: { id: number }) {
       }
     },
     retry: false,
-    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2500 : false),
+    refetchInterval: (query) => shouldPollLatestOperation(query.state.data),
   });
 
   const { data: events } = useQuery({
     queryKey: ['cluster-operation-events', id, operation?.id ?? 0],
     queryFn: () => getClusterOperationEvents(id, operation?.id, 0, 200),
     enabled: Boolean(operation?.id),
-    refetchInterval: operation?.status === 'running' ? 2500 : false,
+    refetchInterval: shouldPollLatestOperation(operation),
   });
 
   const { data: runs, isLoading } = useQuery({ queryKey: ['cluster-runs', id], queryFn: () => getClusterRuns(id) });
