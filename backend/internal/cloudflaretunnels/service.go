@@ -191,6 +191,9 @@ func (s *Service) Deploy(id int64) (DeployTunnelResponse, error) {
 	if err != nil {
 		return DeployTunnelResponse{}, err
 	}
+	if rec.ClusterID <= 0 {
+		return DeployTunnelResponse{}, errors.New("cloudflare tunnel is not attached to a cluster")
+	}
 	if s.secrets == nil {
 		return DeployTunnelResponse{}, errors.New("secret store is not configured")
 	}
@@ -314,6 +317,11 @@ func (s *Service) insertTunnel(req CreateTunnelRequest, tokenRef, apiTokenRef, r
 	}
 	defer tx.Rollback()
 
+	clusterID := sql.NullInt64{}
+	if req.ClusterID > 0 {
+		clusterID = sql.NullInt64{Int64: req.ClusterID, Valid: true}
+	}
+
 	var id int64
 	err = tx.QueryRow(
 		`INSERT INTO cloudflare_tunnels (
@@ -325,7 +333,7 @@ func (s *Service) insertTunnel(req CreateTunnelRequest, tokenRef, apiTokenRef, r
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'configured', $20)
 		 RETURNING id`,
-		req.ClusterID,
+		clusterID,
 		req.Name,
 		req.Namespace,
 		req.DeploymentName,
@@ -377,18 +385,33 @@ func (s *Service) insertTunnel(req CreateTunnelRequest, tokenRef, apiTokenRef, r
 
 func (s *Service) ensureDeploymentSlotAvailable(clusterID int64, namespace, deploymentName string) error {
 	var exists bool
-	err := s.db.QueryRow(
-		`SELECT EXISTS (
-		     SELECT 1
-		       FROM cloudflare_tunnels
-		      WHERE cluster_id = $1
-		        AND namespace = $2
-		        AND deployment_name = $3
-		 )`,
-		clusterID,
-		namespace,
-		deploymentName,
-	).Scan(&exists)
+	var err error
+	if clusterID > 0 {
+		err = s.db.QueryRow(
+			`SELECT EXISTS (
+			     SELECT 1
+			       FROM cloudflare_tunnels
+			      WHERE cluster_id = $1
+			        AND namespace = $2
+			        AND deployment_name = $3
+			 )`,
+			clusterID,
+			namespace,
+			deploymentName,
+		).Scan(&exists)
+	} else {
+		err = s.db.QueryRow(
+			`SELECT EXISTS (
+			     SELECT 1
+			       FROM cloudflare_tunnels
+			      WHERE cluster_id IS NULL
+			        AND namespace = $1
+			        AND deployment_name = $2
+			 )`,
+			namespace,
+			deploymentName,
+		).Scan(&exists)
+	}
 	if err != nil {
 		return fmt.Errorf("check cloudflare tunnel deployment uniqueness: %w", err)
 	}
@@ -465,9 +488,10 @@ type tunnelScanner interface {
 
 func scanTunnel(row tunnelScanner) (tunnelRecord, error) {
 	var rec tunnelRecord
+	var clusterID sql.NullInt64
 	err := row.Scan(
 		&rec.ID,
-		&rec.ClusterID,
+		&clusterID,
 		&rec.ClusterName,
 		&rec.Name,
 		&rec.Namespace,
@@ -496,6 +520,9 @@ func scanTunnel(row tunnelScanner) (tunnelRecord, error) {
 	)
 	if err != nil {
 		return tunnelRecord{}, err
+	}
+	if clusterID.Valid {
+		rec.ClusterID = clusterID.Int64
 	}
 	if rec.LastApplied.Valid {
 		appliedAt := rec.LastApplied.Time
@@ -539,8 +566,8 @@ func normalizeCreateRequest(req CreateTunnelRequest) (CreateTunnelRequest, error
 	req.IngressServiceScheme = defaultString(req.IngressServiceScheme, "http")
 	req.Replicas = defaultInt(req.Replicas, 3)
 
-	if req.ClusterID <= 0 {
-		return CreateTunnelRequest{}, errors.New("cluster_id is required")
+	if req.Apply && req.ClusterID <= 0 {
+		return CreateTunnelRequest{}, errors.New("cluster_id is required when apply is true")
 	}
 	if req.Name == "" {
 		return CreateTunnelRequest{}, errors.New("name is required")

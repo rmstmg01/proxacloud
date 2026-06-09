@@ -1921,13 +1921,26 @@ func (s *Service) DeleteCluster(clusterID int64, confirmationName string) error 
 		}
 	}
 
-	res, err := s.db.Exec(`DELETE FROM clusters WHERE id = $1`, clusterID)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin cluster metadata delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.prepareClusterCatalogResourcesForDelete(tx, clusterID); err != nil {
+		return err
+	}
+
+	res, err := tx.Exec(`DELETE FROM clusters WHERE id = $1`, clusterID)
 	if err != nil {
 		return fmt.Errorf("delete cluster: %w", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
 		return ErrClusterNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit cluster metadata delete: %w", err)
 	}
 	if workDir != "" {
 		_ = os.RemoveAll(workDir)
@@ -1936,6 +1949,32 @@ func (s *Service) DeleteCluster(clusterID int64, confirmationName string) error 
 	for _, credentialID := range distinctCredentialIDsFromClusterNodes(nodes) {
 		_ = os.RemoveAll(s.terraformRunner.WorkspaceDirForKey(workspaceKeyForCredential(info.Name, credentialID)))
 	}
+	return nil
+}
+
+func (s *Service) prepareClusterCatalogResourcesForDelete(tx *sql.Tx, clusterID int64) error {
+	statements := []struct {
+		query string
+		label string
+	}{
+		{`DELETE FROM cluster_secrets WHERE cluster_id = $1 AND is_global = FALSE`, "delete cluster-local secrets"},
+		{`UPDATE cluster_secrets SET cluster_id = NULL, updated_at = NOW() WHERE cluster_id = $1 AND is_global = TRUE`, "detach global secrets"},
+		{`DELETE FROM cluster_config_maps WHERE cluster_id = $1 AND is_global = FALSE`, "delete cluster-local config maps"},
+		{`UPDATE cluster_config_maps SET cluster_id = NULL, updated_at = NOW() WHERE cluster_id = $1 AND is_global = TRUE`, "detach global config maps"},
+		{`DELETE FROM cluster_image_pull_secrets WHERE cluster_id = $1 AND is_global = FALSE`, "delete cluster-local image pull secrets"},
+		{`UPDATE cluster_image_pull_secrets SET cluster_id = NULL, updated_at = NOW() WHERE cluster_id = $1 AND is_global = TRUE`, "detach global image pull secrets"},
+		{`DELETE FROM cluster_saved_manifests WHERE cluster_id = $1 AND is_global = FALSE`, "delete cluster-local saved manifests"},
+		{`UPDATE cluster_saved_manifests SET cluster_id = NULL, updated_at = NOW() WHERE cluster_id = $1 AND is_global = TRUE`, "detach global saved manifests"},
+		{`UPDATE cluster_saved_manifest_revisions SET cluster_id = NULL WHERE cluster_id = $1`, "detach saved manifest revisions"},
+		{`UPDATE cloudflare_tunnels SET cluster_id = NULL, updated_at = NOW() WHERE cluster_id = $1`, "detach cloudflare tunnels"},
+	}
+
+	for _, stmt := range statements {
+		if _, err := tx.Exec(stmt.query, clusterID); err != nil {
+			return fmt.Errorf("%s before cluster delete: %w", stmt.label, err)
+		}
+	}
+
 	return nil
 }
 
