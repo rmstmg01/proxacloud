@@ -269,10 +269,43 @@ kubectl logs -n kube-system TRAEFIK_POD_NAME -f`,
 curl http://www.proxaops.com
 curl http://admin.proxaops.com`,
       },
+      {
+        label: 'Cloudflare Tunnel public 404 checks',
+        command: `kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=100
+kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflared --tail=40 --prefix
+kubectl get ingress -n pscs -o wide
+kubectl describe ingress pscs-web -n pscs`,
+      },
+      {
+        label: 'Prove Traefik host routing from inside the cluster',
+        command: `kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: proxaops.com" http://traefik.traefik.svc.cluster.local/
+kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: www.proxaops.com" http://traefik.traefik.svc.cluster.local/
+kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i http://website.pscs.svc.cluster.local/`,
+      },
+      {
+        label: 'Remove stale duplicate ingress rules',
+        command: `kubectl describe ingress proxaops-production pscs-production -n pscs
+kubectl delete ingress proxaops-production pscs-production -n pscs
+kubectl get ingress -n pscs`,
+      },
+      {
+        label: 'Refresh Cloudflare Tunnel after hostname changes',
+        command: `kubectl rollout restart deployment/cloudflared -n cloudflare-tunnel
+kubectl rollout status deployment/cloudflared -n cloudflare-tunnel
+kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=80
+curl -i https://proxaops.com/
+curl -i https://www.proxaops.com/`,
+      },
     ],
     notes: [
       'Public website traffic routes to the website Service for proxaops.com and www.proxaops.com.',
       'Public admin traffic routes to the frontend Service for admin.proxaops.com.',
+      'When pods are Running but public traffic returns 404, first decide which layer returns the 404: Cloudflare Tunnel fallback, Traefik host matching, or the website container.',
+      'Cloudflare Tunnel public hostnames for proxaops.com, www.proxaops.com, admin.proxaops.com, and api.proxaops.com should point to http://traefik.traefik.svc.cluster.local:80.',
+      'If Cloudflare routes to Traefik, make sure the public hostname is preserved with the HTTP Host Header setting; otherwise Traefik may receive traefik.traefik.svc.cluster.local and return 404 page not found.',
+      'A cluster curl that returns website HTML with Host: www.proxaops.com proves Kubernetes, Traefik, the Ingress, Service, and website pods are working.',
+      'After changing Cloudflare Tunnel public hostnames or HTTP host header settings, restart cloudflared so every connector pulls the latest config.',
+      'Duplicate Ingresses for the same host and path can shadow the correct pscs-web rule, especially if they point to Services that no longer exist.',
       'If container logs are empty, the frontend or website image may not write access logs to stdout or stderr. Check Traefik access logs next.',
       'Traefik may run in kube-system, traefik, or traefik-system depending on how it was installed. Use the discovered namespace in the logs command.',
     ],
