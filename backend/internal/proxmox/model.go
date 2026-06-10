@@ -168,12 +168,12 @@ func (s *Service) UpdateCredential(id int64, in Credential) (Credential, error) 
 
 func (s *Service) DeleteCredential(id int64) error {
 	var inUseCount int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM clusters WHERE proxmox_credential_id = $1`, id).Scan(&inUseCount)
+	err := s.db.QueryRow(`SELECT (SELECT COUNT(*) FROM clusters WHERE proxmox_credential_id = $1) + (SELECT COUNT(*) FROM vps_instances WHERE proxmox_credential_id = $1)`, id).Scan(&inUseCount)
 	if err != nil {
 		return fmt.Errorf("check proxmox credential usage: %w", err)
 	}
 	if inUseCount > 0 {
-		return fmt.Errorf("%w (%d cluster(s) still reference it)", ErrCredentialInUse, inUseCount)
+		return fmt.Errorf("%w (%d infrastructure record(s) still reference it)", ErrCredentialInUse, inUseCount)
 	}
 
 	res, err := s.db.Exec(`DELETE FROM proxmox_credentials WHERE id = $1`, id)

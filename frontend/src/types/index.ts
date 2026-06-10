@@ -101,6 +101,67 @@ export interface SSLCertificate {
 
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
+export interface VPSCloudInitImage {
+  id: number;
+  name: string;
+  image_path: string;
+  os_type: string;
+  description: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VPSInstance {
+  id: number;
+  name: string;
+  description: string;
+  proxmox_credential_id: number;
+  proxmox_node_name: string;
+  network_profile_id: number;
+  network_name?: string;
+  cloud_init_image_id: number;
+  cloud_init_image_path: string;
+  ssh_key_pair_id: number;
+  vm_name: string;
+  ip_mode: 'dhcp' | 'manual' | 'auto';
+  ip_address: string;
+  cpu: number;
+  memory_mb: number;
+  disk_gb: number;
+  ssh_user: string;
+  terraform_work_dir: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VPSEvent {
+  id: number;
+  vps_id: number;
+  action: string;
+  level: string;
+  message: string;
+  output: string;
+  created_at: string;
+}
+
+export interface VPSActionResponse {
+  vps_id: number;
+  action: string;
+  status: string;
+  output?: string;
+  warnings: string[];
+}
+
+export interface VPSCreateResponse {
+  vps_id: number;
+  status: string;
+  terraform_work_dir: string;
+  terraform_output?: string;
+  warnings: string[];
+}
+
 export type TopologyType = 'single' | 'dual' | 'tri';
 
 export interface Placement {

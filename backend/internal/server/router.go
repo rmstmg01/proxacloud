@@ -27,6 +27,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/terraform"
 	"k8s-proxmox-manager/backend/internal/topology"
 	"k8s-proxmox-manager/backend/internal/users"
+	"k8s-proxmox-manager/backend/internal/vps"
 )
 
 type App struct {
@@ -96,6 +97,16 @@ func NewApp() (*App, error) {
 		cfg.TerraformAutoApply,
 		cfg.AnsibleAutoApply,
 	)
+	vpsService := vps.NewService(
+		database,
+		networkService,
+		proxmoxService,
+		proxmoxService,
+		sshKeyService,
+		secretStore,
+		terraformRunner,
+		cfg.TerraformAutoApply,
+	)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
@@ -124,6 +135,7 @@ func NewApp() (*App, error) {
 	topologyHandler := topology.NewHandler(topologyService)
 	clusterHandler := clusters.NewHandler(clusterService)
 	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
+	vpsHandler := vps.NewHandler(vpsService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
@@ -206,6 +218,18 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/terraform/apply", databaseClusterHandler.ApplyTerraform)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/bootstrap", databaseClusterHandler.Bootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps", vpsHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps", vpsHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/cloud-init-images", vpsHandler.ListImages)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/cloud-init-images", vpsHandler.CreateImage)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}", vpsHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/vps/{id}", vpsHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/events", vpsHandler.ListEvents)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/deploy", vpsHandler.Deploy)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/start", vpsHandler.Start)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/restart", vpsHandler.Restart)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/shutdown", vpsHandler.Shutdown)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/refresh-status", vpsHandler.RefreshStatus)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels", cloudflareTunnelHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/cloudflare-tunnels", cloudflareTunnelHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Get)

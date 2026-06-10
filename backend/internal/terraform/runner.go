@@ -55,6 +55,25 @@ type WorkspaceSpec struct {
 	Nodes             []VMNode `json:"nodes"`
 }
 
+type StandaloneVPSSpec struct {
+	WorkspaceKey    string   `json:"-"`
+	Name            string   `json:"name"`
+	ProxmoxNodeName string   `json:"proxmox_node_name"`
+	CPU             int      `json:"cpu"`
+	MemoryMB        int      `json:"memory_mb"`
+	DiskGB          int      `json:"disk_gb"`
+	NetworkCIDR     string   `json:"network_cidr"`
+	Gateway         string   `json:"gateway"`
+	DNS             []string `json:"dns"`
+	Bridge          string   `json:"bridge"`
+	VLAN            int      `json:"vlan"`
+	CloudInitImage  string   `json:"cloud_init_image"`
+	SSHPublicKey    string   `json:"ssh_public_key"`
+	SSHUser         string   `json:"ssh_user"`
+	RootPassword    string   `json:"-"`
+	IPAddress       string   `json:"ip_address,omitempty"`
+}
+
 type RunResult struct {
 	WorkDir string `json:"work_dir"`
 	Output  string `json:"output"`
@@ -170,6 +189,64 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 	return workDir, nil
 }
 
+func (r *Runner) PrepareStandaloneVPSWorkspace(spec StandaloneVPSSpec) (string, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return "", errors.New("vps name is required")
+	}
+	if strings.TrimSpace(spec.ProxmoxNodeName) == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if strings.TrimSpace(spec.CloudInitImage) == "" {
+		return "", errors.New("cloud-init image path is required")
+	}
+	if strings.TrimSpace(spec.SSHPublicKey) == "" && strings.TrimSpace(spec.RootPassword) == "" {
+		return "", errors.New("provide an ssh public key or root password")
+	}
+	if spec.CPU <= 0 {
+		spec.CPU = 1
+	}
+	if spec.MemoryMB <= 0 {
+		spec.MemoryMB = 1024
+	}
+	if spec.DiskGB <= 0 {
+		spec.DiskGB = 20
+	}
+	if strings.TrimSpace(spec.SSHUser) == "" {
+		spec.SSHUser = "ubuntu"
+	}
+
+	workspaceKey := strings.TrimSpace(spec.WorkspaceKey)
+	if workspaceKey == "" {
+		workspaceKey = "vps-" + spec.Name
+	}
+	workDir := r.WorkspaceDirForKey(workspaceKey)
+	if err := os.MkdirAll(filepath.Join(workDir, "cloud-init"), 0o755); err != nil {
+		return "", fmt.Errorf("create vps workspace: %w", err)
+	}
+
+	if err := r.writeStandaloneVPSStaticFiles(workDir, ""); err != nil {
+		return "", err
+	}
+
+	cloudInitContent, err := renderStandaloneVPSCloudInit(spec)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "cloud-init", "user-data.yaml"), []byte(cloudInitContent), 0o644); err != nil {
+		return "", fmt.Errorf("write vps cloud-init file: %w", err)
+	}
+
+	tfvars, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal vps terraform variables: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "terraform.tfvars.json"), tfvars, 0o644); err != nil {
+		return "", fmt.Errorf("write vps terraform.tfvars.json: %w", err)
+	}
+
+	return workDir, nil
+}
+
 // initArgs returns the terraform init command arguments, using a local plugin
 // directory when one is configured to avoid calls to registry.terraform.io.
 func (r *Runner) initArgs() []string {
@@ -196,10 +273,25 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	return r.ApplyWithProgress(workDir, auth, nil)
 }
 
+func (r *Runner) ApplyStandaloneVPS(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStandaloneVPSStaticFiles(workDir, auth.Endpoint); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
+	}
+	return r.applyPreparedWorkspace(workDir, auth)
+}
+
 func (r *Runner) ApplyWithProgress(workDir string, auth ProxmoxAuth, onProgress func(string)) (RunResult, error) {
 	if err := r.writeStaticWorkspaceFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
 	}
+	return r.applyPreparedWorkspaceWithProgress(workDir, auth, onProgress)
+}
+
+func (r *Runner) applyPreparedWorkspace(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	return r.applyPreparedWorkspaceWithProgress(workDir, auth, nil)
+}
+
+func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth ProxmoxAuth, onProgress func(string)) (RunResult, error) {
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
 	initArgs := r.initArgs()
@@ -229,10 +321,21 @@ func (r *Runner) ApplyWithProgress(workDir string, auth ProxmoxAuth, onProgress 
 	return RunResult{WorkDir: workDir, Output: output.String(), Status: "applied"}, nil
 }
 
+func (r *Runner) DestroyStandaloneVPS(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStandaloneVPSStaticFiles(workDir, auth.Endpoint); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
+	}
+	return r.destroyPreparedWorkspace(workDir, auth)
+}
+
 func (r *Runner) Destroy(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	if err := r.writeStaticWorkspaceFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
 	}
+	return r.destroyPreparedWorkspace(workDir, auth)
+}
+
+func (r *Runner) destroyPreparedWorkspace(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	output := strings.Builder{}
 	authEnv := buildEnv(auth.toEnv())
 	initArgs := r.initArgs()
@@ -375,6 +478,45 @@ func (r *Runner) writeStaticWorkspaceFilesForNodes(workDir string, nodes []VMNod
 	return nil
 }
 
+func (r *Runner) writeStandaloneVPSStaticFiles(workDir string, endpoint string) error {
+	if strings.TrimSpace(workDir) == "" {
+		return errors.New("terraform workspace directory is required")
+	}
+	mainTF := strings.Replace(standaloneVPSTerraformMainTF, "{{ .SSHNodeBlocks }}", standaloneVPSSSHNodeBlocks(workDir, endpoint), 1)
+	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(mainTF), 0o644); err != nil {
+		return fmt.Errorf("write vps main.tf: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "variables.tf"), []byte(terraformVariablesTF), 0o644); err != nil {
+		return fmt.Errorf("write vps variables.tf: %w", err)
+	}
+	return nil
+}
+
+func standaloneVPSSSHNodeBlocks(workDir string, endpoint string) string {
+	nodeName := ""
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
+	if raw, err := os.ReadFile(tfvarsPath); err == nil {
+		var spec StandaloneVPSSpec
+		if json.Unmarshal(raw, &spec) == nil {
+			nodeName = strings.TrimSpace(spec.ProxmoxNodeName)
+		}
+	}
+	if nodeName == "" {
+		return ""
+	}
+	address := proxmoxSSHAddress(endpoint)
+	if address == "" {
+		address = nodeName
+	}
+	return fmt.Sprintf(`
+    node {
+      name    = %q
+      address = %q
+      port    = %d
+    }
+`, nodeName, address, defaultProxmoxSSHPort)
+}
+
 func renderTerraformMainTF(nodes []VMNode, endpoint string) (string, error) {
 	nodeNames := make([]string, 0)
 	seen := make(map[string]struct{}, len(nodes))
@@ -455,6 +597,27 @@ func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
 		return "", fmt.Errorf("render cloud-init template: %w", err)
 	}
 
+	return out.String(), nil
+}
+
+func renderStandaloneVPSCloudInit(spec StandaloneVPSSpec) (string, error) {
+	tpl, err := template.New("vps-cloudinit").Parse(standaloneVPSCloudInitTemplate)
+	if err != nil {
+		return "", fmt.Errorf("parse vps cloud-init template: %w", err)
+	}
+
+	payload := map[string]any{
+		"Name":         strings.TrimSpace(spec.Name),
+		"SSHUser":      strings.TrimSpace(spec.SSHUser),
+		"SSHPublicKey": strings.TrimSpace(spec.SSHPublicKey),
+		"RootPassword": strings.TrimSpace(spec.RootPassword),
+		"IPAddress":    strings.TrimSpace(spec.IPAddress),
+	}
+
+	var out bytes.Buffer
+	if err := tpl.Execute(&out, payload); err != nil {
+		return "", fmt.Errorf("render vps cloud-init template: %w", err)
+	}
 	return out.String(), nil
 }
 
@@ -599,4 +762,127 @@ runcmd:
   - [ bash, -lc, "echo CLUSTER_NAME={{ .ClusterName }} > /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_ROLE={{ .Role }} >> /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_IP={{ .IPAddress }} >> /etc/k8s-cluster.env" ]
+`
+
+const standaloneVPSTerraformMainTF = `terraform {
+  required_version = ">= 1.6.0"
+
+  required_providers {
+    proxmox = {
+      source  = "bpg/proxmox"
+      version = ">= 0.66.0"
+    }
+  }
+}
+
+provider "proxmox" {
+  ssh {
+    agent = false
+{{ .SSHNodeBlocks }}
+  }
+}
+
+variable "name" {}
+variable "proxmox_node_name" {}
+variable "cpu" { type = number }
+variable "memory_mb" { type = number }
+variable "disk_gb" { type = number }
+variable "network_cidr" {}
+variable "gateway" {}
+variable "dns" { type = list(string) }
+variable "bridge" {}
+variable "vlan" { type = number }
+variable "cloud_init_image" {}
+variable "ssh_public_key" {}
+variable "ssh_user" {}
+variable "ip_address" {
+  type    = string
+  default = ""
+}
+
+resource "proxmox_virtual_environment_file" "cloud_init" {
+  content_type = "snippets"
+  datastore_id = "local"
+  node_name    = var.proxmox_node_name
+
+  source_raw {
+    data      = file("${path.module}/cloud-init/user-data.yaml")
+    file_name = "${var.name}-user-data.yaml"
+  }
+}
+
+resource "proxmox_virtual_environment_vm" "vps" {
+  name      = var.name
+  node_name = var.proxmox_node_name
+
+  depends_on = [proxmox_virtual_environment_file.cloud_init]
+
+  initialization {
+    user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
+
+    ip_config {
+      ipv4 {
+        address = trimspace(var.ip_address) != "" ? "${var.ip_address}/${tonumber(split("/", var.network_cidr)[1])}" : "dhcp"
+        gateway = trimspace(var.ip_address) != "" ? var.gateway : null
+      }
+    }
+  }
+
+  cpu {
+    cores = var.cpu
+  }
+
+  memory {
+    dedicated = var.memory_mb
+  }
+
+  network_device {
+    bridge  = var.bridge
+    vlan_id = var.vlan
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    file_id      = var.cloud_init_image
+    interface    = "scsi0"
+    size         = var.disk_gb
+  }
+}
+`
+
+const standaloneVPSCloudInitTemplate = `#cloud-config
+hostname: {{ .Name }}
+manage_etc_hosts: true
+ssh_pwauth: {{ if .RootPassword }}true{{ else }}false{{ end }}
+disable_root: false
+users:
+  - name: {{ .SSHUser }}
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: sudo
+{{- if .SSHPublicKey }}
+    ssh_authorized_keys:
+      - {{ .SSHPublicKey }}
+{{- end }}
+{{- if .RootPassword }}
+  - name: root
+    lock_passwd: false
+{{- if .SSHPublicKey }}
+    ssh_authorized_keys:
+      - {{ .SSHPublicKey }}
+{{- end }}
+chpasswd:
+  expire: false
+  list: |
+    root:{{ .RootPassword }}
+{{- end }}
+package_update: true
+packages:
+  - qemu-guest-agent
+  - curl
+
+runcmd:
+  - [ systemctl, enable, --now, qemu-guest-agent ]
+  - [ bash, -lc, "echo VPS_NAME={{ .Name }} > /etc/managed-vps.env" ]
+  - [ bash, -lc, "echo VPS_IP={{ .IPAddress }} >> /etc/managed-vps.env" ]
 `

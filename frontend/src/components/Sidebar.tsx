@@ -16,12 +16,14 @@ import {
   Cloud,
   BarChart3,
   SquareTerminal,
+  Box,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/clusters', icon: Server, label: 'Clusters' },
+  { to: '/vps', icon: Box, label: 'VPS' },
   { to: '/database-clusters', icon: Database, label: 'Databases' },
   { to: '/monitoring', icon: BarChart3, label: 'Monitoring' },
   { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },

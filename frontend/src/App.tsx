@@ -21,6 +21,9 @@ import { CloudflareTunnelsPage } from './pages/CloudflareTunnelsPage';
 import { CommandCenterPage } from './pages/CommandCenterPage';
 import { DocumentsPage } from './pages/DocumentsPage';
 import { MonitoringPage } from './pages/MonitoringPage';
+import { VPSPage } from './pages/VPSPage';
+import { ProvisionVPSPage } from './pages/ProvisionVPSPage';
+import { VPSDetailPage } from './pages/VPSDetailPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -76,6 +79,30 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <DatabaseClustersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vps"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <VPSPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vps/new"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ProvisionVPSPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vps/:id"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <VPSDetailPage />
                 </ProtectedRoute>
               }
             />
