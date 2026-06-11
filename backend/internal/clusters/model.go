@@ -2980,8 +2980,8 @@ func (s *Service) UpdateClusterSecretKey(clusterID, secretID int64, key string, 
 	if err != nil {
 		return ClusterSecretRecord{}, err
 	}
-	if rec.ClusterID != clusterID {
-		return ClusterSecretRecord{}, errors.New("global secret can only be edited from its owning cluster")
+	if !rec.IsGlobal && rec.ClusterID != clusterID {
+		return ClusterSecretRecord{}, errors.New("secret can only be edited from its owning cluster")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -2990,7 +2990,11 @@ func (s *Service) UpdateClusterSecretKey(clusterID, secretID int64, key string, 
 	if s.secrets == nil {
 		return ClusterSecretRecord{}, errors.New("secret store is not configured")
 	}
-	ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", rec.ClusterID, secretID), key, []byte(req.Value))
+	ownerClusterID := rec.ClusterID
+	if rec.IsGlobal {
+		ownerClusterID = 0
+	}
+	ref, err := s.secrets.Put(context.Background(), fmt.Sprintf("clusters/%d/app-secrets/%d", ownerClusterID, secretID), key, []byte(req.Value))
 	if err != nil {
 		return ClusterSecretRecord{}, fmt.Errorf("store cluster secret key %s: %w", key, err)
 	}
@@ -3009,7 +3013,7 @@ func (s *Service) UpdateClusterSecretKey(clusterID, secretID int64, key string, 
 		return ClusterSecretRecord{}, fmt.Errorf("update cluster secret key: %w", err)
 	}
 	_, _ = s.db.Exec(`UPDATE cluster_secrets SET updated_at = NOW() WHERE id = $1`, secretID)
-	return s.GetClusterSecret(clusterID, secretID)
+	return s.GetClusterSecret(ownerClusterID, secretID)
 }
 
 func (s *Service) DeleteClusterSecretKey(clusterID, secretID int64, key string) (ClusterSecretRecord, error) {
@@ -3017,8 +3021,8 @@ func (s *Service) DeleteClusterSecretKey(clusterID, secretID int64, key string) 
 	if err != nil {
 		return ClusterSecretRecord{}, err
 	}
-	if rec.ClusterID != clusterID {
-		return ClusterSecretRecord{}, errors.New("global secret can only be edited from its owning cluster")
+	if !rec.IsGlobal && rec.ClusterID != clusterID {
+		return ClusterSecretRecord{}, errors.New("secret can only be edited from its owning cluster")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -3045,6 +3049,9 @@ func (s *Service) DeleteClusterSecretKey(clusterID, secretID int64, key string) 
 		}
 	}
 	_, _ = s.db.Exec(`UPDATE cluster_secrets SET updated_at = NOW() WHERE id = $1`, secretID)
+	if rec.IsGlobal {
+		return s.GetClusterSecret(0, secretID)
+	}
 	return s.GetClusterSecret(clusterID, secretID)
 }
 
@@ -3268,8 +3275,8 @@ func (s *Service) UpdateClusterConfigMapKey(clusterID, configMapID int64, key st
 	if err != nil {
 		return ClusterConfigMapRecord{}, err
 	}
-	if rec.ClusterID != clusterID {
-		return ClusterConfigMapRecord{}, errors.New("global config map can only be edited from its owning cluster")
+	if !rec.IsGlobal && rec.ClusterID != clusterID {
+		return ClusterConfigMapRecord{}, errors.New("config map can only be edited from its owning cluster")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -3280,14 +3287,25 @@ func (s *Service) UpdateClusterConfigMapKey(clusterID, configMapID int64, key st
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
 	}
-	_, err = s.db.Exec(
-		`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
-		clusterID,
-		configMapID,
-		dataJSON,
-	)
+	if rec.IsGlobal {
+		_, err = s.db.Exec(
+			`UPDATE cluster_config_maps SET data = $2, updated_at = NOW() WHERE id = $1 AND is_global = TRUE`,
+			configMapID,
+			dataJSON,
+		)
+	} else {
+		_, err = s.db.Exec(
+			`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
+			clusterID,
+			configMapID,
+			dataJSON,
+		)
+	}
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("update cluster config map key: %w", err)
+	}
+	if rec.IsGlobal {
+		return s.GetClusterConfigMap(0, configMapID)
 	}
 	return s.GetClusterConfigMap(clusterID, configMapID)
 }
@@ -3297,8 +3315,8 @@ func (s *Service) DeleteClusterConfigMapKey(clusterID, configMapID int64, key st
 	if err != nil {
 		return ClusterConfigMapRecord{}, err
 	}
-	if rec.ClusterID != clusterID {
-		return ClusterConfigMapRecord{}, errors.New("global config map can only be edited from its owning cluster")
+	if !rec.IsGlobal && rec.ClusterID != clusterID {
+		return ClusterConfigMapRecord{}, errors.New("config map can only be edited from its owning cluster")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -3312,14 +3330,25 @@ func (s *Service) DeleteClusterConfigMapKey(clusterID, configMapID int64, key st
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
 	}
-	_, err = s.db.Exec(
-		`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
-		clusterID,
-		configMapID,
-		dataJSON,
-	)
+	if rec.IsGlobal {
+		_, err = s.db.Exec(
+			`UPDATE cluster_config_maps SET data = $2, updated_at = NOW() WHERE id = $1 AND is_global = TRUE`,
+			configMapID,
+			dataJSON,
+		)
+	} else {
+		_, err = s.db.Exec(
+			`UPDATE cluster_config_maps SET data = $3, updated_at = NOW() WHERE cluster_id = $1 AND id = $2`,
+			clusterID,
+			configMapID,
+			dataJSON,
+		)
+	}
 	if err != nil {
 		return ClusterConfigMapRecord{}, fmt.Errorf("delete cluster config map key: %w", err)
+	}
+	if rec.IsGlobal {
+		return s.GetClusterConfigMap(0, configMapID)
 	}
 	return s.GetClusterConfigMap(clusterID, configMapID)
 }

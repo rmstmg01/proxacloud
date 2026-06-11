@@ -1253,7 +1253,9 @@ function SecretsTab({ id }: { id: number }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {secrets.map((secret) => (
+                  {secrets.map((secret) => {
+                    const canEditKeys = secret.is_global || secret.cluster_id === id;
+                    return (
                     <tr key={secret.id}>
                       <td className="px-4 py-2 font-medium text-slate-900">{secret.name}</td>
                       <td className="px-4 py-2 text-slate-600">{secret.namespace}</td>
@@ -1266,12 +1268,12 @@ function SecretsTab({ id }: { id: number }) {
                               <button
                                 type="button"
                                 className="font-mono text-xs text-slate-700 hover:text-indigo-700"
-                                disabled={secret.cluster_id !== id}
+                                disabled={!canEditKeys}
                                 onClick={() => setKeyForm({ secretID: secret.id, key, value: '' })}
                               >
                                 {key}
                               </button>
-                              {secret.cluster_id === id && (
+                              {canEditKeys && (
                                 <button
                                   type="button"
                                   className="text-xs text-rose-600 hover:text-rose-700"
@@ -1287,8 +1289,17 @@ function SecretsTab({ id }: { id: number }) {
                               )}
                             </span>
                           )) : '-'}
+                          {canEditKeys && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center rounded bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                              onClick={() => setKeyForm({ secretID: secret.id, key: '', value: '' })}
+                            >
+                              Add key
+                            </button>
+                          )}
                         </div>
-                        {secret.cluster_id === id && (
+                        {canEditKeys && (
                           <div className="mt-2 flex flex-wrap items-end gap-2">
                             <Input
                               label="Key"
@@ -1310,7 +1321,7 @@ function SecretsTab({ id }: { id: number }) {
                               disabled={keyForm.secretID !== secret.id || !keyForm.key.trim() || !keyForm.value}
                               onClick={() => updateKeyMut.mutate(keyForm)}
                             >
-                              Save key only
+                              Add/update key
                             </Button>
                           </div>
                         )}
@@ -1335,7 +1346,8 @@ function SecretsTab({ id }: { id: number }) {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1551,7 +1563,9 @@ function ConfigMapsTab({ id }: { id: number }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {configMaps.map((configMap) => (
+                  {configMaps.map((configMap) => {
+                    const canEditKeys = configMap.is_global || configMap.cluster_id === id;
+                    return (
                     <tr key={configMap.id}>
                       <td className="px-4 py-2 font-medium text-slate-900">{configMap.name}</td>
                       <td className="px-4 py-2 text-slate-600">{configMap.namespace}</td>
@@ -1563,12 +1577,12 @@ function ConfigMapsTab({ id }: { id: number }) {
                               <button
                                 type="button"
                                 className="font-mono text-xs text-slate-700 hover:text-indigo-700"
-                                disabled={configMap.cluster_id !== id}
+                                disabled={!canEditKeys}
                                 onClick={() => setKeyForm({ configMapID: configMap.id, key, value: configMap.data[key] || '' })}
                               >
                                 {key}
                               </button>
-                              {configMap.cluster_id === id && (
+                              {canEditKeys && (
                                 <button
                                   type="button"
                                   className="text-xs text-rose-600 hover:text-rose-700"
@@ -1584,8 +1598,17 @@ function ConfigMapsTab({ id }: { id: number }) {
                               )}
                             </span>
                           )) : '-'}
+                          {canEditKeys && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                              onClick={() => setKeyForm({ configMapID: configMap.id, key: '', value: '' })}
+                            >
+                              Add key
+                            </button>
+                          )}
                         </div>
-                        {configMap.cluster_id === id && (
+                        {canEditKeys && (
                           <div className="mt-2 flex flex-wrap items-end gap-2">
                             <Input
                               label="Key"
@@ -1606,7 +1629,7 @@ function ConfigMapsTab({ id }: { id: number }) {
                               disabled={keyForm.configMapID !== configMap.id || !keyForm.key.trim()}
                               onClick={() => updateKeyMut.mutate(keyForm)}
                             >
-                              Save key only
+                              Add/update key
                             </Button>
                           </div>
                         )}
@@ -1631,7 +1654,8 @@ function ConfigMapsTab({ id }: { id: number }) {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>

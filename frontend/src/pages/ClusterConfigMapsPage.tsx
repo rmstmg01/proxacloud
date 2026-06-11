@@ -2,7 +2,16 @@ import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, FileText } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createClusterConfigMap, createGlobalConfigMap, deleteGlobalConfigMap, getClusters, getGlobalConfigMaps, updateGlobalConfigMap } from '../api/clusters';
+import {
+  createClusterConfigMap,
+  createGlobalConfigMap,
+  deleteClusterConfigMapKey,
+  deleteGlobalConfigMap,
+  getClusters,
+  getGlobalConfigMaps,
+  updateClusterConfigMapKey,
+  updateGlobalConfigMap,
+} from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
@@ -31,6 +40,7 @@ export function ClusterConfigMapsPage() {
   const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClusterConfigMapRecord | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [keyForm, setKeyForm] = useState({ configMapID: 0, key: '', value: '' });
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -93,6 +103,24 @@ export function ClusterConfigMapsPage() {
       if (editing?.id === configMapID) resetForm();
       setDeleteTarget(null);
       setDeleteConfirmationName('');
+    },
+  });
+
+  const updateKeyMut = useMutation({
+    mutationFn: (body: { configMapID: number; key: string; value: string }) =>
+      updateClusterConfigMapKey(0, body.configMapID, body.key.trim(), body.value),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
+      setKeyForm({ configMapID: 0, key: '', value: '' });
+    },
+  });
+
+  const deleteKeyMut = useMutation({
+    mutationFn: (body: { configMapID: number; key: string }) =>
+      deleteClusterConfigMapKey(0, body.configMapID, body.key),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
+      setKeyForm({ configMapID: 0, key: '', value: '' });
     },
   });
 
@@ -172,16 +200,75 @@ export function ClusterConfigMapsPage() {
                 ) : (
                   <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
                     {globalConfigMaps.map((configMap) => (
-                      <div key={configMap.id} className="flex items-center justify-between gap-4 py-4">
-                        <div className="flex items-center gap-3">
+                      <div key={configMap.id} className="flex flex-col gap-3 py-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex min-w-0 gap-3">
                           <div className="h-9 w-9 rounded-md bg-emerald-50 text-emerald-600 flex items-center justify-center">
                             <FileText className="h-4 w-4" />
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="text-sm font-medium text-slate-900">{configMap.name}</p>
                             <p className="text-xs text-slate-500">
                               namespace: {configMap.namespace} - keys: {Object.keys(configMap.data || {}).length}
                             </p>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {Object.keys(configMap.data || {}).length ? Object.keys(configMap.data || {}).map((key) => (
+                                <span key={key} className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1">
+                                  <button
+                                    type="button"
+                                    className="font-mono text-xs text-slate-700 hover:text-indigo-700"
+                                    onClick={() => setKeyForm({ configMapID: configMap.id, key, value: configMap.data[key] || '' })}
+                                  >
+                                    {key}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs text-rose-600 hover:text-rose-700"
+                                    disabled={deleteKeyMut.isPending}
+                                    onClick={() => {
+                                      if (window.confirm(`Delete key ${key} from ${configMap.name}?`)) {
+                                        deleteKeyMut.mutate({ configMapID: configMap.id, key });
+                                      }
+                                    }}
+                                  >
+                                    delete
+                                  </button>
+                                </span>
+                              )) : (
+                                <span className="text-xs text-slate-400">No keys</span>
+                              )}
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                                onClick={() => setKeyForm({ configMapID: configMap.id, key: '', value: '' })}
+                              >
+                                Add key
+                              </button>
+                            </div>
+                            {keyForm.configMapID === configMap.id && (
+                              <div className="mt-3 flex flex-wrap items-end gap-2">
+                                <Input
+                                  label="Key"
+                                  value={keyForm.key}
+                                  onChange={(e) => setKeyForm({ ...keyForm, key: e.target.value })}
+                                  className="w-52"
+                                />
+                                <Input
+                                  label="Value"
+                                  value={keyForm.value}
+                                  onChange={(e) => setKeyForm({ ...keyForm, value: e.target.value })}
+                                  className="w-56"
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  loading={updateKeyMut.isPending && updateKeyMut.variables?.configMapID === configMap.id}
+                                  disabled={!keyForm.key.trim()}
+                                  onClick={() => updateKeyMut.mutate(keyForm)}
+                                >
+                                  Add/update key
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -205,6 +292,8 @@ export function ClusterConfigMapsPage() {
                   </div>
                 )}
                 {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+                {updateKeyMut.error && <ErrorMessage error={updateKeyMut.error} />}
+                {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
               </div>
 
               {clusters.length === 0 ? (

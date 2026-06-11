@@ -2,7 +2,16 @@ import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, KeyRound } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createClusterSecret, createGlobalSecret, deleteGlobalSecret, getClusters, getGlobalSecrets, updateGlobalSecret } from '../api/clusters';
+import {
+  createClusterSecret,
+  createGlobalSecret,
+  deleteClusterSecretKey,
+  deleteGlobalSecret,
+  getClusters,
+  getGlobalSecrets,
+  updateClusterSecretKey,
+  updateGlobalSecret,
+} from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
@@ -50,6 +59,7 @@ export function ClusterSecretsPage() {
   const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClusterSecretRecord | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [keyForm, setKeyForm] = useState({ secretID: 0, key: '', value: '' });
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -133,6 +143,24 @@ export function ClusterSecretsPage() {
       if (editing?.id === secretID) resetForm();
       setDeleteTarget(null);
       setDeleteConfirmationName('');
+    },
+  });
+
+  const updateKeyMut = useMutation({
+    mutationFn: (body: { secretID: number; key: string; value: string }) =>
+      updateClusterSecretKey(0, body.secretID, body.key.trim(), body.value),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
+      setKeyForm({ secretID: 0, key: '', value: '' });
+    },
+  });
+
+  const deleteKeyMut = useMutation({
+    mutationFn: (body: { secretID: number; key: string }) =>
+      deleteClusterSecretKey(0, body.secretID, body.key),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
+      setKeyForm({ secretID: 0, key: '', value: '' });
     },
   });
 
@@ -245,16 +273,76 @@ export function ClusterSecretsPage() {
                 ) : (
                   <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
                     {globalSecrets.map((secret) => (
-                      <div key={secret.id} className="flex items-center justify-between gap-4 py-4">
-                        <div className="flex items-center gap-3">
+                      <div key={secret.id} className="flex flex-col gap-3 py-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex min-w-0 gap-3">
                           <div className="h-9 w-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">
                             <KeyRound className="h-4 w-4" />
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="text-sm font-medium text-slate-900">{secret.name}</p>
                             <p className="text-xs text-slate-500">
                               namespace: {secret.namespace} - provider: {secret.provider} - keys: {secret.keys.length}
                             </p>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {secret.keys.length ? secret.keys.map((key) => (
+                                <span key={key} className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1">
+                                  <button
+                                    type="button"
+                                    className="font-mono text-xs text-slate-700 hover:text-indigo-700"
+                                    onClick={() => setKeyForm({ secretID: secret.id, key, value: '' })}
+                                  >
+                                    {key}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs text-rose-600 hover:text-rose-700"
+                                    disabled={deleteKeyMut.isPending}
+                                    onClick={() => {
+                                      if (window.confirm(`Delete key ${key} from ${secret.name}?`)) {
+                                        deleteKeyMut.mutate({ secretID: secret.id, key });
+                                      }
+                                    }}
+                                  >
+                                    delete
+                                  </button>
+                                </span>
+                              )) : (
+                                <span className="text-xs text-slate-400">No keys</span>
+                              )}
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100"
+                                onClick={() => setKeyForm({ secretID: secret.id, key: '', value: '' })}
+                              >
+                                Add key
+                              </button>
+                            </div>
+                            {keyForm.secretID === secret.id && (
+                              <div className="mt-3 flex flex-wrap items-end gap-2">
+                                <Input
+                                  label="Key"
+                                  value={keyForm.key}
+                                  onChange={(e) => setKeyForm({ ...keyForm, key: e.target.value })}
+                                  className="w-52"
+                                />
+                                <Input
+                                  label="Value"
+                                  type="password"
+                                  value={keyForm.value}
+                                  onChange={(e) => setKeyForm({ ...keyForm, value: e.target.value })}
+                                  className="w-56"
+                                />
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  loading={updateKeyMut.isPending && updateKeyMut.variables?.secretID === secret.id}
+                                  disabled={!keyForm.key.trim() || !keyForm.value}
+                                  onClick={() => updateKeyMut.mutate(keyForm)}
+                                >
+                                  Add/update key
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -278,6 +366,8 @@ export function ClusterSecretsPage() {
                   </div>
                 )}
                 {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+                {updateKeyMut.error && <ErrorMessage error={updateKeyMut.error} />}
+                {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
               </div>
 
               {clusters.length === 0 ? (
