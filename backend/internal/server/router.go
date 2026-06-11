@@ -274,6 +274,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/longhorn/deploy", clusterHandler.DeployLonghorn)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/cert-manager/deploy", clusterHandler.DeployCertificateManager)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/secrets", clusterHandler.CreateGlobalSecret)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/config-maps", clusterHandler.ListGlobalConfigMaps)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/config-maps", clusterHandler.CreateGlobalConfigMap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/image-pull-secrets", clusterHandler.CreateGlobalImagePullSecret)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/manifests", clusterHandler.ListGlobalSavedManifests)

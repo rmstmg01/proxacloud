@@ -1322,8 +1322,6 @@ func (s *Service) applyKubernetesAppDatabaseConfig(clusterID int64, namespace, s
 	commands := [][]string{
 		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "configmap", "pscs-config", "--type", "merge", "-p", string(configPatch)},
 		{"--kubeconfig", kubeconfigPath, "-n", namespace, "patch", "secret", "pscs-secrets", "--type", "merge", "-p", string(secretPatch)},
-		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/gateway"},
-		{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "status", "deployment/gateway", "--timeout=300s"},
 	}
 	for _, args := range commands {
 		output, err := exec.CommandContext(ctx, "kubectl", args...).CombinedOutput()
@@ -1334,7 +1332,7 @@ func (s *Service) applyKubernetesAppDatabaseConfig(clusterID int64, namespace, s
 		}
 	}
 
-	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Kubernetes app config updated and gateway rollout completed", strings.Join(outputs, "\n"))
+	_ = s.insertEvent(clusterID, "kubernetes-app-config", "success", "Kubernetes app config updated", strings.Join(outputs, "\n"))
 
 	restartBackendArgs := []string{"--kubeconfig", kubeconfigPath, "-n", namespace, "rollout", "restart", "deployment/backend"}
 	output, err := exec.CommandContext(ctx, "kubectl", restartBackendArgs...).CombinedOutput()

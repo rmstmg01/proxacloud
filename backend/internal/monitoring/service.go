@@ -605,28 +605,7 @@ spec:
     - port: http
       path: /metrics
       interval: 30s
----
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: pscs-gateway
-  namespace: %s
-  labels:
-    release: kube-prometheus-stack
-    cluster: %s
-    environment: %s
-spec:
-  namespaceSelector:
-    matchNames:
-      - pscs
-  selector:
-    matchLabels:
-      app: gateway
-  endpoints:
-    - port: gateway
-      path: /metrics
-      interval: 30s
-`, req.AgentNamespace, clusterLabel, req.Environment, req.AgentNamespace, clusterLabel, req.Environment)
+`, req.AgentNamespace, clusterLabel, req.Environment)
 }
 
 func buildInstallCommands(namespace string) string {

@@ -3016,6 +3016,29 @@ func (s *Service) ListClusterConfigMaps(clusterID int64) ([]ClusterConfigMapReco
 	return out, nil
 }
 
+func (s *Service) ListGlobalConfigMaps() ([]ClusterConfigMapRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, description, data, immutable, is_global, last_applied_at, created_at, updated_at
+		 FROM cluster_config_maps
+		 WHERE is_global = TRUE
+		 ORDER BY namespace ASC, name ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list global config maps: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterConfigMapRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterConfigMap(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 func (s *Service) CreateClusterConfigMap(clusterID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return ClusterConfigMapRecord{}, err

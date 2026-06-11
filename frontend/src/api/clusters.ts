@@ -376,6 +376,9 @@ export const deleteClusterSecretKey = (id: number, secretID: number, key: string
 export const getClusterConfigMaps = (id: number) =>
   client.get<ClusterConfigMapRecord[]>(`/clusters/${id}/config-maps`).then((r) => r.data);
 
+export const getGlobalConfigMaps = () =>
+  client.get<ClusterConfigMapRecord[]>('/config-maps').then((r) => r.data);
+
 export const createClusterConfigMap = (
   id: number,
   body: {

@@ -706,6 +706,15 @@ func (h *Handler) ListClusterConfigMaps(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListGlobalConfigMaps(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.service.ListGlobalConfigMaps()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) CreateClusterConfigMap(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {

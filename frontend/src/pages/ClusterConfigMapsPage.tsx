@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, FileText } from 'lucide-react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { createClusterConfigMap, createGlobalConfigMap, getClusters } from '../api/clusters';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createClusterConfigMap, createGlobalConfigMap, getClusters, getGlobalConfigMaps } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
@@ -23,7 +23,9 @@ function parseKeyValues(raw: string): Record<string, string> {
 }
 
 export function ClusterConfigMapsPage() {
+  const queryClient = useQueryClient();
   const { data: clusters, isLoading, error } = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
+  const { data: globalConfigMaps, error: globalConfigMapsError } = useQuery({ queryKey: ['global-config-maps'], queryFn: getGlobalConfigMaps });
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -44,7 +46,10 @@ export function ClusterConfigMapsPage() {
         is_global: form.is_global || form.cluster_id <= 0,
         data: parseKeyValues(form.data_raw),
       };
-      return form.cluster_id > 0 ? createClusterConfigMap(form.cluster_id, body) : createGlobalConfigMap(body);
+      return body.is_global ? createGlobalConfigMap(body) : createClusterConfigMap(form.cluster_id, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
     },
   });
 
@@ -53,6 +58,7 @@ export function ClusterConfigMapsPage() {
       <PageHeader title="ConfigMaps" description="Create non-sensitive app configuration or manage by cluster" />
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
+      {globalConfigMapsError && <ErrorMessage error={globalConfigMapsError} />}
       {clusters && (
         <div className="space-y-6">
           <Card>
@@ -88,7 +94,9 @@ export function ClusterConfigMapsPage() {
                 <Button type="submit" loading={createMut.isPending}>Create ConfigMap</Button>
                 {createMut.data && (
                   <Alert variant="success" title="ConfigMap created">
-                    {createMut.data.cluster_id ? (
+                    {createMut.data.is_global ? (
+                      <span>{createMut.data.name} is listed below and available to all clusters.</span>
+                    ) : createMut.data.cluster_id ? (
                       <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${createMut.data.cluster_id}?tab=configmaps`}>
                         Open {createMut.data.name} in cluster ConfigMaps
                       </Link>
@@ -105,6 +113,32 @@ export function ClusterConfigMapsPage() {
           <Card>
             <CardHeader><CardTitle>Manage Existing ConfigMaps</CardTitle></CardHeader>
             <CardContent>
+              <div className="mb-6">
+                <p className="text-sm font-medium text-slate-900">Global ConfigMaps</p>
+                {!globalConfigMaps?.length ? (
+                  <p className="mt-2 text-sm text-slate-400">No global ConfigMaps yet.</p>
+                ) : (
+                  <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
+                    {globalConfigMaps.map((configMap) => (
+                      <div key={configMap.id} className="flex items-center justify-between gap-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-9 w-9 rounded-md bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                            <FileText className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">{configMap.name}</p>
+                            <p className="text-xs text-slate-500">
+                              namespace: {configMap.namespace} - keys: {Object.keys(configMap.data || {}).length}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-xs font-medium text-emerald-700">Global</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {clusters.length === 0 ? (
                 <p className="text-sm text-slate-400">No clusters available.</p>
               ) : (

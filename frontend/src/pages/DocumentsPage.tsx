@@ -61,14 +61,12 @@ kubectl get events -n ${namespace} --sort-by=.lastTimestamp`,
     title: 'Restart example application deployments',
     command: `kubectl rollout restart deployment/backend -n ${namespace}
 kubectl rollout restart deployment/frontend -n ${namespace}
-kubectl rollout restart deployment/gateway -n ${namespace}
 kubectl rollout restart deployment/website -n ${namespace}`,
   },
   {
     title: 'Watch rollout status',
     command: `kubectl rollout status deployment/backend -n ${namespace}
 kubectl rollout status deployment/frontend -n ${namespace}
-kubectl rollout status deployment/gateway -n ${namespace}
 kubectl rollout status deployment/website -n ${namespace}`,
   },
 ];
@@ -113,7 +111,6 @@ kubectl describe nodes`,
         label: 'Restart example application deployments',
         command: `kubectl rollout restart deployment/backend -n ${namespace}
 kubectl rollout restart deployment/frontend -n ${namespace}
-kubectl rollout restart deployment/gateway -n ${namespace}
 kubectl rollout restart deployment/website -n ${namespace}
 kubectl get pods -n ${namespace} -w`,
       },
@@ -121,7 +118,6 @@ kubectl get pods -n ${namespace} -w`,
         label: 'Update images explicitly',
         command: `kubectl set image deployment/backend backend=ghcr.io/OWNER/backend:TAG -n ${namespace}
 kubectl set image deployment/frontend frontend=ghcr.io/OWNER/frontend:TAG -n ${namespace}
-kubectl set image deployment/gateway gateway=ghcr.io/OWNER/gateway:TAG -n ${namespace}
 kubectl set image deployment/website website=ghcr.io/OWNER/website:TAG -n ${namespace}`,
       },
       {
@@ -130,11 +126,20 @@ kubectl set image deployment/website website=ghcr.io/OWNER/website:TAG -n ${name
 kubectl rollout undo deployment/backend -n ${namespace}
 kubectl rollout status deployment/backend -n ${namespace}`,
       },
+      {
+        label: 'Delete a deployment removed from manifests',
+        command: `kubectl get pods,deploy,rs,svc -n ${namespace} | Select-String COMPONENT_NAME
+kubectl delete deployment COMPONENT_NAME -n ${namespace}
+kubectl delete service COMPONENT_NAME -n ${namespace}
+kubectl delete rs -n ${namespace} -l app=COMPONENT_NAME
+kubectl get pods,deploy,rs,svc -n ${namespace} | Select-String COMPONENT_NAME`,
+      },
     ],
     notes: [
       'Prefer versioned image tags or digests over latest. This makes rollback and audit much easier.',
       'A rollout restart recreates pods. It does not change the image tag stored in the deployment.',
       'If the same tag is reused, set imagePullPolicy to Always so each new pod checks the registry.',
+      'Deleting a pod alone is temporary when a Deployment still owns it. Delete the Deployment and Service when the component has been removed from the manifest.',
     ],
   },
   {
@@ -148,7 +153,6 @@ kubectl rollout status deployment/backend -n ${namespace}`,
         label: 'Force pull policy for deployments',
         command: `kubectl patch deployment backend -n ${namespace} -p '{"spec":{"template":{"spec":{"containers":[{"name":"backend","imagePullPolicy":"Always"}]}}}}'
 kubectl patch deployment frontend -n ${namespace} -p '{"spec":{"template":{"spec":{"containers":[{"name":"frontend","imagePullPolicy":"Always"}]}}}}'
-kubectl patch deployment gateway -n ${namespace} -p '{"spec":{"template":{"spec":{"containers":[{"name":"gateway","imagePullPolicy":"Always"}]}}}}'
 kubectl patch deployment website -n ${namespace} -p '{"spec":{"template":{"spec":{"containers":[{"name":"website","imagePullPolicy":"Always"}]}}}}'`,
       },
       {
@@ -440,7 +444,7 @@ kubectl run db-endpoint-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --r
     icon: ClipboardList,
     badge: 'Config',
     description:
-      'Use this when backend or gateway pods crash because they still point to an old DB hostname such as db.',
+      'Use this when backend pods crash because they still point to an old DB hostname such as db.',
     commands: [
       {
         label: 'Check app DB config sources',
@@ -448,15 +452,13 @@ kubectl run db-endpoint-test -n ${dbNamespace} --rm -it --image=busybox:1.36 --r
 kubectl get secret pscs-secrets -n ${dbNamespace} -o yaml`,
       },
       {
-        label: 'Confirm backend and gateway environment',
-        command: `kubectl describe deployment backend -n ${dbNamespace}
-kubectl describe deployment gateway -n ${dbNamespace}`,
+        label: 'Confirm backend environment',
+        command: `kubectl describe deployment backend -n ${dbNamespace}`,
       },
       {
         label: 'Patch DB host if it still points to db',
         command: `kubectl patch configmap pscs-config -n ${dbNamespace} --type merge -p '{"data":{"DB_HOST":"${dbHost}","DB_PORT":"3306"}}'
-kubectl rollout restart deployment/backend -n ${dbNamespace}
-kubectl rollout restart deployment/gateway -n ${dbNamespace}`,
+kubectl rollout restart deployment/backend -n ${dbNamespace}`,
       },
     ],
     notes: [
@@ -481,7 +483,6 @@ kubectl logs POD_NAME -n ${dbNamespace} --previous`,
       {
         label: 'Check rollout after DB config changes',
         command: `kubectl rollout status deployment/backend -n ${dbNamespace}
-kubectl rollout status deployment/gateway -n ${dbNamespace}
 kubectl get pods -n ${dbNamespace} -o wide`,
       },
       {
@@ -529,7 +530,7 @@ nc -vz 192.168.8.52 4567
     ],
     notes: [
       'A Galera cluster needs a primary component. If all nodes restart or lose quorum together, normal systemctl start mariadb attempts can fail on every VM.',
-      'This is distinct from a Kubernetes storage issue. PSCS backend and gateway are stateless pods and use the external MariaDB Service.',
+      'This is distinct from a Kubernetes storage issue. PSCS backend is stateless and uses the external MariaDB Service.',
       'Likely triggers include simultaneous VM or host restarts, network interruption between database VMs, firewall changes, prolonged infrastructure instability, or an unsafe shutdown.',
       'Longhorn does not store PSCS MariaDB data in this architecture, but a broader node or network incident during Longhorn rollout can coincide with a Galera outage.',
     ],
@@ -614,17 +615,16 @@ wsrep_local_state_comment   Synced`,
       {
         label: 'Verify application recovery from Kubernetes',
         command: `kubectl get pods -n ${dbNamespace} -o wide
-kubectl get endpoints backend gateway -n ${dbNamespace}`,
+kubectl get endpoints backend -n ${dbNamespace}`,
       },
       {
         label: 'Restart PSCS workloads if stale pods remain',
-        command: `kubectl rollout restart deployment/backend deployment/gateway -n ${dbNamespace}
-kubectl rollout status deployment/backend -n ${dbNamespace} --timeout=300s
-kubectl rollout status deployment/gateway -n ${dbNamespace} --timeout=300s`,
+        command: `kubectl rollout restart deployment/backend -n ${dbNamespace}
+kubectl rollout status deployment/backend -n ${dbNamespace} --timeout=300s`,
       },
     ],
     notes: [
-      'The backend Service should list three endpoints on port 8080 and the gateway Service should list three endpoints on port 7777 after a clean recovery.',
+      'The backend Service should list three endpoints on port 8080 after a clean recovery.',
       'A local ERROR 1045 Access denied response from mariadb without -p means the root account requires a password. It does not mean Galera recovery failed.',
       'If Galera is healthy but only pods on one Kubernetes node keep failing, test direct connectivity from that node and inspect CNI, kube-proxy, firewall, and routing health.',
     ],
