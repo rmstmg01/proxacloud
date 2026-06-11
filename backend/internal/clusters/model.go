@@ -6669,8 +6669,8 @@ func validateMetalLBAddress(value string) error {
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
 	var clusterID int64
 	err := s.db.QueryRow(
-		`INSERT INTO clusters (name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, proxmox_credential_id, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'planned')
+		`INSERT INTO clusters (name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'planned')
 		 RETURNING id`,
 		req.Name,
 		plan.TopologyType,
@@ -6678,6 +6678,12 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 		req.NetworkProfileID,
 		plan.ControlPlaneCount,
 		plan.WorkerCount,
+		req.ControlPlaneCPU,
+		req.ControlPlaneRAMMB,
+		req.ControlPlaneDisk,
+		req.WorkerCPU,
+		req.WorkerRAMMB,
+		req.WorkerDisk,
 		req.ProxmoxCredentialID,
 	).Scan(&clusterID)
 	if err != nil {
