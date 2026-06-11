@@ -315,6 +315,57 @@ curl -i https://www.proxaops.com/`,
     ],
   },
   {
+    title: 'Cloudflare Tunnel Command Reference',
+    icon: Shield,
+    badge: 'Reference',
+    description:
+      'Use these commands to inspect application configuration, cloudflared deployment state, tunnel token storage, and connector logs.',
+    commands: [
+      {
+        label: 'Read application ConfigMap and Secret YAML',
+        command: `kubectl get configmap pscs-config -n pscs -o yaml
+kubectl get secret pscs-secrets -n pscs -o yaml`,
+      },
+      {
+        label: 'Decode the cloudflared tunnel token',
+        command: `kubectl get secret cloudflared-token -n cloudflare-tunnel -o go-template='{{.data.token | base64decode}}'`,
+      },
+      {
+        label: 'Inspect cloudflared deployment summary',
+        command: `kubectl describe deployment cloudflared -n cloudflare-tunnel`,
+      },
+      {
+        label: 'Export cloudflared deployment YAML',
+        command: `kubectl get deployment cloudflared -n cloudflare-tunnel -o yaml`,
+      },
+      {
+        label: 'Read recent cloudflared logs',
+        command: `kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=100`,
+      },
+      {
+        label: 'Inspect cloudflared token Secret',
+        command: `kubectl get secret -n cloudflare-tunnel
+kubectl describe secret cloudflared-token -n cloudflare-tunnel`,
+      },
+      {
+        label: 'Check cloudflared pods and per-pod logs',
+        command: `kubectl get pods -n cloudflare-tunnel -o wide
+kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflared --tail=100 --prefix`,
+      },
+    ],
+    notes: [
+      'pscs-config output shows non-sensitive application configuration such as DB_HOST, DB_PORT, feature flags, and service settings. Take key/value pairs from data when comparing or recreating app config.',
+      'pscs-secrets output shows Secret keys under data, but values are base64 encoded. Decode values before using them as passwords, tokens, or portal Secret values.',
+      'The go-template token command prints the actual cloudflared tunnel token. Use it only when you need to verify or re-enter the token; handle it like a password.',
+      'describe deployment cloudflared summarizes replicas, image, container args, token Secret reference, probes, labels, rollout state, and events. Use it for quick health and configuration checks.',
+      'deployment YAML is the detailed Kubernetes source. Take namespace, deployment name, image, replicas, labels, env secret reference, container args, probes, and scheduling rules from this output.',
+      'cloudflared logs show tunnelID, connector IDs, protocol, Cloudflare edge registration, pre-check results, and downloaded ingress config. Use this to confirm the tunnel is connected and what hostnames Cloudflare routes through it.',
+      'kubectl get secret lists available token Secrets in the namespace. describe secret confirms the Secret name, labels, type, and key names, but it does not reveal the token value.',
+      'pod wide output shows which nodes run the cloudflared replicas and whether they are Ready. Prefixed label logs separate messages by pod so you can compare connector health across replicas.',
+      'If using the portal command runner, prefer the go-template decode command because shell pipes like base64 -d may be passed incorrectly to kubectl.',
+    ],
+  },
+  {
     title: 'Storage, Config, And Secrets',
     icon: Terminal,
     badge: 'Advanced',

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, FileText } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
 import type { ClusterConfigMapRecord } from '../types';
 
 function parseKeyValues(raw: string): Record<string, string> {
@@ -28,6 +29,8 @@ export function ClusterConfigMapsPage() {
   const { data: clusters, isLoading, error } = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
   const { data: globalConfigMaps, error: globalConfigMapsError } = useQuery({ queryKey: ['global-config-maps'], queryFn: getGlobalConfigMaps });
   const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ClusterConfigMapRecord | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -88,14 +91,15 @@ export function ClusterConfigMapsPage() {
     onSuccess: (_data, configMapID) => {
       queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
       if (editing?.id === configMapID) resetForm();
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
     },
   });
 
-  const confirmDelete = (configMap: ClusterConfigMapRecord) => {
-    const typed = window.prompt(`Type ${configMap.name} to delete this global ConfigMap.`);
-    if (typed === configMap.name) {
-      deleteMut.mutate(configMap.id);
-    }
+  const confirmDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
+    deleteMut.mutate(deleteTarget.id);
   };
 
   return (
@@ -188,7 +192,10 @@ export function ClusterConfigMapsPage() {
                             size="sm"
                             variant="danger"
                             loading={deleteMut.isPending && deleteMut.variables === configMap.id}
-                            onClick={() => confirmDelete(configMap)}
+                            onClick={() => {
+                              setDeleteTarget(configMap);
+                              setDeleteConfirmationName('');
+                            }}
                           >
                             Delete
                           </Button>
@@ -230,6 +237,56 @@ export function ClusterConfigMapsPage() {
           </Card>
         </div>
       )}
+      <DeleteConfigMapModal
+        configMap={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMut.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMut.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDelete}
+      />
     </Layout>
+  );
+}
+
+function DeleteConfigMapModal({
+  configMap,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  configMap: ClusterConfigMapRecord | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!configMap && confirmationName === configMap.name;
+  return (
+    <Modal open={!!configMap} onClose={onClose} title="Delete ConfigMap" maxWidth="lg">
+      {configMap && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes the portal ConfigMap record">
+            This does not automatically delete a Kubernetes ConfigMap that has already been applied to a cluster.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{configMap.name}</span> to confirm deletion.
+          </div>
+          <Input label="ConfigMap name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete ConfigMap</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

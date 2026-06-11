@@ -1054,6 +1054,8 @@ function SecretsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: secrets } = useQuery({ queryKey: ['cluster-secrets', id], queryFn: () => getClusterSecrets(id) });
   const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ClusterSecretRecord | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [form, setForm] = useState({
     name: '',
     namespace: 'default',
@@ -1117,7 +1119,11 @@ function SecretsTab({ id }: { id: number }) {
 
   const deleteMut = useMutation({
     mutationFn: (secretID: number) => deleteClusterSecret(id, secretID),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-secrets', id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-secrets', id] });
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
+    },
   });
 
   const updateKeyMut = useMutation({
@@ -1151,11 +1157,10 @@ function SecretsTab({ id }: { id: number }) {
     });
   };
 
-  const confirmDelete = (secret: ClusterSecretRecord) => {
-    const typed = window.prompt(`Type ${secret.name} to delete this Secret.`);
-    if (typed === secret.name) {
-      deleteMut.mutate(secret.id);
-    }
+  const confirmDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
+    deleteMut.mutate(deleteTarget.id);
   };
 
   const onProviderChange = (provider: ClusterSecretProvider) => {
@@ -1315,7 +1320,18 @@ function SecretsTab({ id }: { id: number }) {
                         <div className="flex justify-end gap-2">
                           <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === secret.id} onClick={() => applyMut.mutate(secret.id)}>Apply</Button>
-                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => confirmDelete(secret)}>Delete</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="danger"
+                            loading={deleteMut.isPending && deleteMut.variables === secret.id}
+                            onClick={() => {
+                              setDeleteTarget(secret);
+                              setDeleteConfirmationName('');
+                            }}
+                          >
+                            Delete
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -1330,7 +1346,57 @@ function SecretsTab({ id }: { id: number }) {
           {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
         </CardContent>
       </Card>
+      <DeleteSecretConfirmModal
+        secret={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMut.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMut.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDelete}
+      />
     </div>
+  );
+}
+
+function DeleteSecretConfirmModal({
+  secret,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  secret: ClusterSecretRecord | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!secret && confirmationName === secret.name;
+  return (
+    <Modal open={!!secret} onClose={onClose} title="Delete Secret" maxWidth="lg">
+      {secret && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes the portal Secret record">
+            This does not automatically delete a Kubernetes Secret that has already been applied to a cluster.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{secret.name}</span> to confirm deletion.
+          </div>
+          <Input label="Secret name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete Secret</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 
@@ -1338,6 +1404,8 @@ function ConfigMapsTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const { data: configMaps } = useQuery({ queryKey: ['cluster-config-maps', id], queryFn: () => getClusterConfigMaps(id) });
   const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ClusterConfigMapRecord | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [form, setForm] = useState({
     name: '',
     namespace: 'default',
@@ -1387,7 +1455,11 @@ function ConfigMapsTab({ id }: { id: number }) {
 
   const deleteMut = useMutation({
     mutationFn: (configMapID: number) => deleteClusterConfigMap(id, configMapID),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['cluster-config-maps', id] });
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
+    },
   });
 
   const updateKeyMut = useMutation({
@@ -1417,11 +1489,10 @@ function ConfigMapsTab({ id }: { id: number }) {
     });
   };
 
-  const confirmDelete = (configMap: ClusterConfigMapRecord) => {
-    const typed = window.prompt(`Type ${configMap.name} to delete this ConfigMap.`);
-    if (typed === configMap.name) {
-      deleteMut.mutate(configMap.id);
-    }
+  const confirmDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
+    deleteMut.mutate(deleteTarget.id);
   };
 
   return (
@@ -1545,7 +1616,18 @@ function ConfigMapsTab({ id }: { id: number }) {
                         <div className="flex justify-end gap-2">
                           <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(configMap)}>Edit</Button>
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === configMap.id} onClick={() => applyMut.mutate(configMap.id)}>Apply</Button>
-                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === configMap.id} onClick={() => confirmDelete(configMap)}>Delete</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="danger"
+                            loading={deleteMut.isPending && deleteMut.variables === configMap.id}
+                            onClick={() => {
+                              setDeleteTarget(configMap);
+                              setDeleteConfirmationName('');
+                            }}
+                          >
+                            Delete
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -1560,7 +1642,57 @@ function ConfigMapsTab({ id }: { id: number }) {
           {deleteKeyMut.error && <ErrorMessage error={deleteKeyMut.error} />}
         </CardContent>
       </Card>
+      <DeleteConfigMapConfirmModal
+        configMap={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMut.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMut.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDelete}
+      />
     </div>
+  );
+}
+
+function DeleteConfigMapConfirmModal({
+  configMap,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  configMap: ClusterConfigMapRecord | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!configMap && confirmationName === configMap.name;
+  return (
+    <Modal open={!!configMap} onClose={onClose} title="Delete ConfigMap" maxWidth="lg">
+      {configMap && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes the portal ConfigMap record">
+            This does not automatically delete a Kubernetes ConfigMap that has already been applied to a cluster.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{configMap.name}</span> to confirm deletion.
+          </div>
+          <Input label="ConfigMap name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete ConfigMap</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 

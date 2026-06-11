@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, KeyRound } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
 import type { ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
 const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
@@ -47,6 +48,8 @@ export function ClusterSecretsPage() {
   const { data: clusters, isLoading, error } = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
   const { data: globalSecrets, error: globalSecretsError } = useQuery({ queryKey: ['global-secrets'], queryFn: getGlobalSecrets });
   const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ClusterSecretRecord | null>(null);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -128,14 +131,15 @@ export function ClusterSecretsPage() {
     onSuccess: (_data, secretID) => {
       queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
       if (editing?.id === secretID) resetForm();
+      setDeleteTarget(null);
+      setDeleteConfirmationName('');
     },
   });
 
-  const confirmDelete = (secret: ClusterSecretRecord) => {
-    const typed = window.prompt(`Type ${secret.name} to delete this global Secret.`);
-    if (typed === secret.name) {
-      deleteMut.mutate(secret.id);
-    }
+  const confirmDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
+    deleteMut.mutate(deleteTarget.id);
   };
 
   const onProviderChange = (provider: ClusterSecretProvider) => {
@@ -261,7 +265,10 @@ export function ClusterSecretsPage() {
                             size="sm"
                             variant="danger"
                             loading={deleteMut.isPending && deleteMut.variables === secret.id}
-                            onClick={() => confirmDelete(secret)}
+                            onClick={() => {
+                              setDeleteTarget(secret);
+                              setDeleteConfirmationName('');
+                            }}
                           >
                             Delete
                           </Button>
@@ -303,6 +310,56 @@ export function ClusterSecretsPage() {
           </Card>
         </div>
       )}
+      <DeleteSecretModal
+        secret={deleteTarget}
+        confirmationName={deleteConfirmationName}
+        loading={deleteMut.isPending}
+        onChange={setDeleteConfirmationName}
+        onClose={() => {
+          if (!deleteMut.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationName('');
+          }
+        }}
+        onSubmit={confirmDelete}
+      />
     </Layout>
+  );
+}
+
+function DeleteSecretModal({
+  secret,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  secret: ClusterSecretRecord | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!secret && confirmationName === secret.name;
+  return (
+    <Modal open={!!secret} onClose={onClose} title="Delete Secret" maxWidth="lg">
+      {secret && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes the portal Secret record">
+            This does not automatically delete a Kubernetes Secret that has already been applied to a cluster.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{secret.name}</span> to confirm deletion.
+          </div>
+          <Input label="Secret name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete Secret</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
