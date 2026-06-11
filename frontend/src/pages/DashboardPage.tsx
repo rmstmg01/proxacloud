@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import {
@@ -20,11 +21,13 @@ import { getVPSInstances } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { StatusBadge } from '../components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
 import type { ClusterSummary } from '../types';
 import type { DatabaseCluster } from '../api/databaseClusters';
 
 type Tone = 'blue' | 'green' | 'red' | 'amber' | 'slate' | 'cyan' | 'violet';
+type OverviewPanel = 'health' | 'compute' | 'infrastructure' | 'alerts';
 
 type AttentionItem = {
   key: string;
@@ -33,6 +36,15 @@ type AttentionItem = {
   status: string;
   detail: string;
   to: string;
+};
+
+type DetailItem = {
+  key: string;
+  name: string;
+  type: string;
+  detail: string;
+  to: string;
+  status?: string;
 };
 
 const toneClasses: Record<Tone, string> = {
@@ -115,26 +127,30 @@ function OverviewCard({
   detail,
   icon: Icon,
   tone,
+  onClick,
 }: {
   label: string;
   value: number | string;
   detail: string;
   icon: React.ElementType;
   tone: Tone;
+  onClick: () => void;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-3xl font-semibold text-slate-950">{value}</p>
-          <p className="mt-1 text-xs text-slate-500">{detail}</p>
-        </div>
-        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md ring-1 ${toneClasses[tone]}`}>
-          <Icon className="h-5 w-5" />
-        </div>
-      </CardContent>
-    </Card>
+    <button type="button" onClick={onClick} className="block h-full w-full text-left">
+      <Card className="h-full transition-colors hover:border-blue-200 hover:bg-slate-50">
+        <CardContent className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-500">{label}</p>
+            <p className="mt-2 text-3xl font-semibold text-slate-950">{value}</p>
+            <p className="mt-1 text-xs text-slate-500">{detail}</p>
+          </div>
+          <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md ring-1 ${toneClasses[tone]}`}>
+            <Icon className="h-5 w-5" />
+          </div>
+        </CardContent>
+      </Card>
+    </button>
   );
 }
 
@@ -172,11 +188,11 @@ function ResourceDashboardCard({
           <div className="mt-auto grid grid-cols-2 gap-3">
             <div>
               <p className="text-lg font-semibold text-slate-950">{primary}</p>
-              <p className="text-xs text-slate-500">total</p>
+              <p className="text-xs text-slate-500">Total</p>
             </div>
             <div>
               <p className="text-lg font-semibold text-slate-950">{secondary}</p>
-              <p className="text-xs text-slate-500">healthy</p>
+              <p className="text-xs text-slate-500">OK</p>
             </div>
           </div>
         </CardContent>
@@ -234,7 +250,32 @@ function AttentionList({ items }: { items: AttentionItem[] }) {
   );
 }
 
+function DetailList({ items, emptyMessage }: { items: DetailItem[]; emptyMessage: string }) {
+  if (items.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center">
+        <p className="text-sm text-slate-500">{emptyMessage}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-slate-100 rounded-md border border-slate-200">
+      {items.map((item) => (
+        <Link key={item.key} to={item.to} className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-slate-50">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-slate-950">{item.name}</p>
+            <p className="mt-1 text-xs text-slate-500">{item.type} / {item.detail}</p>
+          </div>
+          {item.status ? <StatusBadge status={item.status} /> : <ArrowRight className="h-4 w-4 shrink-0 text-slate-400" />}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export function DashboardPage() {
+  const [activePanel, setActivePanel] = useState<OverviewPanel | null>(null);
   const { data: clusters, isLoading: loadingClusters } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
@@ -340,6 +381,69 @@ export function DashboardPage() {
   ];
   const alertCount = attentionItems.length;
   const totalResources = clusterList.length + vpsList.length + databaseClusterList.length + nodeList.length;
+  const computeItems: DetailItem[] = [
+    ...clusterList.map((cluster) => ({
+      key: `cluster-${cluster.id}`,
+      name: cluster.name,
+      type: 'Kubernetes',
+      detail: `${cluster.control_plane_count + cluster.worker_count} nodes / ${cluster.kubernetes_version}`,
+      status: cluster.health_status || cluster.status,
+      to: `/clusters/${cluster.id}`,
+    })),
+    ...vpsList.map((vps) => ({
+      key: `vps-${vps.id}`,
+      name: vps.name,
+      type: 'VPS',
+      detail: `${vps.cpu} vCPU / ${Math.round(vps.memory_mb / 1024)} GB RAM / ${vps.disk_gb} GB disk`,
+      status: vps.status,
+      to: `/vps/${vps.id}`,
+    })),
+    ...databaseClusterList.map((cluster) => ({
+      key: `database-${cluster.id}`,
+      name: cluster.name,
+      type: 'Database',
+      detail: `${cluster.nodes?.length ?? 0} nodes / ${cluster.engine} ${cluster.mariadb_version}`,
+      status: cluster.status,
+      to: '/database-clusters',
+    })),
+  ];
+  const infrastructureItems: DetailItem[] = [
+    ...nodeList.map((node) => ({
+      key: `node-${node.id}`,
+      name: node.node_name,
+      type: 'Node',
+      detail: `${node.cpu_count} CPU / ${formatBytes(node.memory_total_bytes)} memory`,
+      status: node.enabled ? node.status : 'disabled',
+      to: '/proxmox',
+    })),
+    ...networkList.map((network) => ({
+      key: `network-${network.id}`,
+      name: network.name,
+      type: 'Network',
+      detail: `${network.cidr} / ${network.bridge}${network.vlan ? ` / VLAN ${network.vlan}` : ''}`,
+      to: '/networks',
+    })),
+  ];
+  const alertItems: DetailItem[] = attentionItems.map((item) => ({ ...item }));
+  const healthItems = alertItems.length > 0 ? alertItems : [...computeItems, ...infrastructureItems];
+
+  const panelTitle = activePanel === 'health'
+    ? 'Overall Health'
+    : activePanel === 'compute'
+      ? 'Compute Resources'
+      : activePanel === 'infrastructure'
+        ? 'Infrastructure'
+        : 'Open Alerts';
+  const panelItems = activePanel === 'health'
+    ? healthItems
+    : activePanel === 'compute'
+      ? computeItems
+      : activePanel === 'infrastructure'
+        ? infrastructureItems
+        : alertItems;
+  const panelEmptyMessage = activePanel === 'alerts'
+    ? 'No failed or unavailable resources.'
+    : 'No resources found for this view.';
 
   return (
     <Layout>
@@ -355,6 +459,7 @@ export function DashboardPage() {
           detail={`${totalResources} tracked resources`}
           icon={alertCount === 0 ? CheckCircle2 : AlertTriangle}
           tone={alertCount === 0 ? 'green' : 'red'}
+          onClick={() => setActivePanel('health')}
         />
         <OverviewCard
           label="Compute Resources"
@@ -362,6 +467,7 @@ export function DashboardPage() {
           detail={`${totalClusterNodes(clusterList) + vpsList.length + totalDatabaseNodes(databaseClusterList)} workload nodes`}
           icon={ServerCog}
           tone="blue"
+          onClick={() => setActivePanel('compute')}
         />
         <OverviewCard
           label="Infrastructure"
@@ -369,6 +475,7 @@ export function DashboardPage() {
           detail={`${networkList.length} networks / ${unavailableNodes.length} node issues`}
           icon={Network}
           tone="slate"
+          onClick={() => setActivePanel('infrastructure')}
         />
         <OverviewCard
           label="Open Alerts"
@@ -376,6 +483,7 @@ export function DashboardPage() {
           detail="Failed or unavailable resources"
           icon={AlertTriangle}
           tone="red"
+          onClick={() => setActivePanel('alerts')}
         />
       </div>
 
@@ -464,6 +572,15 @@ export function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Modal open={activePanel !== null} onClose={() => setActivePanel(null)} title={panelTitle} maxWidth="2xl">
+        {activePanel === 'health' && alertCount === 0 && (
+          <div className="mb-4 rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-800 ring-1 ring-emerald-100">
+            No critical issues are currently tracked. Showing all resources included in the health summary.
+          </div>
+        )}
+        <DetailList items={panelItems} emptyMessage={panelEmptyMessage} />
+      </Modal>
     </Layout>
   );
 }
