@@ -191,6 +191,12 @@ export interface ClusterSummary {
   network_profile_id: number;
   control_plane_count: number;
   worker_count: number;
+  control_plane_cpu?: number;
+  control_plane_ram_mb?: number;
+  control_plane_disk_gb?: number;
+  worker_cpu?: number;
+  worker_ram_mb?: number;
+  worker_disk_gb?: number;
   status: string;
   health_status: string;
   health_checked_at?: string;

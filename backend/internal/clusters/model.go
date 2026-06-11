@@ -204,6 +204,12 @@ type ClusterSummary struct {
 	NetworkProfileID  int64      `json:"network_profile_id"`
 	ControlPlaneCount int        `json:"control_plane_count"`
 	WorkerCount       int        `json:"worker_count"`
+	ControlPlaneCPU   int        `json:"control_plane_cpu"`
+	ControlPlaneRAMMB int        `json:"control_plane_ram_mb"`
+	ControlPlaneDisk  int        `json:"control_plane_disk_gb"`
+	WorkerCPU         int        `json:"worker_cpu"`
+	WorkerRAMMB       int        `json:"worker_ram_mb"`
+	WorkerDisk        int        `json:"worker_disk_gb"`
 	Status            string     `json:"status"`
 	HealthStatus      string     `json:"health_status"`
 	HealthCheckedAt   *time.Time `json:"health_checked_at,omitempty"`
@@ -1559,7 +1565,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 
 func (s *Service) ListClusters() ([]ClusterSummary, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, health_status, health_checked_at, created_at, updated_at
+		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
 		 FROM clusters
 		 ORDER BY created_at DESC`,
 	)
@@ -1579,6 +1585,12 @@ func (s *Service) ListClusters() ([]ClusterSummary, error) {
 			&c.NetworkProfileID,
 			&c.ControlPlaneCount,
 			&c.WorkerCount,
+			&c.ControlPlaneCPU,
+			&c.ControlPlaneRAMMB,
+			&c.ControlPlaneDisk,
+			&c.WorkerCPU,
+			&c.WorkerRAMMB,
+			&c.WorkerDisk,
 			&c.Status,
 			&c.HealthStatus,
 			&c.HealthCheckedAt,
@@ -7293,7 +7305,7 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	var c ClusterSummary
 	err := s.db.QueryRow(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, status, health_status, health_checked_at, created_at, updated_at
+		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
 		 FROM clusters WHERE id = $1`,
 		clusterID,
 	).Scan(
@@ -7304,6 +7316,12 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 		&c.NetworkProfileID,
 		&c.ControlPlaneCount,
 		&c.WorkerCount,
+		&c.ControlPlaneCPU,
+		&c.ControlPlaneRAMMB,
+		&c.ControlPlaneDisk,
+		&c.WorkerCPU,
+		&c.WorkerRAMMB,
+		&c.WorkerDisk,
 		&c.Status,
 		&c.HealthStatus,
 		&c.HealthCheckedAt,

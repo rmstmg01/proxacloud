@@ -74,6 +74,37 @@ function totalClusterNodes(clusters: ClusterSummary[]) {
   return clusters.reduce((sum, cluster) => sum + cluster.control_plane_count + cluster.worker_count, 0);
 }
 
+function totalClusterCPU(clusters: ClusterSummary[]) {
+  return clusters.reduce(
+    (sum, cluster) =>
+      sum +
+      cluster.control_plane_count * (cluster.control_plane_cpu ?? 0) +
+      cluster.worker_count * (cluster.worker_cpu ?? 0),
+    0,
+  );
+}
+
+function totalClusterMemoryGB(clusters: ClusterSummary[]) {
+  const totalMB = clusters.reduce(
+    (sum, cluster) =>
+      sum +
+      cluster.control_plane_count * (cluster.control_plane_ram_mb ?? 0) +
+      cluster.worker_count * (cluster.worker_ram_mb ?? 0),
+    0,
+  );
+  return Math.round(totalMB / 1024);
+}
+
+function totalClusterDiskGB(clusters: ClusterSummary[]) {
+  return clusters.reduce(
+    (sum, cluster) =>
+      sum +
+      cluster.control_plane_count * (cluster.control_plane_disk_gb ?? 0) +
+      cluster.worker_count * (cluster.worker_disk_gb ?? 0),
+    0,
+  );
+}
+
 function totalDatabaseNodes(databaseClusters: DatabaseCluster[]) {
   return databaseClusters.reduce((sum, cluster) => sum + (cluster.nodes?.length ?? 0), 0);
 }
@@ -247,6 +278,9 @@ export function DashboardPage() {
   const failedDatabaseClusters = databaseClusterList.filter((cluster) => isFailedStatus(cluster.status));
   const unavailableNodes = nodeList.filter((node) => !node.enabled || isFailedStatus(node.status));
 
+  const clusterCPU = totalClusterCPU(clusterList);
+  const clusterMemoryGB = totalClusterMemoryGB(clusterList);
+  const clusterDiskGB = totalClusterDiskGB(clusterList);
   const vpsCPU = vpsList.reduce((sum, vps) => sum + vps.cpu, 0);
   const vpsMemoryGB = Math.round(vpsList.reduce((sum, vps) => sum + vps.memory_mb, 0) / 1024);
   const vpsDiskGB = vpsList.reduce((sum, vps) => sum + vps.disk_gb, 0);
@@ -264,6 +298,9 @@ export function DashboardPage() {
     (sum, cluster) => sum + (cluster.nodes?.reduce((nodeSum, node) => nodeSum + node.disk_gb, 0) ?? 0),
     0,
   );
+  const allocatedCPU = clusterCPU + vpsCPU + databaseCPU;
+  const allocatedMemoryGB = clusterMemoryGB + vpsMemoryGB + databaseMemoryGB;
+  const allocatedDiskGB = clusterDiskGB + vpsDiskGB + databaseDiskGB;
   const hostCPU = nodeList.reduce((sum, node) => sum + node.cpu_count, 0);
   const hostMemory = nodeList.reduce((sum, node) => sum + node.memory_total_bytes, 0);
 
@@ -349,13 +386,13 @@ export function DashboardPage() {
         </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <ResourceDashboardCard
-            title="Kubernetes"
-            description="Cluster health, versions, topology, and lifecycle operations."
-            to="/clusters"
-            icon={Server}
-            tone="blue"
-            primary={String(clusterList.length)}
-            secondary={String(readyClusters.length)}
+            title="Nodes"
+            description="Host capacity, enabled nodes, and infrastructure inventory."
+            to="/proxmox"
+            icon={Cpu}
+            tone="slate"
+            primary={String(nodeList.length)}
+            secondary={String(nodeList.length - unavailableNodes.length)}
           />
           <ResourceDashboardCard
             title="VPS"
@@ -367,6 +404,15 @@ export function DashboardPage() {
             secondary={String(runningVPS.length)}
           />
           <ResourceDashboardCard
+            title="Kubernetes"
+            description="Cluster health, versions, topology, and lifecycle operations."
+            to="/clusters"
+            icon={Server}
+            tone="blue"
+            primary={String(clusterList.length)}
+            secondary={String(readyClusters.length)}
+          />
+          <ResourceDashboardCard
             title="Databases"
             description="MariaDB Galera clusters, bootstrap state, and database nodes."
             to="/database-clusters"
@@ -374,15 +420,6 @@ export function DashboardPage() {
             tone="violet"
             primary={String(databaseClusterList.length)}
             secondary={String(readyDatabaseClusters.length)}
-          />
-          <ResourceDashboardCard
-            title="Proxmox Nodes"
-            description="Host capacity, enabled nodes, and infrastructure inventory."
-            to="/proxmox"
-            icon={Cpu}
-            tone="slate"
-            primary={String(nodeList.length)}
-            secondary={String(nodeList.length - unavailableNodes.length)}
           />
         </div>
       </div>
@@ -403,20 +440,20 @@ export function DashboardPage() {
             <CapacityItem
               icon={Cpu}
               label="Allocated CPU"
-              value={`${vpsCPU + databaseCPU} vCPU`}
+              value={`${allocatedCPU} vCPU`}
               detail={`${hostCPU} host CPU`}
             />
             <CapacityItem
               icon={MemoryStick}
               label="Allocated Memory"
-              value={formatMemory(vpsMemoryGB + databaseMemoryGB)}
+              value={formatMemory(allocatedMemoryGB)}
               detail={`${formatBytes(hostMemory)} host memory`}
             />
             <CapacityItem
               icon={HardDrive}
               label="Allocated Disk"
-              value={`${vpsDiskGB + databaseDiskGB} GB`}
-              detail={`${vpsDiskGB} VPS / ${databaseDiskGB} database`}
+              value={`${allocatedDiskGB} GB`}
+              detail={`${clusterDiskGB} K8s / ${vpsDiskGB} VPS / ${databaseDiskGB} DB`}
             />
             <CapacityItem
               icon={Network}
