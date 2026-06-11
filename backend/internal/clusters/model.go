@@ -85,6 +85,7 @@ var ErrClusterNotFound = errors.New("cluster not found")
 var ErrClusterDeleteConfirmation = errors.New("cluster name confirmation does not match")
 var ErrOperationNotFound = errors.New("cluster operation not found")
 var ErrApplicationManifestNotFound = errors.New("application manifest not found")
+var ErrClusterConfigMapNotFound = errors.New("config map not found")
 var ErrSavedManifestNotFound = errors.New("saved manifest not found")
 
 type ProvisionRequest struct {
@@ -3051,6 +3052,44 @@ func (s *Service) CreateGlobalConfigMap(req UpsertClusterConfigMapRequest) (Clus
 	return s.createClusterConfigMap(0, req)
 }
 
+func (s *Service) UpdateGlobalConfigMap(configMapID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
+	req.IsGlobal = true
+	req = normalizeClusterConfigMapRequest(req)
+	if err := validateClusterConfigMapRequest(req); err != nil {
+		return ClusterConfigMapRecord{}, err
+	}
+	dataJSON, err := json.Marshal(req.Data)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("encode config map data: %w", err)
+	}
+	res, err := s.db.Exec(
+		`UPDATE cluster_config_maps
+		 SET name = $2, namespace = $3, description = $4, data = $5, immutable = $6, is_global = TRUE, updated_at = NOW()
+		 WHERE id = $1 AND is_global = TRUE`,
+		configMapID, req.Name, req.Namespace, req.Description, dataJSON, req.Immutable,
+	)
+	if err != nil {
+		return ClusterConfigMapRecord{}, fmt.Errorf("update global config map: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ClusterConfigMapRecord{}, ErrClusterConfigMapNotFound
+	}
+	return s.GetClusterConfigMap(0, configMapID)
+}
+
+func (s *Service) DeleteGlobalConfigMap(configMapID int64) error {
+	res, err := s.db.Exec(`DELETE FROM cluster_config_maps WHERE id = $1 AND is_global = TRUE`, configMapID)
+	if err != nil {
+		return fmt.Errorf("delete global config map: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrClusterConfigMapNotFound
+	}
+	return nil
+}
+
 func (s *Service) createClusterConfigMap(clusterID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
 	req = normalizeClusterConfigMapRequest(req)
 	if err := validateClusterConfigMapRequest(req); err != nil {
@@ -3090,7 +3129,7 @@ func (s *Service) GetClusterConfigMap(clusterID, configMapID int64) (ClusterConf
 	rec, err := scanClusterConfigMap(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ClusterConfigMapRecord{}, ErrApplicationManifestNotFound
+			return ClusterConfigMapRecord{}, ErrClusterConfigMapNotFound
 		}
 		return ClusterConfigMapRecord{}, fmt.Errorf("get cluster config map: %w", err)
 	}
@@ -3098,8 +3137,12 @@ func (s *Service) GetClusterConfigMap(clusterID, configMapID int64) (ClusterConf
 }
 
 func (s *Service) UpdateClusterConfigMap(clusterID, configMapID int64, req UpsertClusterConfigMapRequest) (ClusterConfigMapRecord, error) {
-	if _, err := s.GetClusterConfigMap(clusterID, configMapID); err != nil {
+	rec, err := s.GetClusterConfigMap(clusterID, configMapID)
+	if err != nil {
 		return ClusterConfigMapRecord{}, err
+	}
+	if rec.IsGlobal {
+		return s.UpdateGlobalConfigMap(configMapID, req)
 	}
 	req = normalizeClusterConfigMapRequest(req)
 	if err := validateClusterConfigMapRequest(req); err != nil {
@@ -3122,13 +3165,20 @@ func (s *Service) UpdateClusterConfigMap(clusterID, configMapID int64, req Upser
 }
 
 func (s *Service) DeleteClusterConfigMap(clusterID, configMapID int64) error {
+	rec, err := s.GetClusterConfigMap(clusterID, configMapID)
+	if err != nil {
+		return err
+	}
+	if rec.IsGlobal {
+		return s.DeleteGlobalConfigMap(configMapID)
+	}
 	res, err := s.db.Exec(`DELETE FROM cluster_config_maps WHERE cluster_id = $1 AND id = $2`, clusterID, configMapID)
 	if err != nil {
 		return fmt.Errorf("delete cluster config map: %w", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return ErrApplicationManifestNotFound
+		return ErrClusterConfigMapNotFound
 	}
 	return nil
 }

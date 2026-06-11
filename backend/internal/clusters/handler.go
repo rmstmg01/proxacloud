@@ -748,6 +748,38 @@ func (h *Handler) CreateGlobalConfigMap(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+func (h *Handler) UpdateGlobalConfigMap(w http.ResponseWriter, r *http.Request) {
+	configMapID, err := strconv.ParseInt(chi.URLParam(r, "configMapID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid config map id"})
+		return
+	}
+	var req UpsertClusterConfigMapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateGlobalConfigMap(configMapID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteGlobalConfigMap(w http.ResponseWriter, r *http.Request) {
+	configMapID, err := strconv.ParseInt(chi.URLParam(r, "configMapID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid config map id"})
+		return
+	}
+	if err := h.service.DeleteGlobalConfigMap(configMapID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": configMapID, "deleted": true})
+}
+
 func (h *Handler) UpdateClusterConfigMap(w http.ResponseWriter, r *http.Request) {
 	clusterID, configMapID, ok := parseClusterAndConfigMapIDs(w, r)
 	if !ok {

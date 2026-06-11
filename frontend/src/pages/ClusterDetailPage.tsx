@@ -1410,6 +1410,13 @@ function ConfigMapsTab({ id }: { id: number }) {
     });
   };
 
+  const confirmDelete = (configMap: ClusterConfigMapRecord) => {
+    const typed = window.prompt(`Type ${configMap.name} to delete this ConfigMap.`);
+    if (typed === configMap.name) {
+      deleteMut.mutate(configMap.id);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Card>
@@ -1531,7 +1538,7 @@ function ConfigMapsTab({ id }: { id: number }) {
                         <div className="flex justify-end gap-2">
                           <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(configMap)}>Edit</Button>
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === configMap.id} onClick={() => applyMut.mutate(configMap.id)}>Apply</Button>
-                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === configMap.id} onClick={() => deleteMut.mutate(configMap.id)}>Delete</Button>
+                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === configMap.id} onClick={() => confirmDelete(configMap)}>Delete</Button>
                         </div>
                       </td>
                     </tr>

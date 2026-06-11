@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, FileText } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createClusterConfigMap, createGlobalConfigMap, getClusters, getGlobalConfigMaps } from '../api/clusters';
+import { createClusterConfigMap, createGlobalConfigMap, deleteGlobalConfigMap, getClusters, getGlobalConfigMaps, updateGlobalConfigMap } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
+import type { ClusterConfigMapRecord } from '../types';
 
 function parseKeyValues(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -26,6 +27,7 @@ export function ClusterConfigMapsPage() {
   const queryClient = useQueryClient();
   const { data: clusters, isLoading, error } = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
   const { data: globalConfigMaps, error: globalConfigMapsError } = useQuery({ queryKey: ['global-config-maps'], queryFn: getGlobalConfigMaps });
+  const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -36,7 +38,33 @@ export function ClusterConfigMapsPage() {
     data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
   });
 
-  const createMut = useMutation({
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      cluster_id: 0,
+      name: '',
+      namespace: 'default',
+      description: '',
+      immutable: false,
+      is_global: false,
+      data_raw: 'APP_ENV=production\nLOG_LEVEL=info',
+    });
+  };
+
+  const startEdit = (configMap: ClusterConfigMapRecord) => {
+    setEditing(configMap);
+    setForm({
+      cluster_id: 0,
+      name: configMap.name,
+      namespace: configMap.namespace,
+      description: configMap.description || '',
+      immutable: configMap.immutable,
+      is_global: true,
+      data_raw: Object.entries(configMap.data || {}).map(([key, value]) => `${key}=${value}`).join('\n'),
+    });
+  };
+
+  const saveMut = useMutation({
     mutationFn: () => {
       const body = {
         name: form.name.trim(),
@@ -46,12 +74,29 @@ export function ClusterConfigMapsPage() {
         is_global: form.is_global || form.cluster_id <= 0,
         data: parseKeyValues(form.data_raw),
       };
+      if (editing) return updateGlobalConfigMap(editing.id, { ...body, is_global: true });
       return body.is_global ? createGlobalConfigMap(body) : createClusterConfigMap(form.cluster_id, body);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
+      resetForm();
     },
   });
+
+  const deleteMut = useMutation({
+    mutationFn: (configMapID: number) => deleteGlobalConfigMap(configMapID),
+    onSuccess: (_data, configMapID) => {
+      queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
+      if (editing?.id === configMapID) resetForm();
+    },
+  });
+
+  const confirmDelete = (configMap: ClusterConfigMapRecord) => {
+    const typed = window.prompt(`Type ${configMap.name} to delete this global ConfigMap.`);
+    if (typed === configMap.name) {
+      deleteMut.mutate(configMap.id);
+    }
+  };
 
   return (
     <Layout>
@@ -62,11 +107,11 @@ export function ClusterConfigMapsPage() {
       {clusters && (
         <div className="space-y-6">
           <Card>
-            <CardHeader><CardTitle>Create ConfigMap</CardTitle></CardHeader>
+            <CardHeader><CardTitle>{editing ? 'Edit Global ConfigMap' : 'Create ConfigMap'}</CardTitle></CardHeader>
             <CardContent>
-              <form onSubmit={(e) => { e.preventDefault(); createMut.mutate(); }} className="space-y-4">
+              <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
-                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })}>
+                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })} disabled={!!editing}>
                     <option value={0}>No target cluster yet</option>
                     {clusters.map((cluster) => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}
                   </Select>
@@ -88,24 +133,27 @@ export function ClusterConfigMapsPage() {
                   <span className="text-sm text-slate-700">Immutable Kubernetes ConfigMap</span>
                 </label>
                 <label className="flex items-center gap-3">
-                  <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+                  <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} disabled={!!editing} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
                   <span className="text-sm text-slate-700">Make available to all clusters</span>
                 </label>
-                <Button type="submit" loading={createMut.isPending}>Create ConfigMap</Button>
-                {createMut.data && (
-                  <Alert variant="success" title="ConfigMap created">
-                    {createMut.data.is_global ? (
-                      <span>{createMut.data.name} is listed below and available to all clusters.</span>
-                    ) : createMut.data.cluster_id ? (
-                      <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${createMut.data.cluster_id}?tab=configmaps`}>
-                        Open {createMut.data.name} in cluster ConfigMaps
+                <div className="flex flex-wrap gap-3">
+                  <Button type="submit" loading={saveMut.isPending}>{editing ? 'Save ConfigMap' : 'Create ConfigMap'}</Button>
+                  {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+                </div>
+                {saveMut.data && (
+                  <Alert variant="success" title={editing ? 'ConfigMap updated' : 'ConfigMap created'}>
+                    {saveMut.data.is_global ? (
+                      <span>{saveMut.data.name} is listed below and available to all clusters.</span>
+                    ) : saveMut.data.cluster_id ? (
+                      <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${saveMut.data.cluster_id}?tab=configmaps`}>
+                        Open {saveMut.data.name} in cluster ConfigMaps
                       </Link>
                     ) : (
-                      <span>{createMut.data.name} is available globally and can be selected during app deployment.</span>
+                      <span>{saveMut.data.name} is available globally and can be selected during app deployment.</span>
                     )}
                   </Alert>
                 )}
-                {createMut.error && <ErrorMessage error={createMut.error} />}
+                {saveMut.error && <ErrorMessage error={saveMut.error} />}
               </form>
             </CardContent>
           </Card>
@@ -132,11 +180,24 @@ export function ClusterConfigMapsPage() {
                             </p>
                           </div>
                         </div>
-                        <span className="text-xs font-medium text-emerald-700">Global</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-emerald-700">Global</span>
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(configMap)}>Edit</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="danger"
+                            loading={deleteMut.isPending && deleteMut.variables === configMap.id}
+                            onClick={() => confirmDelete(configMap)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
+                {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
               </div>
 
               {clusters.length === 0 ? (

@@ -276,6 +276,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/secrets", clusterHandler.CreateGlobalSecret)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/config-maps", clusterHandler.ListGlobalConfigMaps)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/config-maps", clusterHandler.CreateGlobalConfigMap)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/config-maps/{configMapID}", clusterHandler.UpdateGlobalConfigMap)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/config-maps/{configMapID}", clusterHandler.DeleteGlobalConfigMap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/image-pull-secrets", clusterHandler.CreateGlobalImagePullSecret)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/manifests", clusterHandler.ListGlobalSavedManifests)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/manifests", clusterHandler.CreateGlobalSavedManifest)

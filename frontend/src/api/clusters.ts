@@ -402,6 +402,21 @@ export const createGlobalConfigMap = (
   },
 ) => client.post<ClusterConfigMapRecord>('/config-maps', body).then((r) => r.data);
 
+export const updateGlobalConfigMap = (
+  configMapID: number,
+  body: {
+    name: string;
+    namespace: string;
+    description: string;
+    immutable: boolean;
+    is_global: boolean;
+    data: Record<string, string>;
+  },
+) => client.put<ClusterConfigMapRecord>(`/config-maps/${configMapID}`, body).then((r) => r.data);
+
+export const deleteGlobalConfigMap = (configMapID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/config-maps/${configMapID}`).then((r) => r.data);
+
 export const updateClusterConfigMap = (
   id: number,
   configMapID: number,
