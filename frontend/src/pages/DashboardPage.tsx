@@ -351,17 +351,10 @@ export function DashboardPage() {
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <OverviewCard
           label="Overall Health"
-          value={alertCount === 0 ? 'Healthy' : 'Action Needed'}
+          value={alertCount === 0 ? 'OK' : 'Action Needed'}
           detail={`${totalResources} tracked resources`}
           icon={alertCount === 0 ? CheckCircle2 : AlertTriangle}
           tone={alertCount === 0 ? 'green' : 'red'}
-        />
-        <OverviewCard
-          label="Open Alerts"
-          value={alertCount}
-          detail="Failed or unavailable resources"
-          icon={AlertTriangle}
-          tone={alertCount > 0 ? 'red' : 'slate'}
         />
         <OverviewCard
           label="Compute Resources"
@@ -376,6 +369,13 @@ export function DashboardPage() {
           detail={`${networkList.length} networks / ${unavailableNodes.length} node issues`}
           icon={Network}
           tone="slate"
+        />
+        <OverviewCard
+          label="Open Alerts"
+          value={alertCount}
+          detail="Failed or unavailable resources"
+          icon={AlertTriangle}
+          tone="red"
         />
       </div>
 
