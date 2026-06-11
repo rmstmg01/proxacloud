@@ -61,6 +61,7 @@ const defaultRoutes = [
 
 const initialForm = {
   cluster_id: '',
+  is_global: false,
   name: 'pscs-cloudflare',
   namespace: 'cloudflare-tunnel',
   deployment_name: 'cloudflared',
@@ -197,6 +198,7 @@ export function CloudflareTunnelsPage() {
     event.preventDefault();
     createMutation.mutate({
       cluster_id: Number(form.cluster_id),
+      is_global: form.is_global,
       name: form.name.trim(),
       namespace: form.namespace.trim(),
       deployment_name: form.deployment_name.trim(),
@@ -293,6 +295,7 @@ export function CloudflareTunnelsPage() {
                     <tr className="border-b border-slate-200 bg-slate-50">
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Cluster</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Scope</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Mode</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Replicas</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
@@ -306,7 +309,8 @@ export function CloudflareTunnelsPage() {
                           <p className="font-medium text-slate-900">{tunnel.name}</p>
                           <p className="mt-0.5 text-xs text-slate-500">{tunnel.namespace}/{tunnel.deployment_name}</p>
                         </td>
-                        <td className="px-6 py-4 text-slate-600">{tunnel.cluster_name || tunnel.cluster_id}</td>
+                        <td className="px-6 py-4 text-slate-600">{tunnel.is_global ? 'Not attached' : (tunnel.cluster_name || tunnel.cluster_id)}</td>
+                        <td className="px-6 py-4 text-slate-600">{tunnel.is_global ? 'Global' : 'Cluster'}</td>
                         <td className="px-6 py-4 text-slate-600">
                           {tunnel.routing_mode === 'traefik' ? 'Traefik' : 'Direct'} / {tunnel.provisioning_mode === 'cloudflare_api' ? 'API' : 'Manual'}
                         </td>
@@ -328,6 +332,7 @@ export function CloudflareTunnelsPage() {
                               size="sm"
                               onClick={() => deployMutation.mutate(tunnel.id)}
                               loading={deployMutation.isPending && deployMutation.variables === tunnel.id}
+                              disabled={tunnel.is_global}
                             >
                               <Rocket className="h-3.5 w-3.5" />
                               Redeploy
@@ -408,6 +413,7 @@ function DeployTunnelForm({
 }) {
   const apiMode = form.provisioning_mode === 'cloudflare_api';
   const directMode = form.routing_mode === 'direct';
+  const globalMode = form.is_global;
   return (
     <Card className="mb-6">
       <CardHeader>
@@ -422,7 +428,7 @@ function DeployTunnelForm({
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Select label="Cluster" value={form.cluster_id} onChange={(e) => onChange('cluster_id', e.target.value)} required>
+            <Select label="Cluster" value={form.cluster_id} onChange={(e) => onChange('cluster_id', e.target.value)} required={!globalMode} disabled={globalMode}>
               <option value="">Select cluster</option>
               {clusters.map((cluster) => (
                 <option key={cluster.id} value={cluster.id}>
@@ -433,6 +439,11 @@ function DeployTunnelForm({
             <Input label="Tunnel name" value={form.name} onChange={(e) => onChange('name', e.target.value)} required />
             <Input label="Replicas" type="number" min="2" value={form.replicas} onChange={(e) => onChange('replicas', e.target.value)} required />
           </div>
+
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={form.is_global} onChange={(e) => onChange('is_global', e.target.checked)} />
+            Make available as a global tunnel template
+          </label>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <Input label="Namespace" value={form.namespace} onChange={(e) => onChange('namespace', e.target.value)} required />
@@ -515,7 +526,7 @@ function DeployTunnelForm({
 
           <div className="flex flex-wrap gap-4 border-t border-slate-100 pt-4">
             <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={form.apply} onChange={(e) => onChange('apply', e.target.checked)} />
+              <input type="checkbox" checked={form.apply && !globalMode} onChange={(e) => onChange('apply', e.target.checked)} disabled={globalMode} />
               Deploy to Kubernetes now
             </label>
             {apiMode && (

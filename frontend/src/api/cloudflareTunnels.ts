@@ -22,6 +22,7 @@ export interface CloudflareTunnel {
   id: number;
   cluster_id: number;
   cluster_name?: string;
+  is_global: boolean;
   name: string;
   namespace: string;
   deployment_name: string;
@@ -61,6 +62,7 @@ export interface CloudflareTunnelEvent {
 
 export interface CreateCloudflareTunnelRequest {
   cluster_id: number;
+  is_global: boolean;
   name: string;
   namespace: string;
   deployment_name: string;

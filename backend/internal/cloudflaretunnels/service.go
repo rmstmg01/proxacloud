@@ -523,6 +523,8 @@ func scanTunnel(row tunnelScanner) (tunnelRecord, error) {
 	}
 	if clusterID.Valid {
 		rec.ClusterID = clusterID.Int64
+	} else {
+		rec.IsGlobal = true
 	}
 	if rec.LastApplied.Valid {
 		appliedAt := rec.LastApplied.Time
@@ -553,6 +555,10 @@ func normalizeCreateRequest(req CreateTunnelRequest) (CreateTunnelRequest, error
 	req.Name = strings.TrimSpace(req.Name)
 	req.Namespace = defaultString(req.Namespace, "cloudflare-tunnel")
 	req.DeploymentName = defaultString(req.DeploymentName, "cloudflared")
+	if req.IsGlobal {
+		req.ClusterID = 0
+		req.Apply = false
+	}
 	req.RoutingMode = defaultString(req.RoutingMode, RoutingModeTraefik)
 	req.ProvisioningMode = defaultString(req.ProvisioningMode, ProvisioningModeManualToken)
 	req.CloudflareAccountID = strings.TrimSpace(req.CloudflareAccountID)

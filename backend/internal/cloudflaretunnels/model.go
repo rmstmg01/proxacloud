@@ -27,6 +27,7 @@ type CloudflareTunnel struct {
 	ID                   int64                   `json:"id"`
 	ClusterID            int64                   `json:"cluster_id"`
 	ClusterName          string                  `json:"cluster_name,omitempty"`
+	IsGlobal             bool                    `json:"is_global"`
 	Name                 string                  `json:"name"`
 	Namespace            string                  `json:"namespace"`
 	DeploymentName       string                  `json:"deployment_name"`
@@ -78,6 +79,7 @@ type CloudflareTunnelEvent struct {
 
 type CreateTunnelRequest struct {
 	ClusterID            int64                        `json:"cluster_id"`
+	IsGlobal             bool                         `json:"is_global"`
 	Name                 string                       `json:"name"`
 	Namespace            string                       `json:"namespace"`
 	DeploymentName       string                       `json:"deployment_name"`
