@@ -309,6 +309,9 @@ export const deployApp = (
 export const getClusterSecrets = (id: number) =>
   client.get<ClusterSecretRecord[]>(`/clusters/${id}/secrets`).then((r) => r.data);
 
+export const getGlobalSecrets = () =>
+  client.get<ClusterSecretRecord[]>('/secrets').then((r) => r.data);
+
 export const createClusterSecret = (
   id: number,
   body: {
@@ -339,6 +342,25 @@ export const createGlobalSecret = (
     data: Record<string, string>;
   },
 ) => client.post<ClusterSecretRecord>('/secrets', body).then((r) => r.data);
+
+export const updateGlobalSecret = (
+  secretID: number,
+  body: {
+    name: string;
+    namespace: string;
+    provider: ClusterSecretProvider;
+    type: string;
+    description: string;
+    external_ref: string;
+    provider_config: Record<string, unknown>;
+    immutable: boolean;
+    is_global: boolean;
+    data?: Record<string, string>;
+  },
+) => client.put<ClusterSecretRecord>(`/secrets/${secretID}`, body).then((r) => r.data);
+
+export const deleteGlobalSecret = (secretID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/secrets/${secretID}`).then((r) => r.data);
 
 export const updateClusterSecret = (
   id: number,

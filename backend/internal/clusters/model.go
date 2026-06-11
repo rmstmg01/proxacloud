@@ -85,6 +85,7 @@ var ErrClusterNotFound = errors.New("cluster not found")
 var ErrClusterDeleteConfirmation = errors.New("cluster name confirmation does not match")
 var ErrOperationNotFound = errors.New("cluster operation not found")
 var ErrApplicationManifestNotFound = errors.New("application manifest not found")
+var ErrClusterSecretNotFound = errors.New("secret not found")
 var ErrClusterConfigMapNotFound = errors.New("config map not found")
 var ErrSavedManifestNotFound = errors.New("saved manifest not found")
 
@@ -2789,6 +2790,30 @@ func (s *Service) ListClusterSecrets(clusterID int64) ([]ClusterSecretRecord, er
 	return out, nil
 }
 
+func (s *Service) ListGlobalSecrets() ([]ClusterSecretRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, provider, type, description, external_ref,
+		        provider_config, immutable, is_global, last_applied_at, created_at, updated_at
+		 FROM cluster_secrets
+		 WHERE is_global = TRUE
+		 ORDER BY namespace ASC, name ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list global secrets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterSecretRecord, 0)
+	for rows.Next() {
+		rec, scanErr := s.scanClusterSecret(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, nil
+}
+
 func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return ClusterSecretRecord{}, err
@@ -2799,6 +2824,50 @@ func (s *Service) CreateClusterSecret(clusterID int64, req UpsertClusterSecretRe
 func (s *Service) CreateGlobalSecret(req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
 	req.IsGlobal = true
 	return s.createClusterSecret(0, req)
+}
+
+func (s *Service) UpdateGlobalSecret(secretID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
+	req.IsGlobal = true
+	req = normalizeClusterSecretRequest(req)
+	if err := validateClusterSecretRequest(req, false); err != nil {
+		return ClusterSecretRecord{}, err
+	}
+	configJSON, err := json.Marshal(req.ProviderConfig)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("encode provider config: %w", err)
+	}
+	res, err := s.db.Exec(
+		`UPDATE cluster_secrets
+		 SET name = $2, namespace = $3, provider = $4, type = $5, description = $6,
+		     external_ref = $7, provider_config = $8, immutable = $9, is_global = TRUE, updated_at = NOW()
+		 WHERE id = $1 AND is_global = TRUE`,
+		secretID, req.Name, req.Namespace, req.Provider, req.Type, req.Description, req.ExternalRef, configJSON, req.Immutable,
+	)
+	if err != nil {
+		return ClusterSecretRecord{}, fmt.Errorf("update global secret: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ClusterSecretRecord{}, ErrClusterSecretNotFound
+	}
+	if req.Data != nil {
+		if err := s.replaceClusterSecretItems(0, secretID, req.Name, req.Data); err != nil {
+			return ClusterSecretRecord{}, err
+		}
+	}
+	return s.GetClusterSecret(0, secretID)
+}
+
+func (s *Service) DeleteGlobalSecret(secretID int64) error {
+	res, err := s.db.Exec(`DELETE FROM cluster_secrets WHERE id = $1 AND is_global = TRUE`, secretID)
+	if err != nil {
+		return fmt.Errorf("delete global secret: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrClusterSecretNotFound
+	}
+	return nil
 }
 
 func (s *Service) createClusterSecret(clusterID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
@@ -2846,7 +2915,7 @@ func (s *Service) GetClusterSecret(clusterID, secretID int64) (ClusterSecretReco
 	rec, err := s.scanClusterSecret(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ClusterSecretRecord{}, ErrApplicationManifestNotFound
+			return ClusterSecretRecord{}, ErrClusterSecretNotFound
 		}
 		return ClusterSecretRecord{}, fmt.Errorf("get cluster secret: %w", err)
 	}
@@ -2854,8 +2923,12 @@ func (s *Service) GetClusterSecret(clusterID, secretID int64) (ClusterSecretReco
 }
 
 func (s *Service) UpdateClusterSecret(clusterID, secretID int64, req UpsertClusterSecretRequest) (ClusterSecretRecord, error) {
-	if _, err := s.GetClusterSecret(clusterID, secretID); err != nil {
+	rec, err := s.GetClusterSecret(clusterID, secretID)
+	if err != nil {
 		return ClusterSecretRecord{}, err
+	}
+	if rec.IsGlobal {
+		return s.UpdateGlobalSecret(secretID, req)
 	}
 	req = normalizeClusterSecretRequest(req)
 	if err := validateClusterSecretRequest(req, false); err != nil {
@@ -2884,13 +2957,20 @@ func (s *Service) UpdateClusterSecret(clusterID, secretID int64, req UpsertClust
 }
 
 func (s *Service) DeleteClusterSecret(clusterID, secretID int64) error {
+	rec, err := s.GetClusterSecret(clusterID, secretID)
+	if err != nil {
+		return err
+	}
+	if rec.IsGlobal {
+		return s.DeleteGlobalSecret(secretID)
+	}
 	res, err := s.db.Exec(`DELETE FROM cluster_secrets WHERE cluster_id = $1 AND id = $2`, clusterID, secretID)
 	if err != nil {
 		return fmt.Errorf("delete cluster secret: %w", err)
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return ErrApplicationManifestNotFound
+		return ErrClusterSecretNotFound
 	}
 	return nil
 }

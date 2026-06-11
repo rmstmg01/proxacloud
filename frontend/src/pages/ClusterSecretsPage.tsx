@@ -1,15 +1,15 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, KeyRound } from 'lucide-react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { createClusterSecret, createGlobalSecret, getClusters } from '../api/clusters';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createClusterSecret, createGlobalSecret, deleteGlobalSecret, getClusters, getGlobalSecrets, updateGlobalSecret } from '../api/clusters';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
-import type { ClusterSecretProvider } from '../types';
+import type { ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
 const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
   { value: 'native', label: 'Native encrypted DB' },
@@ -43,7 +43,10 @@ function providerDefaults(provider: ClusterSecretProvider): Record<string, unkno
 }
 
 export function ClusterSecretsPage() {
+  const queryClient = useQueryClient();
   const { data: clusters, isLoading, error } = useQuery({ queryKey: ['clusters'], queryFn: getClusters });
+  const { data: globalSecrets, error: globalSecretsError } = useQuery({ queryKey: ['global-secrets'], queryFn: getGlobalSecrets });
+  const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
   const [form, setForm] = useState({
     cluster_id: 0,
     name: '',
@@ -58,9 +61,45 @@ export function ClusterSecretsPage() {
     data_raw: 'USERNAME=\nPASSWORD=',
   });
 
-  const createMut = useMutation({
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      cluster_id: 0,
+      name: '',
+      namespace: 'default',
+      provider: 'native',
+      type: 'Opaque',
+      description: '',
+      external_ref: '',
+      provider_config_raw: '{}',
+      immutable: false,
+      is_global: false,
+      data_raw: 'USERNAME=\nPASSWORD=',
+    });
+  };
+
+  const startEdit = (secret: ClusterSecretRecord) => {
+    setEditing(secret);
+    setForm({
+      cluster_id: 0,
+      name: secret.name,
+      namespace: secret.namespace,
+      provider: secret.provider as ClusterSecretProvider,
+      type: secret.type,
+      description: secret.description || '',
+      external_ref: secret.external_ref || '',
+      provider_config_raw: JSON.stringify(secret.provider_config || providerDefaults(secret.provider as ClusterSecretProvider), null, 2),
+      immutable: secret.immutable,
+      is_global: true,
+      data_raw: secret.keys.map((key) => `${key}=`).join('\n'),
+    });
+  };
+
+  const saveMut = useMutation({
     mutationFn: async () => {
       const provider_config = JSON.parse(form.provider_config_raw || '{}');
+      const parsedData = parseKeyValues(form.data_raw);
+      const hasReplacementValues = Object.values(parsedData).some((value) => value.length > 0);
       const body = {
         name: form.name.trim(),
         namespace: form.namespace.trim() || 'default',
@@ -71,11 +110,33 @@ export function ClusterSecretsPage() {
         provider_config,
         immutable: form.immutable,
         is_global: form.is_global || form.cluster_id <= 0,
-        data: parseKeyValues(form.data_raw),
+        data: parsedData,
       };
-      return form.cluster_id > 0 ? createClusterSecret(form.cluster_id, body) : createGlobalSecret(body);
+      if (editing) {
+        return updateGlobalSecret(editing.id, { ...body, is_global: true, data: hasReplacementValues ? parsedData : undefined });
+      }
+      return body.is_global ? createGlobalSecret(body) : createClusterSecret(form.cluster_id, body);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
+      resetForm();
     },
   });
+
+  const deleteMut = useMutation({
+    mutationFn: (secretID: number) => deleteGlobalSecret(secretID),
+    onSuccess: (_data, secretID) => {
+      queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
+      if (editing?.id === secretID) resetForm();
+    },
+  });
+
+  const confirmDelete = (secret: ClusterSecretRecord) => {
+    const typed = window.prompt(`Type ${secret.name} to delete this global Secret.`);
+    if (typed === secret.name) {
+      deleteMut.mutate(secret.id);
+    }
+  };
 
   const onProviderChange = (provider: ClusterSecretProvider) => {
     setForm((prev) => ({
@@ -90,14 +151,15 @@ export function ClusterSecretsPage() {
       <PageHeader title="Secrets" description="Create secrets directly or manage them by cluster" />
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
+      {globalSecretsError && <ErrorMessage error={globalSecretsError} />}
       {clusters && (
         <div className="space-y-6">
           <Card>
-            <CardHeader><CardTitle>Create Secret</CardTitle></CardHeader>
+            <CardHeader><CardTitle>{editing ? 'Edit Global Secret' : 'Create Secret'}</CardTitle></CardHeader>
             <CardContent>
-              <form onSubmit={(e) => { e.preventDefault(); createMut.mutate(); }} className="space-y-4">
+              <form onSubmit={(e) => { e.preventDefault(); saveMut.mutate(); }} className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
-                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })}>
+                  <Select label="Target cluster" value={form.cluster_id} onChange={(e) => setForm({ ...form, cluster_id: Number(e.target.value) })} disabled={!!editing}>
                     <option value={0}>No target cluster yet</option>
                     {clusters.map((cluster) => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}
                   </Select>
@@ -144,22 +206,27 @@ export function ClusterSecretsPage() {
                   <span className="text-sm text-slate-700">Immutable Kubernetes Secret</span>
                 </label>
                 <label className="flex items-center gap-3">
-                  <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+                  <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} disabled={!!editing} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
                   <span className="text-sm text-slate-700">Make available to all clusters</span>
                 </label>
-                <Button type="submit" loading={createMut.isPending}>Create Secret</Button>
-                {createMut.data && (
-                  <Alert variant="success" title="Secret created">
-                    {createMut.data.cluster_id ? (
-                      <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${createMut.data.cluster_id}?tab=secrets`}>
-                        Open {createMut.data.name} in cluster secrets
+                <div className="flex flex-wrap gap-3">
+                  <Button type="submit" loading={saveMut.isPending}>{editing ? 'Save Secret' : 'Create Secret'}</Button>
+                  {editing && <Button type="button" variant="secondary" onClick={resetForm}>Cancel</Button>}
+                </div>
+                {saveMut.data && (
+                  <Alert variant="success" title={editing ? 'Secret updated' : 'Secret created'}>
+                    {saveMut.data.is_global ? (
+                      <span>{saveMut.data.name} is listed below and available to all clusters.</span>
+                    ) : saveMut.data.cluster_id ? (
+                      <Link className="text-indigo-600 hover:text-indigo-700" to={`/clusters/${saveMut.data.cluster_id}?tab=secrets`}>
+                        Open {saveMut.data.name} in cluster secrets
                       </Link>
                     ) : (
-                      <span>{createMut.data.name} is available globally and can be selected during app deployment.</span>
+                      <span>{saveMut.data.name} is available globally and can be selected during app deployment.</span>
                     )}
                   </Alert>
                 )}
-                {createMut.error && <ErrorMessage error={createMut.error} />}
+                {saveMut.error && <ErrorMessage error={saveMut.error} />}
               </form>
             </CardContent>
           </Card>
@@ -167,6 +234,45 @@ export function ClusterSecretsPage() {
           <Card>
             <CardHeader><CardTitle>Manage Existing Secrets</CardTitle></CardHeader>
             <CardContent>
+              <div className="mb-6">
+                <p className="text-sm font-medium text-slate-900">Global Secrets</p>
+                {!globalSecrets?.length ? (
+                  <p className="mt-2 text-sm text-slate-400">No global Secrets yet.</p>
+                ) : (
+                  <div className="mt-3 divide-y divide-slate-100 border-y border-slate-100">
+                    {globalSecrets.map((secret) => (
+                      <div key={secret.id} className="flex items-center justify-between gap-4 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="h-9 w-9 rounded-md bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                            <KeyRound className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">{secret.name}</p>
+                            <p className="text-xs text-slate-500">
+                              namespace: {secret.namespace} - provider: {secret.provider} - keys: {secret.keys.length}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-indigo-700">Global</span>
+                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="danger"
+                            loading={deleteMut.isPending && deleteMut.variables === secret.id}
+                            onClick={() => confirmDelete(secret)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
+              </div>
+
               {clusters.length === 0 ? (
                 <p className="text-sm text-slate-400">No clusters available.</p>
               ) : (

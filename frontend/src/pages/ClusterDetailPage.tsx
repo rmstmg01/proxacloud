@@ -1151,6 +1151,13 @@ function SecretsTab({ id }: { id: number }) {
     });
   };
 
+  const confirmDelete = (secret: ClusterSecretRecord) => {
+    const typed = window.prompt(`Type ${secret.name} to delete this Secret.`);
+    if (typed === secret.name) {
+      deleteMut.mutate(secret.id);
+    }
+  };
+
   const onProviderChange = (provider: ClusterSecretProvider) => {
     setForm((prev) => ({
       ...prev,
@@ -1308,7 +1315,7 @@ function SecretsTab({ id }: { id: number }) {
                         <div className="flex justify-end gap-2">
                           <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === secret.id} onClick={() => applyMut.mutate(secret.id)}>Apply</Button>
-                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => deleteMut.mutate(secret.id)}>Delete</Button>
+                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => confirmDelete(secret)}>Delete</Button>
                         </div>
                       </td>
                     </tr>

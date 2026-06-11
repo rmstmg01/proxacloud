@@ -585,6 +585,15 @@ func (h *Handler) ListClusterSecrets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListGlobalSecrets(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.service.ListGlobalSecrets()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) CreateClusterSecret(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -616,6 +625,38 @@ func (h *Handler) CreateGlobalSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateGlobalSecret(w http.ResponseWriter, r *http.Request) {
+	secretID, err := strconv.ParseInt(chi.URLParam(r, "secretID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid secret id"})
+		return
+	}
+	var req UpsertClusterSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateGlobalSecret(secretID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteGlobalSecret(w http.ResponseWriter, r *http.Request) {
+	secretID, err := strconv.ParseInt(chi.URLParam(r, "secretID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid secret id"})
+		return
+	}
+	if err := h.service.DeleteGlobalSecret(secretID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": secretID, "deleted": true})
 }
 
 func (h *Handler) UpdateClusterSecret(w http.ResponseWriter, r *http.Request) {
