@@ -33,8 +33,13 @@ export const createVPSCloudInitImage = (body: {
   detected_node_name?: string;
 }) => client.post<VPSCloudInitImage>('/vps/cloud-init-images', body).then((r) => r.data);
 
-export const discoverVPSCloudInitImages = (nodeName: string) =>
-  client.post<VPSCloudInitImage[]>('/vps/cloud-init-images/discover', { node_name: nodeName }).then((r) => r.data);
+export const discoverVPSCloudInitImages = (credentialID: number, nodeName: string) =>
+  client
+    .post<VPSCloudInitImage[]>('/vps/cloud-init-images/discover', {
+      proxmox_credential_id: credentialID,
+      node_name: nodeName,
+    })
+    .then((r) => r.data);
 
 export const createVPSInstance = (body: {
   name: string;

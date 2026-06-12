@@ -230,13 +230,11 @@ Copy `.env.example` to `.env` and update values for your environment.
 | `TERRAFORM_WORKDIR` | `infra/terraform/runs` | Terraform run/workspace directory |
 | `TERRAFORM_PLUGIN_DIR` | `/terraform-providers` | Terraform provider plugin directory |
 | `TERRAFORM_AUTO_APPLY` | `false` | Allow backend-triggered Terraform apply |
-| `VPS_CLOUD_IMAGE_DIR` | `/var/lib/vz/template/cloud-images` | Backend-visible directory scanned for VPS cloud images |
 | `ANSIBLE_BINARY` | `ansible-playbook` | Ansible executable |
 | `ANSIBLE_WORKDIR` | `infra/ansible/runs` | Ansible run/workspace directory |
 | `ANSIBLE_AUTO_APPLY` | `false` | Allow backend-triggered Ansible execution |
 | `OPERATIONS_WORKDIR` | `data/operations/runs` | Generated Kubernetes operation manifests and scripts |
 | `KUBECONFIG_DIR` | `/root/.kube` | Host kubeconfig directory mounted into backend and kubectl-runner |
-| `VPS_CLOUD_IMAGE_HOST_DIR` | `/var/lib/vz/template/cloud-images` | Host directory mounted into the backend for VPS cloud-image discovery in Docker Compose |
 | `JWT_SECRET` | `change-me-in-prod` | JWT signing secret |
 | `SECRET_ENCRYPTION_KEY` | `dev-only-change-me-secret-key` | Encryption key for stored secrets |
 | `JWT_TTL_MINUTES` | `120` | JWT lifetime |

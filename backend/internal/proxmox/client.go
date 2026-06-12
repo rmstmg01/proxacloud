@@ -99,6 +99,58 @@ func (c *Client) DiscoverNodes(cred Credential) ([]Node, error) {
 	return nodes, nil
 }
 
+func (c *Client) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	storageID = strings.TrimSpace(storageID)
+	content = strings.TrimSpace(content)
+	if proxmoxNodeName == "" {
+		return nil, errors.New("proxmox node name is required")
+	}
+	if storageID == "" {
+		return nil, errors.New("storage id is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return nil, fmt.Errorf("parse endpoint: %w", err)
+	}
+
+	httpClient := c.httpClient(cred)
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "storage", storageID, "content")
+	if content != "" {
+		query := reqURL.Query()
+		query.Set("content", content)
+		reqURL.RawQuery = query.Encode()
+	}
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create storage content request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request proxmox storage content: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("proxmox storage content api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data []StorageContent `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode proxmox storage content response: %w", err)
+	}
+	return payload.Data, nil
+}
+
 func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)

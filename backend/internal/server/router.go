@@ -107,7 +107,6 @@ func NewApp() (*App, error) {
 		secretStore,
 		terraformRunner,
 		cfg.TerraformAutoApply,
-		cfg.VPSCloudImageDir,
 	)
 	containerService := containers.NewService(
 		database,

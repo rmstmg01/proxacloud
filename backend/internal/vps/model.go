@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -44,6 +45,7 @@ type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
+	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 }
 
 type SSHKeyPairStore interface {
@@ -59,7 +61,6 @@ type Service struct {
 	secrets            secrets.Store
 	terraformRunner    *terraform.Runner
 	autoApply          bool
-	cloudImageDir      string
 }
 
 type CloudInitImage struct {
@@ -162,11 +163,7 @@ type ActionResponse struct {
 	Warnings []string `json:"warnings"`
 }
 
-func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool, cloudImageDir string) *Service {
-	cloudImageDir = strings.TrimSpace(cloudImageDir)
-	if cloudImageDir == "" {
-		cloudImageDir = "/var/lib/vz/template/cloud-images"
-	}
+func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool) *Service {
 	return &Service{
 		db:                 db,
 		networks:           networkStore,
@@ -176,7 +173,6 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 		secrets:            secretStore,
 		terraformRunner:    terraformRunner,
 		autoApply:          autoApply,
-		cloudImageDir:      cloudImageDir,
 	}
 }
 
@@ -589,38 +585,45 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	return image, nil
 }
 
-func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
-	entries, err := os.ReadDir(s.cloudImageDir)
+func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudInitImage, error) {
+	nodeName = strings.TrimSpace(nodeName)
+	if credentialID <= 0 {
+		return nil, errors.New("proxmox credential is required")
+	}
+	if nodeName == "" {
+		return nil, errors.New("proxmox node name is required")
+	}
+	if err := s.validateNode(credentialID, nodeName); err != nil {
+		return nil, err
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(credentialID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("cloud image directory %s is not available to the backend. Mount the Proxmox node cloud image directory into the backend container/host or set VPS_CLOUD_IMAGE_DIR to the path that is visible from the backend", s.cloudImageDir)
-		}
-		return nil, fmt.Errorf("scan cloud image directory %s: %w", s.cloudImageDir, err)
+		return nil, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	content, err := s.proxmoxCredentials.ListStorageContent(cred, nodeName, "local", "iso")
+	if err != nil {
+		return nil, fmt.Errorf("list Proxmox local:iso content on node %s: %w", nodeName, err)
 	}
 	discovered := make([]CloudInitImage, 0)
-	for _, entry := range entries {
-		if entry.IsDir() {
+	for _, item := range content {
+		volID := strings.TrimSpace(item.VolID)
+		if !isSupportedCloudImageVolID(volID) {
 			continue
 		}
-		name := entry.Name()
-		ext := strings.ToLower(filepath.Ext(name))
-		if ext != ".qcow2" && ext != ".img" && ext != ".raw" {
-			continue
-		}
-		path := filepath.Join(s.cloudImageDir, name)
+		name := proxmoxStorageFilename(volID)
 		meta := inferCloudImageMetadata(name)
 		image, err := s.CreateImage(CreateCloudInitImageRequest{
 			Name:             meta.Name,
-			ImagePath:        path,
+			ImagePath:        volID,
 			OSType:           meta.OSType,
-			Description:      "Discovered from " + s.cloudImageDir,
+			Description:      "Discovered from Proxmox local:iso on " + nodeName,
 			IsDefault:        false,
 			SSHUser:          meta.SSHUser,
 			DefaultCPU:       meta.DefaultCPU,
 			DefaultMemoryMB:  meta.DefaultMemoryMB,
 			DefaultDiskGB:    meta.DefaultDiskGB,
-			SourcePath:       path,
-			DetectedNodeName: strings.TrimSpace(nodeName),
+			SourcePath:       volID,
+			DetectedNodeName: nodeName,
 		})
 		if err != nil {
 			return nil, err
@@ -628,7 +631,7 @@ func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
 		discovered = append(discovered, image)
 	}
 	if len(discovered) == 0 {
-		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in %s. Confirm the backend container can see the files, for example: docker compose exec backend ls -l %s", s.cloudImageDir, s.cloudImageDir)
+		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:iso on node %s. Move or upload the image under /var/lib/vz/template/iso on that Proxmox node, then discover again", nodeName)
 	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
@@ -708,6 +711,27 @@ func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, erro
 	}
 	meta := inferCloudImageMetadata(filepath.Base(imagePath))
 	return CloudInitImage{ImagePath: strings.TrimSpace(imagePath), SSHUser: meta.SSHUser, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
+}
+
+func isSupportedCloudImageVolID(volID string) bool {
+	lower := strings.ToLower(strings.TrimSpace(volID))
+	if !strings.HasPrefix(lower, "local:iso/") {
+		return false
+	}
+	switch path.Ext(lower) {
+	case ".qcow2", ".img", ".raw":
+		return true
+	default:
+		return false
+	}
+}
+
+func proxmoxStorageFilename(volID string) string {
+	filename := path.Base(strings.TrimSpace(volID))
+	if filename == "." || filename == "/" {
+		return strings.TrimPrefix(strings.TrimSpace(volID), "local:iso/")
+	}
+	return filename
 }
 
 func (s *Service) resolveIPAddress(req CreateRequest) (string, error) {

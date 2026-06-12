@@ -46,6 +46,13 @@ type Node struct {
 	LastDiscoveredAt time.Time `json:"last_discovered_at"`
 }
 
+type StorageContent struct {
+	VolID   string `json:"volid"`
+	Content string `json:"content"`
+	Format  string `json:"format"`
+	Size    int64  `json:"size"`
+}
+
 type Service struct {
 	db      *sql.DB
 	client  *Client
@@ -227,6 +234,10 @@ func (s *Service) ControlVMByName(cred Credential, proxmoxNodeName string, vmNam
 
 func (s *Service) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmName string) (string, error) {
 	return s.client.GetVMStatusByName(cred, proxmoxNodeName, vmName)
+}
+
+func (s *Service) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {
+	return s.client.ListStorageContent(cred, proxmoxNodeName, storageID, content)
 }
 
 func (s *Service) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {

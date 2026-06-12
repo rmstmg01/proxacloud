@@ -16,7 +16,6 @@ type Config struct {
 	TerraformWorkDir    string
 	TerraformPluginDir  string
 	TerraformAutoApply  bool
-	VPSCloudImageDir    string
 	AnsibleBinary       string
 	AnsibleWorkDir      string
 	AnsibleAutoApply    bool
@@ -45,7 +44,6 @@ func Load() Config {
 		TerraformWorkDir:      getenv("TERRAFORM_WORKDIR", "infra/terraform/runs"),
 		TerraformPluginDir:    getenv("TERRAFORM_PLUGIN_DIR", "/terraform-providers"),
 		TerraformAutoApply:    getenvBool("TERRAFORM_AUTO_APPLY", false),
-		VPSCloudImageDir:      getenv("VPS_CLOUD_IMAGE_DIR", "/var/lib/vz/template/cloud-images"),
 		AnsibleBinary:         getenv("ANSIBLE_BINARY", "ansible-playbook"),
 		AnsibleWorkDir:        getenv("ANSIBLE_WORKDIR", "infra/ansible/runs"),
 		AnsibleAutoApply:      getenvBool("ANSIBLE_AUTO_APPLY", false),

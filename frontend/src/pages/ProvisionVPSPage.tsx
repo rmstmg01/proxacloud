@@ -134,7 +134,7 @@ export function ProvisionVPSPage() {
     },
   });
   const discoverImagesMutation = useMutation({
-    mutationFn: () => discoverVPSCloudInitImages(form.proxmox_node_name),
+    mutationFn: () => discoverVPSCloudInitImages(form.proxmox_credential_id, form.proxmox_node_name),
     onSuccess: (discovered) => {
       queryClient.setQueryData<VPSCloudInitImage[]>(['vps-cloud-init-images'], (current = []) => {
         const merged = new Map<number, VPSCloudInitImage>();
@@ -378,7 +378,13 @@ export function ProvisionVPSPage() {
                   </option>
                 ))}
               </Select>
-              <Button type="button" variant="secondary" onClick={() => discoverImagesMutation.mutate()} loading={discoverImagesMutation.isPending}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => discoverImagesMutation.mutate()}
+                loading={discoverImagesMutation.isPending}
+                disabled={form.proxmox_credential_id === 0 || form.proxmox_node_name === ''}
+              >
                 Discover Images
               </Button>
               <Button type="button" variant="secondary" onClick={() => setImageModalOpen(true)}>
@@ -396,7 +402,7 @@ export function ProvisionVPSPage() {
                   cloud_init_image_path: event.target.value,
                 }));
               }}
-              placeholder="/var/lib/vz/template/cloud-images/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
+              placeholder="local:iso/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
               required
             />
             {form.cloud_init_image_id > 0 && (
@@ -465,7 +471,7 @@ export function ProvisionVPSPage() {
             label="Image path"
             value={imageForm.image_path}
             onChange={(event) => setImageForm({ ...imageForm, image_path: event.target.value })}
-            placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img"
+            placeholder="local:iso/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
             required
           />
           <Input label="OS type" value={imageForm.os_type} onChange={(event) => setImageForm({ ...imageForm, os_type: event.target.value })} required />
