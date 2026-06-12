@@ -40,6 +40,8 @@ export function ClusterConfigMapsPage() {
   const [editing, setEditing] = useState<ClusterConfigMapRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClusterConfigMapRecord | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<{ configMapID: number; configMapName: string; key: string } | null>(null);
+  const [deleteKeyConfirmationName, setDeleteKeyConfirmationName] = useState('');
   const [keyForm, setKeyForm] = useState({ configMapID: 0, key: '', value: '' });
   const [form, setForm] = useState({
     cluster_id: 0,
@@ -121,6 +123,8 @@ export function ClusterConfigMapsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-config-maps'] });
       setKeyForm({ configMapID: 0, key: '', value: '' });
+      setDeleteKeyTarget(null);
+      setDeleteKeyConfirmationName('');
     },
   });
 
@@ -128,6 +132,12 @@ export function ClusterConfigMapsPage() {
     event.preventDefault();
     if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
     deleteMut.mutate(deleteTarget.id);
+  };
+
+  const confirmKeyDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteKeyTarget || deleteKeyConfirmationName !== deleteKeyTarget.key) return;
+    deleteKeyMut.mutate({ configMapID: deleteKeyTarget.configMapID, key: deleteKeyTarget.key });
   };
 
   return (
@@ -225,9 +235,8 @@ export function ClusterConfigMapsPage() {
                                     className="text-xs text-rose-600 hover:text-rose-700"
                                     disabled={deleteKeyMut.isPending}
                                     onClick={() => {
-                                      if (window.confirm(`Delete key ${key} from ${configMap.name}?`)) {
-                                        deleteKeyMut.mutate({ configMapID: configMap.id, key });
-                                      }
+                                      setDeleteKeyTarget({ configMapID: configMap.id, configMapName: configMap.name, key });
+                                      setDeleteKeyConfirmationName('');
                                     }}
                                   >
                                     delete
@@ -339,7 +348,57 @@ export function ClusterConfigMapsPage() {
         }}
         onSubmit={confirmDelete}
       />
+      <DeleteConfigMapKeyModal
+        target={deleteKeyTarget}
+        confirmationName={deleteKeyConfirmationName}
+        loading={deleteKeyMut.isPending}
+        onChange={setDeleteKeyConfirmationName}
+        onClose={() => {
+          if (!deleteKeyMut.isPending) {
+            setDeleteKeyTarget(null);
+            setDeleteKeyConfirmationName('');
+          }
+        }}
+        onSubmit={confirmKeyDelete}
+      />
     </Layout>
+  );
+}
+
+function DeleteConfigMapKeyModal({
+  target,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  target: { configMapID: number; configMapName: string; key: string } | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!target && confirmationName === target.key;
+  return (
+    <Modal open={!!target} onClose={onClose} title="Delete ConfigMap Key" maxWidth="lg">
+      {target && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes one key from the portal ConfigMap">
+            Apply the ConfigMap again if the Kubernetes object should receive this key change.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{target.key}</span> to confirm deletion from {target.configMapName}.
+          </div>
+          <Input label="Key name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete Key</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 

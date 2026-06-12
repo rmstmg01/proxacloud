@@ -59,6 +59,8 @@ export function ClusterSecretsPage() {
   const [editing, setEditing] = useState<ClusterSecretRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClusterSecretRecord | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [deleteKeyTarget, setDeleteKeyTarget] = useState<{ secretID: number; secretName: string; key: string } | null>(null);
+  const [deleteKeyConfirmationName, setDeleteKeyConfirmationName] = useState('');
   const [keyForm, setKeyForm] = useState({ secretID: 0, key: '', value: '' });
   const [form, setForm] = useState({
     cluster_id: 0,
@@ -161,6 +163,8 @@ export function ClusterSecretsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['global-secrets'] });
       setKeyForm({ secretID: 0, key: '', value: '' });
+      setDeleteKeyTarget(null);
+      setDeleteKeyConfirmationName('');
     },
   });
 
@@ -168,6 +172,12 @@ export function ClusterSecretsPage() {
     event.preventDefault();
     if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
     deleteMut.mutate(deleteTarget.id);
+  };
+
+  const confirmKeyDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteKeyTarget || deleteKeyConfirmationName !== deleteKeyTarget.key) return;
+    deleteKeyMut.mutate({ secretID: deleteKeyTarget.secretID, key: deleteKeyTarget.key });
   };
 
   const onProviderChange = (provider: ClusterSecretProvider) => {
@@ -298,9 +308,8 @@ export function ClusterSecretsPage() {
                                     className="text-xs text-rose-600 hover:text-rose-700"
                                     disabled={deleteKeyMut.isPending}
                                     onClick={() => {
-                                      if (window.confirm(`Delete key ${key} from ${secret.name}?`)) {
-                                        deleteKeyMut.mutate({ secretID: secret.id, key });
-                                      }
+                                      setDeleteKeyTarget({ secretID: secret.id, secretName: secret.name, key });
+                                      setDeleteKeyConfirmationName('');
                                     }}
                                   >
                                     delete
@@ -413,7 +422,57 @@ export function ClusterSecretsPage() {
         }}
         onSubmit={confirmDelete}
       />
+      <DeleteSecretKeyModal
+        target={deleteKeyTarget}
+        confirmationName={deleteKeyConfirmationName}
+        loading={deleteKeyMut.isPending}
+        onChange={setDeleteKeyConfirmationName}
+        onClose={() => {
+          if (!deleteKeyMut.isPending) {
+            setDeleteKeyTarget(null);
+            setDeleteKeyConfirmationName('');
+          }
+        }}
+        onSubmit={confirmKeyDelete}
+      />
     </Layout>
+  );
+}
+
+function DeleteSecretKeyModal({
+  target,
+  confirmationName,
+  loading,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  target: { secretID: number; secretName: string; key: string } | null;
+  confirmationName: string;
+  loading: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!target && confirmationName === target.key;
+  return (
+    <Modal open={!!target} onClose={onClose} title="Delete Secret Key" maxWidth="lg">
+      {target && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="This removes one key from the portal Secret">
+            Apply the Secret again if the Kubernetes object should receive this key change.
+          </Alert>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{target.key}</span> to confirm deletion from {target.secretName}.
+          </div>
+          <Input label="Key name confirmation" value={confirmationName} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>Cancel</Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>Delete Key</Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 
