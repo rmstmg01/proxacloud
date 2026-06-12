@@ -160,6 +160,14 @@ export interface VPSActionResponse {
   warnings: string[];
 }
 
+export interface VPSConsoleResponse {
+  vps_id: number;
+  vmid: number;
+  node_name: string;
+  url: string;
+  warnings: string[];
+}
+
 export interface VPSCreateResponse {
   vps_id: number;
   status: string;

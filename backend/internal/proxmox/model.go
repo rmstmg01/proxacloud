@@ -53,6 +53,12 @@ type StorageContent struct {
 	Size    int64  `json:"size"`
 }
 
+type VMConsole struct {
+	VMID     int    `json:"vmid"`
+	NodeName string `json:"node_name"`
+	URL      string `json:"url"`
+}
+
 type Service struct {
 	db      *sql.DB
 	client  *Client
@@ -234,6 +240,10 @@ func (s *Service) ControlVMByName(cred Credential, proxmoxNodeName string, vmNam
 
 func (s *Service) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmName string) (string, error) {
 	return s.client.GetVMStatusByName(cred, proxmoxNodeName, vmName)
+}
+
+func (s *Service) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsole, error) {
+	return s.client.VMConsoleURLByName(cred, proxmoxNodeName, vmName)
 }
 
 func (s *Service) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {

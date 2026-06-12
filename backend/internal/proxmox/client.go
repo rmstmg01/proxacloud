@@ -240,6 +240,48 @@ func (c *Client) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmNa
 	return strings.TrimSpace(strings.ToLower(status)), nil
 }
 
+func (c *Client) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsole, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return VMConsole{}, errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return VMConsole{}, errors.New("vm name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return VMConsole{}, fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return VMConsole{}, err
+	}
+
+	consoleURL := *base
+	consoleURL.Path = "/"
+	consoleURL.RawQuery = ""
+	consoleURL.Fragment = ""
+	query := consoleURL.Query()
+	query.Set("console", "kvm")
+	query.Set("novnc", "1")
+	query.Set("vmid", strconv.Itoa(vm.VMID))
+	query.Set("vmname", vm.Name)
+	query.Set("node", proxmoxNodeName)
+	query.Set("resize", "scale")
+	query.Set("cmd", "")
+	consoleURL.RawQuery = query.Encode()
+
+	return VMConsole{
+		VMID:     vm.VMID,
+		NodeName: proxmoxNodeName,
+		URL:      consoleURL.String(),
+	}, nil
+}
+
 func (c *Client) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	containerName = strings.TrimSpace(containerName)

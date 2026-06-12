@@ -45,6 +45,7 @@ type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
+	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 }
 
@@ -160,6 +161,14 @@ type ActionResponse struct {
 	Action   string   `json:"action"`
 	Status   string   `json:"status"`
 	Output   string   `json:"output,omitempty"`
+	Warnings []string `json:"warnings"`
+}
+
+type ConsoleResponse struct {
+	VPSID    int64    `json:"vps_id"`
+	VMID     int      `json:"vmid"`
+	NodeName string   `json:"node_name"`
+	URL      string   `json:"url"`
 	Warnings []string `json:"warnings"`
 }
 
@@ -472,6 +481,32 @@ func (s *Service) RefreshStatus(id int64) (ActionResponse, error) {
 	}
 	_ = s.updateStatus(id, mapped)
 	return ActionResponse{VPSID: id, Action: "refresh-status", Status: mapped, Output: status, Warnings: []string{}}, nil
+}
+
+func (s *Service) Console(id int64) (ConsoleResponse, error) {
+	rec, err := s.Get(id)
+	if err != nil {
+		return ConsoleResponse{}, err
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return ConsoleResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	console, err := s.proxmoxCredentials.VMConsoleURLByName(cred, rec.ProxmoxNodeName, rec.VMName)
+	if err != nil {
+		_ = s.insertEvent(id, "console", "error", "Proxmox console lookup failed", err.Error())
+		return ConsoleResponse{VPSID: id, Warnings: []string{err.Error()}}, err
+	}
+
+	output := fmt.Sprintf("node=%s vmid=%d", console.NodeName, console.VMID)
+	_ = s.insertEvent(id, "console", "info", "Proxmox console URL generated", output)
+	return ConsoleResponse{
+		VPSID:    id,
+		VMID:     console.VMID,
+		NodeName: console.NodeName,
+		URL:      console.URL,
+		Warnings: []string{"Proxmox login may be required in the new browser tab."},
+	}, nil
 }
 
 func (s *Service) Delete(id int64, confirmationName string) error {

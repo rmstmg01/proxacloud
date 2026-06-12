@@ -1,10 +1,11 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Play, Power, RefreshCw, RotateCcw } from 'lucide-react';
+import { ArrowLeft, History, Monitor, Play, Power, RefreshCw, RotateCcw } from 'lucide-react';
 import {
   getVPSEvents,
   getVPSInstance,
+  openVPSConsole,
   redeployVPSInstance,
   refreshVPSStatus,
   restartVPSInstance,
@@ -27,17 +28,18 @@ export function VPSDetailPage() {
   const vpsID = Number(id);
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployConfirmationName, setRedeployConfirmationName] = useState('');
+  const [showEvents, setShowEvents] = useState(false);
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
     queryFn: () => getVPSInstance(vpsID),
     enabled: Number.isFinite(vpsID) && vpsID > 0,
   });
-  const { data: events } = useQuery({
+  const { data: events, error: eventsError, isFetching: eventsFetching } = useQuery({
     queryKey: ['vps', vpsID, 'events'],
     queryFn: () => getVPSEvents(vpsID),
-    enabled: Number.isFinite(vpsID) && vpsID > 0,
-    refetchInterval: 15_000,
+    enabled: Number.isFinite(vpsID) && vpsID > 0 && showEvents,
+    refetchInterval: showEvents ? 15_000 : false,
   });
 
   const invalidate = () => {
@@ -58,11 +60,31 @@ export function VPSDetailPage() {
   const startMutation = useMutation({ mutationFn: startVPSInstance, onSuccess: invalidate });
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
+  const consoleMutation = useMutation({ mutationFn: openVPSConsole });
 
   const confirmRedeploy = (event: FormEvent) => {
     event.preventDefault();
     if (!vps || redeployConfirmationName !== vps.name) return;
     redeployMutation.mutate(vps.id);
+  };
+
+  const openConsole = () => {
+    if (!vps) return;
+    const consoleWindow = window.open('about:blank', '_blank');
+    consoleMutation.mutate(vps.id, {
+      onSuccess: (result) => {
+        invalidate();
+        if (consoleWindow) {
+          consoleWindow.opener = null;
+          consoleWindow.location.href = result.url;
+          return;
+        }
+        window.open(result.url, '_blank', 'noopener,noreferrer');
+      },
+      onError: () => {
+        consoleWindow?.close();
+      },
+    });
   };
 
   if (!Number.isFinite(vpsID) || vpsID <= 0) {
@@ -89,20 +111,15 @@ export function VPSDetailPage() {
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
+      {consoleMutation.error && <ErrorMessage error={consoleMutation.error} />}
+      {showEvents && eventsError && <ErrorMessage error={eventsError} />}
 
       {vps && (
         <div className="space-y-6">
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="danger"
-              onClick={() => {
-                setRedeployOpen(true);
-                setRedeployConfirmationName('');
-              }}
-              loading={redeployMutation.isPending}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Redeploy
+            <Button variant="primary" onClick={openConsole} loading={consoleMutation.isPending}>
+              <Monitor className="h-4 w-4" />
+              Console
             </Button>
             <Button variant="secondary" onClick={() => refreshMutation.mutate(vps.id)} loading={refreshMutation.isPending}>
               <RefreshCw className="h-4 w-4" />
@@ -119,6 +136,21 @@ export function VPSDetailPage() {
             <Button variant="secondary" onClick={() => shutdownMutation.mutate(vps.id)} loading={shutdownMutation.isPending}>
               <Power className="h-4 w-4" />
               Shutdown
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setRedeployOpen(true);
+                setRedeployConfirmationName('');
+              }}
+              loading={redeployMutation.isPending}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Redeploy
+            </Button>
+            <Button variant={showEvents ? 'primary' : 'secondary'} onClick={() => setShowEvents((current) => !current)}>
+              <History className="h-4 w-4" />
+              Events
             </Button>
           </div>
 
@@ -141,36 +173,40 @@ export function VPSDetailPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Events</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {!events || events.length === 0 ? (
-                <p className="text-sm text-slate-400">No VPS events yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {events.map((event) => (
-                    <div key={event.id} className="rounded-md border border-slate-200 bg-white p-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <StatusBadge status={event.level} />
-                          <p className="text-sm font-medium text-slate-900">{event.message}</p>
+          {showEvents && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Events</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {eventsFetching && !events ? (
+                  <p className="text-sm text-slate-400">Loading events...</p>
+                ) : !events || events.length === 0 ? (
+                  <p className="text-sm text-slate-400">No VPS events yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {events.map((event) => (
+                      <div key={event.id} className="rounded-md border border-slate-200 bg-white p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <StatusBadge status={event.level} />
+                            <p className="text-sm font-medium text-slate-900">{event.message}</p>
+                          </div>
+                          <p className="text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
                         </div>
-                        <p className="text-xs text-slate-500">{new Date(event.created_at).toLocaleString()}</p>
+                        <p className="mt-1 text-xs text-slate-500">{event.action}</p>
+                        {event.output && (
+                          <pre className="mt-3 max-h-72 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100 whitespace-pre-wrap">
+                            {event.output}
+                          </pre>
+                        )}
                       </div>
-                      <p className="mt-1 text-xs text-slate-500">{event.action}</p>
-                      {event.output && (
-                        <pre className="mt-3 max-h-72 overflow-auto rounded bg-slate-950 p-3 text-xs text-slate-100 whitespace-pre-wrap">
-                          {event.output}
-                        </pre>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
       <Modal

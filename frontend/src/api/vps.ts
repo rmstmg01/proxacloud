@@ -2,6 +2,7 @@ import client from './client';
 import type {
   VPSActionResponse,
   VPSCloudInitImage,
+  VPSConsoleResponse,
   VPSCreateResponse,
   VPSEvent,
   VPSInstance,
@@ -68,6 +69,9 @@ export const redeployVPSInstance = (id: number) =>
 
 export const refreshVPSStatus = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/refresh-status`).then((r) => r.data);
+
+export const openVPSConsole = (id: number) =>
+  client.post<VPSConsoleResponse>(`/vps/${id}/console`).then((r) => r.data);
 
 export const startVPSInstance = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/start`).then((r) => r.data);

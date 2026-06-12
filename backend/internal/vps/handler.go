@@ -117,6 +117,19 @@ func (h *Handler) RefreshStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.Console(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action string) {
 	id, ok := parseID(w, r)
 	if !ok {
