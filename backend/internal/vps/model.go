@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -46,6 +47,7 @@ type ProxmoxCredentialStore interface {
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
+	ProxyVMConsoleByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 }
 
@@ -488,25 +490,30 @@ func (s *Service) Console(id int64) (ConsoleResponse, error) {
 	if err != nil {
 		return ConsoleResponse{}, err
 	}
-	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
-	if err != nil {
-		return ConsoleResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
-	}
-	console, err := s.proxmoxCredentials.VMConsoleURLByName(cred, rec.ProxmoxNodeName, rec.VMName)
-	if err != nil {
-		_ = s.insertEvent(id, "console", "error", "Proxmox console lookup failed", err.Error())
-		return ConsoleResponse{VPSID: id, Warnings: []string{err.Error()}}, err
-	}
-
-	output := fmt.Sprintf("node=%s vmid=%d", console.NodeName, console.VMID)
-	_ = s.insertEvent(id, "console", "info", "Proxmox console URL generated", output)
+	_ = s.insertEvent(id, "console", "info", "Project console page opened", rec.VMName)
 	return ConsoleResponse{
 		VPSID:    id,
-		VMID:     console.VMID,
-		NodeName: console.NodeName,
-		URL:      console.URL,
-		Warnings: []string{"Proxmox login may be required in the new browser tab."},
+		NodeName: rec.ProxmoxNodeName,
+		URL:      fmt.Sprintf("/vps/%d/console", id),
+		Warnings: []string{},
 	}, nil
+}
+
+func (s *Service) ProxyConsole(w http.ResponseWriter, r *http.Request, id int64) error {
+	rec, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	if err := s.proxmoxCredentials.ProxyVMConsoleByName(cred, rec.ProxmoxNodeName, rec.VMName, w, r); err != nil {
+		_ = s.insertEvent(id, "console", "error", "Project console websocket failed", err.Error())
+		return err
+	}
+	_ = s.insertEvent(id, "console", "info", "Project console websocket closed", rec.VMName)
+	return nil
 }
 
 func (s *Service) Delete(id int64, confirmationName string) error {

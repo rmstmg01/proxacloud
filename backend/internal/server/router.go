@@ -185,6 +185,11 @@ func NewApp() (*App, error) {
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Post("/auth/login", userHandler.Login)
 
+		api.Group(func(console chi.Router) {
+			console.Use(auth.QueryTokenMiddleware(tokens, "token"))
+			console.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/console/ws", vpsHandler.ConsoleWebSocket)
+		})
+
 		api.Group(func(protected chi.Router) {
 			protected.Use(auth.AuthMiddleware(tokens))
 			protected.Get("/auth/me", userHandler.Me)

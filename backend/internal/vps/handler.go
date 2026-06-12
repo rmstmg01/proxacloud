@@ -130,6 +130,16 @@ func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ConsoleWebSocket(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if err := h.service.ProxyConsole(w, r, id); err != nil {
+		return
+	}
+}
+
 func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action string) {
 	id, ok := parseID(w, r)
 	if !ok {

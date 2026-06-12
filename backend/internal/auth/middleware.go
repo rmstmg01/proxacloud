@@ -43,6 +43,33 @@ func AuthMiddleware(tokens *TokenService) func(http.Handler) http.Handler {
 	}
 }
 
+func QueryTokenMiddleware(tokens *TokenService, queryParam string) func(http.Handler) http.Handler {
+	if strings.TrimSpace(queryParam) == "" {
+		queryParam = "token"
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tokenRaw := strings.TrimSpace(r.URL.Query().Get(queryParam))
+			if tokenRaw == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
+				return
+			}
+
+			claims, err := tokens.Parse(tokenRaw)
+			if err != nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+				return
+			}
+
+			ctx := context.WithValue(r.Context(), contextUserKey, ContextUser{
+				Username: claims.Subject,
+				Role:     claims.Role,
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 func RequireRoles(roles ...rbac.Role) func(http.Handler) http.Handler {
 	allowed := make(map[rbac.Role]struct{}, len(roles))
 	for _, role := range roles {

@@ -24,6 +24,7 @@ import { MonitoringPage } from './pages/MonitoringPage';
 import { VPSPage } from './pages/VPSPage';
 import { ProvisionVPSPage } from './pages/ProvisionVPSPage';
 import { VPSDetailPage } from './pages/VPSDetailPage';
+import { VPSConsolePage } from './pages/VPSConsolePage';
 import { ContainersPage } from './pages/ContainersPage';
 import { ProvisionContainerPage } from './pages/ProvisionContainerPage';
 import { ContainerDetailPage } from './pages/ContainerDetailPage';
@@ -106,6 +107,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <VPSDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/vps/:id/console"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <VPSConsolePage />
                 </ProtectedRoute>
               }
             />

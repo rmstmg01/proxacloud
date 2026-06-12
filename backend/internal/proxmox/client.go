@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 type Client struct {
@@ -280,6 +282,49 @@ func (c *Client) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmN
 		NodeName: proxmoxNodeName,
 		URL:      consoleURL.String(),
 	}, nil
+}
+
+func (c *Client) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return errors.New("vm name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return err
+	}
+	session, err := c.createVMConsoleSession(httpClient, base, cred, proxmoxNodeName, vm)
+	if err != nil {
+		return err
+	}
+	upstream, err := c.dialVMConsoleWebSocket(httpClient, base, cred, session)
+	if err != nil {
+		return err
+	}
+	defer upstream.Close()
+
+	upgrader := websocket.Upgrader{
+		Subprotocols: []string{"binary"},
+		CheckOrigin:  func(_ *http.Request) bool { return true },
+	}
+	downstream, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return fmt.Errorf("upgrade project console websocket: %w", err)
+	}
+	defer downstream.Close()
+
+	return proxyWebSockets(downstream, upstream)
 }
 
 func (c *Client) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {
@@ -593,6 +638,96 @@ func (c *Client) runVMAction(httpClient *http.Client, base *url.URL, cred Creden
 	return nil
 }
 
+func (c *Client) createVMConsoleSession(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vm qemuVMRef) (VMConsoleSession, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vm.VMID), "vncproxy")
+
+	form := url.Values{}
+	form.Set("websocket", "1")
+
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return VMConsoleSession{}, fmt.Errorf("create vm console session request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return VMConsoleSession{}, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return VMConsoleSession{}, fmt.Errorf("request proxmox vm console session: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return VMConsoleSession{}, fmt.Errorf("proxmox vm console session api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			Port   any    `json:"port"`
+			Ticket string `json:"ticket"`
+			Cert   string `json:"cert"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return VMConsoleSession{}, fmt.Errorf("decode proxmox vm console session response: %w", err)
+	}
+	port := consolePortString(payload.Data.Port)
+	if port == "" || strings.TrimSpace(payload.Data.Ticket) == "" {
+		return VMConsoleSession{}, errors.New("proxmox returned an incomplete vm console session")
+	}
+
+	return VMConsoleSession{
+		VMID:     vm.VMID,
+		NodeName: proxmoxNodeName,
+		Port:     port,
+		Ticket:   strings.TrimSpace(payload.Data.Ticket),
+		Cert:     payload.Data.Cert,
+	}, nil
+}
+
+func (c *Client) dialVMConsoleWebSocket(httpClient *http.Client, base *url.URL, cred Credential, session VMConsoleSession) (*websocket.Conn, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", session.NodeName, "qemu", strconv.Itoa(session.VMID), "vncwebsocket")
+	reqURL.RawQuery = ""
+	reqURL.Fragment = ""
+	switch reqURL.Scheme {
+	case "https":
+		reqURL.Scheme = "wss"
+	case "http":
+		reqURL.Scheme = "ws"
+	default:
+		return nil, fmt.Errorf("unsupported proxmox endpoint scheme %q", reqURL.Scheme)
+	}
+	query := reqURL.Query()
+	query.Set("port", session.Port)
+	query.Set("vncticket", session.Ticket)
+	reqURL.RawQuery = query.Encode()
+
+	headers, err := c.authenticationHeaders(httpClient, base, cred)
+	if err != nil {
+		return nil, err
+	}
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout:  c.timeout,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: cred.InsecureTLS},
+		EnableCompression: false,
+		Subprotocols:      []string{"binary"},
+	}
+	conn, resp, err := dialer.Dial(reqURL.String(), headers)
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			return nil, fmt.Errorf("dial proxmox vm console websocket: status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+		}
+		return nil, fmt.Errorf("dial proxmox vm console websocket: %w", err)
+	}
+	return conn, nil
+}
+
 func (c *Client) findQEMUVM(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmName string) (qemuVMRef, error) {
 	reqURL := *base
 	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu")
@@ -685,6 +820,19 @@ func responseErrorMessage(resp *http.Response) string {
 	return msg
 }
 
+func consolePortString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		return strconv.Itoa(int(typed))
+	case int:
+		return strconv.Itoa(typed)
+	default:
+		return ""
+	}
+}
+
 func (c *Client) waitForTask(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, upid string, action string, maxWait time.Duration) error {
 	if maxWait <= 0 {
 		maxWait = 2 * time.Minute
@@ -769,6 +917,45 @@ func (c *Client) authorizeRequest(httpClient *http.Client, base *url.URL, req *h
 		return nil
 	}
 	return errors.New("missing proxmox authentication data")
+}
+
+func (c *Client) authenticationHeaders(httpClient *http.Client, base *url.URL, cred Credential) (http.Header, error) {
+	req, err := http.NewRequest(http.MethodGet, base.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create proxmox authentication header request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return nil, err
+	}
+	return req.Header.Clone(), nil
+}
+
+func proxyWebSockets(downstream *websocket.Conn, upstream *websocket.Conn) error {
+	errCh := make(chan error, 2)
+	copyMessages := func(dst *websocket.Conn, src *websocket.Conn) {
+		for {
+			messageType, payload, err := src.ReadMessage()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := dst.WriteMessage(messageType, payload); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}
+
+	go copyMessages(upstream, downstream)
+	go copyMessages(downstream, upstream)
+
+	err := <-errCh
+	_ = downstream.Close()
+	_ = upstream.Close()
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+		return nil
+	}
+	return err
 }
 
 // getTicket authenticates with the Proxmox API using username/password and

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -57,6 +58,14 @@ type VMConsole struct {
 	VMID     int    `json:"vmid"`
 	NodeName string `json:"node_name"`
 	URL      string `json:"url"`
+}
+
+type VMConsoleSession struct {
+	VMID     int    `json:"vmid"`
+	NodeName string `json:"node_name"`
+	Port     string `json:"port"`
+	Ticket   string `json:"-"`
+	Cert     string `json:"cert,omitempty"`
 }
 
 type Service struct {
@@ -244,6 +253,10 @@ func (s *Service) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmN
 
 func (s *Service) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsole, error) {
 	return s.client.VMConsoleURLByName(cred, proxmoxNodeName, vmName)
+}
+
+func (s *Service) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error {
+	return s.client.ProxyVMConsoleByName(cred, proxmoxNodeName, vmName, w, r)
 }
 
 func (s *Service) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {

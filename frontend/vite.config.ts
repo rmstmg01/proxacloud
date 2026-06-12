@@ -9,6 +9,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
+        ws: true,
       },
       '/health': {
         target: 'http://localhost:8080',
@@ -19,5 +20,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    target: 'esnext',
   },
 })
