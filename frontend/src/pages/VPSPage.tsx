@@ -1,12 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Play, Plus, Power, RefreshCw, RotateCcw, Trash2 } from 'lucide-react';
+import { ChevronRight, Play, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
 import {
   deleteVPSInstance,
-  deployVPSInstance,
   getVPSInstances,
-  refreshVPSStatus,
   restartVPSInstance,
   shutdownVPSInstance,
   startVPSInstance,
@@ -35,8 +33,6 @@ export function VPSPage() {
     queryClient.invalidateQueries({ queryKey: ['vps'] });
   };
 
-  const deployMutation = useMutation({ mutationFn: deployVPSInstance, onSuccess: invalidate });
-  const refreshMutation = useMutation({ mutationFn: refreshVPSStatus, onSuccess: invalidate });
   const startMutation = useMutation({ mutationFn: startVPSInstance, onSuccess: invalidate });
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
@@ -52,8 +48,6 @@ export function VPSPage() {
 
   useEffect(() => {
     if (!dataUpdatedAt) return;
-    if (!deployMutation.isPending) deployMutation.reset();
-    if (!refreshMutation.isPending) refreshMutation.reset();
     if (!startMutation.isPending) startMutation.reset();
     if (!restartMutation.isPending) restartMutation.reset();
     if (!shutdownMutation.isPending) shutdownMutation.reset();
@@ -84,8 +78,6 @@ export function VPSPage() {
 
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
-      {deployMutation.error && <ErrorMessage error={deployMutation.error} />}
-      {refreshMutation.error && <ErrorMessage error={refreshMutation.error} />}
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
@@ -140,24 +132,6 @@ export function VPSPage() {
                           <Link to={`/vps/${item.id}`} className="inline-flex items-center text-indigo-600 hover:text-indigo-700">
                             Details <ChevronRight className="h-4 w-4" />
                           </Link>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => deployMutation.mutate(item.id)}
-                            loading={deployMutation.isPending && deployMutation.variables === item.id}
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                            Deploy
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => refreshMutation.mutate(item.id)}
-                            loading={refreshMutation.isPending && refreshMutation.variables === item.id}
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                            Status
-                          </Button>
                           <Button
                             variant="secondary"
                             size="sm"

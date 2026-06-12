@@ -79,6 +79,19 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) Redeploy(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.Redeploy(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
 	h.powerAction(w, r, "start")
 }

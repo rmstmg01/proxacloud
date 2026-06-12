@@ -15,7 +15,6 @@ import {
   Cloud,
   BarChart3,
   SquareTerminal,
-  Box,
 } from 'lucide-react';
 
 const navGroups = [
@@ -28,8 +27,8 @@ const navGroups = [
   {
     label: 'Compute',
     items: [
+      { to: '/vps', icon: Server, label: 'VPS' },
       { to: '/clusters', icon: Server, label: 'Clusters' },
-      { to: '/vps', icon: Box, label: 'VPS' },
       { to: '/database-clusters', icon: Database, label: 'Databases' },
     ],
   },

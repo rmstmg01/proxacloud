@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Play, Power, RefreshCw, RotateCcw } from 'lucide-react';
 import {
-  deployVPSInstance,
   getVPSEvents,
   getVPSInstance,
+  redeployVPSInstance,
   refreshVPSStatus,
   restartVPSInstance,
   shutdownVPSInstance,
@@ -15,7 +15,9 @@ import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { ErrorMessage } from '../components/ui/Alert';
+import { Alert, ErrorMessage } from '../components/ui/Alert';
+import { Input } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
 
 export function VPSDetailPage() {
@@ -23,6 +25,8 @@ export function VPSDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const vpsID = Number(id);
+  const [redeployOpen, setRedeployOpen] = useState(false);
+  const [redeployConfirmationName, setRedeployConfirmationName] = useState('');
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -42,11 +46,24 @@ export function VPSDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'events'] });
   };
 
-  const deployMutation = useMutation({ mutationFn: deployVPSInstance, onSuccess: invalidate });
+  const redeployMutation = useMutation({
+    mutationFn: redeployVPSInstance,
+    onSuccess: () => {
+      invalidate();
+      setRedeployOpen(false);
+      setRedeployConfirmationName('');
+    },
+  });
   const refreshMutation = useMutation({ mutationFn: refreshVPSStatus, onSuccess: invalidate });
   const startMutation = useMutation({ mutationFn: startVPSInstance, onSuccess: invalidate });
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
+
+  const confirmRedeploy = (event: FormEvent) => {
+    event.preventDefault();
+    if (!vps || redeployConfirmationName !== vps.name) return;
+    redeployMutation.mutate(vps.id);
+  };
 
   if (!Number.isFinite(vpsID) || vpsID <= 0) {
     navigate('/vps');
@@ -67,7 +84,7 @@ export function VPSDetailPage() {
 
       {isLoading && <PageSpinner />}
       {error && <ErrorMessage error={error} />}
-      {deployMutation.error && <ErrorMessage error={deployMutation.error} />}
+      {redeployMutation.error && <ErrorMessage error={redeployMutation.error} />}
       {refreshMutation.error && <ErrorMessage error={refreshMutation.error} />}
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
@@ -76,9 +93,16 @@ export function VPSDetailPage() {
       {vps && (
         <div className="space-y-6">
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" onClick={() => deployMutation.mutate(vps.id)} loading={deployMutation.isPending}>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setRedeployOpen(true);
+                setRedeployConfirmationName('');
+              }}
+              loading={redeployMutation.isPending}
+            >
               <RefreshCw className="h-4 w-4" />
-              Deploy
+              Redeploy
             </Button>
             <Button variant="secondary" onClick={() => refreshMutation.mutate(vps.id)} loading={refreshMutation.isPending}>
               <RefreshCw className="h-4 w-4" />
@@ -149,6 +173,44 @@ export function VPSDetailPage() {
           </Card>
         </div>
       )}
+      <Modal
+        open={redeployOpen}
+        onClose={() => {
+          if (!redeployMutation.isPending) {
+            setRedeployOpen(false);
+            setRedeployConfirmationName('');
+          }
+        }}
+        title="Redeploy VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <form onSubmit={confirmRedeploy} className="space-y-5">
+            <Alert variant="warning" title="This reinstalls the VPS operating system">
+              Redeploy destroys the current VM infrastructure from Terraform state and applies it again from the saved cloud-init image and configuration.
+            </Alert>
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              Type <span className="font-semibold text-slate-900">{vps.name}</span> to confirm redeploy.
+            </div>
+            <Input
+              label="VPS name confirmation"
+              value={redeployConfirmationName}
+              onChange={(event) => setRedeployConfirmationName(event.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setRedeployOpen(false)} disabled={redeployMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="danger" loading={redeployMutation.isPending} disabled={redeployConfirmationName !== vps.name}>
+                <RefreshCw className="h-4 w-4" />
+                Redeploy VPS
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </Layout>
   );
 }

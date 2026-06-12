@@ -363,6 +363,44 @@ func (s *Service) Deploy(id int64) (ActionResponse, error) {
 	return ActionResponse{VPSID: id, Action: "deploy", Status: "running", Output: result.Output, Warnings: []string{}}, nil
 }
 
+func (s *Service) Redeploy(id int64) (ActionResponse, error) {
+	rec, err := s.Get(id)
+	if err != nil {
+		return ActionResponse{}, err
+	}
+	if strings.TrimSpace(rec.TerraformWorkDir) == "" {
+		return ActionResponse{}, errors.New("terraform workspace is not configured for this VPS")
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return ActionResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	auth := terraformAuthFromCredential(cred)
+
+	_ = s.updateStatus(id, "redeploying")
+	_ = s.insertEvent(id, "redeploy", "info", "Starting VPS OS reinstall", rec.TerraformWorkDir)
+
+	destroyResult, destroyErr := s.terraformRunner.DestroyStandaloneVPS(rec.TerraformWorkDir, auth)
+	if destroyErr != nil {
+		_ = s.updateStatus(id, "failed")
+		_ = s.insertEvent(id, "terraform-destroy", "error", "Terraform destroy failed during VPS redeploy", destroyResult.Output+"\n"+destroyErr.Error())
+		return ActionResponse{VPSID: id, Action: "redeploy", Status: "failed", Output: destroyResult.Output, Warnings: []string{}}, destroyErr
+	}
+	_ = s.insertEvent(id, "terraform-destroy", "success", "Existing VPS infrastructure destroyed for redeploy", destroyResult.Output)
+
+	applyResult, applyErr := s.terraformRunner.ApplyStandaloneVPS(rec.TerraformWorkDir, auth)
+	output := strings.TrimSpace(destroyResult.Output + "\n" + applyResult.Output)
+	if applyErr != nil {
+		_ = s.updateStatus(id, "failed")
+		_ = s.insertEvent(id, "terraform-apply", "error", "Terraform apply failed during VPS redeploy", applyResult.Output+"\n"+applyErr.Error())
+		return ActionResponse{VPSID: id, Action: "redeploy", Status: "failed", Output: output, Warnings: []string{}}, applyErr
+	}
+
+	_ = s.updateStatus(id, "running")
+	_ = s.insertEvent(id, "terraform-apply", "success", "VPS redeployed successfully", applyResult.Output)
+	return ActionResponse{VPSID: id, Action: "redeploy", Status: "running", Output: output, Warnings: []string{}}, nil
+}
+
 func (s *Service) PowerAction(id int64, action string) (ActionResponse, error) {
 	rec, err := s.Get(id)
 	if err != nil {

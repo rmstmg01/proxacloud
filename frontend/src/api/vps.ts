@@ -48,6 +48,9 @@ export const createVPSInstance = (body: {
 export const deployVPSInstance = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/deploy`).then((r) => r.data);
 
+export const redeployVPSInstance = (id: number) =>
+  client.post<VPSActionResponse>(`/vps/${id}/redeploy`).then((r) => r.data);
+
 export const refreshVPSStatus = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/refresh-status`).then((r) => r.data);
 
