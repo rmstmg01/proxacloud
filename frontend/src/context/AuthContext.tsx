@@ -11,10 +11,13 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const TOKEN_KEY = 'jwt_token';
+const USER_KEY = 'auth_user';
+
 function loadSaved(): { user: User | null; token: string | null } {
-  try {
-    const token = sessionStorage.getItem('jwt_token');
-    const raw = sessionStorage.getItem('auth_user');
+ try {
+    const token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    const raw = localStorage.getItem(USER_KEY) || sessionStorage.getItem(USER_KEY);
     if (token && raw) return { token, user: JSON.parse(raw) as User };
   } catch {
     // ignore
@@ -29,15 +32,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await apiLogin(username, password);
-    sessionStorage.setItem('jwt_token', res.token);
-    sessionStorage.setItem('auth_user', JSON.stringify(res.user));
+    localStorage.setItem(TOKEN_KEY, res.token);
+    localStorage.setItem(USER_KEY, JSON.stringify(res.user));
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
     setToken(res.token);
     setUser(res.user);
   }, []);
 
   const logout = useCallback(() => {
-    sessionStorage.removeItem('jwt_token');
-    sessionStorage.removeItem('auth_user');
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
     setToken(null);
     setUser(null);
   }, []);

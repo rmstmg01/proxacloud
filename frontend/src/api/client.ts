@@ -6,7 +6,7 @@ const client = axios.create({
 });
 
 client.interceptors.request.use((config) => {
-  const token = sessionStorage.getItem('jwt_token');
+  const token = localStorage.getItem('jwt_token') || sessionStorage.getItem('jwt_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -17,6 +17,8 @@ client.interceptors.response.use(
   (res) => res,
   (error) => {
     if (error.response?.status === 401) {
+      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('auth_user');
       sessionStorage.removeItem('jwt_token');
       sessionStorage.removeItem('auth_user');
       window.location.href = '/login';
