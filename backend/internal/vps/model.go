@@ -24,8 +24,6 @@ const (
 	IPModeDHCP   = "dhcp"
 	IPModeManual = "manual"
 	IPModeAuto   = "auto"
-
-	defaultCloudImageDir = "/var/lib/vz/template/cloud-images"
 )
 
 var (
@@ -61,6 +59,7 @@ type Service struct {
 	secrets            secrets.Store
 	terraformRunner    *terraform.Runner
 	autoApply          bool
+	cloudImageDir      string
 }
 
 type CloudInitImage struct {
@@ -163,7 +162,11 @@ type ActionResponse struct {
 	Warnings []string `json:"warnings"`
 }
 
-func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool) *Service {
+func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool, cloudImageDir string) *Service {
+	cloudImageDir = strings.TrimSpace(cloudImageDir)
+	if cloudImageDir == "" {
+		cloudImageDir = "/var/lib/vz/template/cloud-images"
+	}
 	return &Service{
 		db:                 db,
 		networks:           networkStore,
@@ -173,6 +176,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 		secrets:            secretStore,
 		terraformRunner:    terraformRunner,
 		autoApply:          autoApply,
+		cloudImageDir:      cloudImageDir,
 	}
 }
 
@@ -586,9 +590,12 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 }
 
 func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
-	entries, err := os.ReadDir(defaultCloudImageDir)
+	entries, err := os.ReadDir(s.cloudImageDir)
 	if err != nil {
-		return nil, fmt.Errorf("scan cloud image directory %s: %w", defaultCloudImageDir, err)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("cloud image directory %s is not available to the backend. Mount the Proxmox node cloud image directory into the backend container/host or set VPS_CLOUD_IMAGE_DIR to the path that is visible from the backend", s.cloudImageDir)
+		}
+		return nil, fmt.Errorf("scan cloud image directory %s: %w", s.cloudImageDir, err)
 	}
 	discovered := make([]CloudInitImage, 0)
 	for _, entry := range entries {
@@ -600,13 +607,13 @@ func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
 		if ext != ".qcow2" && ext != ".img" && ext != ".raw" {
 			continue
 		}
-		path := filepath.Join(defaultCloudImageDir, name)
+		path := filepath.Join(s.cloudImageDir, name)
 		meta := inferCloudImageMetadata(name)
 		image, err := s.CreateImage(CreateCloudInitImageRequest{
 			Name:             meta.Name,
 			ImagePath:        path,
 			OSType:           meta.OSType,
-			Description:      "Discovered from " + defaultCloudImageDir,
+			Description:      "Discovered from " + s.cloudImageDir,
 			IsDefault:        false,
 			SSHUser:          meta.SSHUser,
 			DefaultCPU:       meta.DefaultCPU,

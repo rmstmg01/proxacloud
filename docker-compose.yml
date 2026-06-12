@@ -46,6 +46,7 @@ services:
       TERRAFORM_WORKDIR: /app/backend/data/terraform/runs
       ANSIBLE_WORKDIR: /app/backend/data/ansible/runs
       OPERATIONS_WORKDIR: /app/backend/data/operations/runs
+      VPS_CLOUD_IMAGE_DIR: /var/lib/vz/template/cloud-images
       TERRAFORM_AUTO_APPLY: "false"
       ANSIBLE_AUTO_APPLY: "false"
       KUBECONFIG: /app/backend/.kube/config
@@ -58,6 +59,8 @@ services:
       - ./infra:/app/backend/infra
       - ./backups:/app/backend/backups
       - backend_data:/app/backend/data
+      # Mount the Proxmox cloud-image folder so VPS image discovery can scan it.
+      - ${VPS_CLOUD_IMAGE_HOST_DIR:-/var/lib/vz/template/cloud-images}:/var/lib/vz/template/cloud-images:ro
       # Mount the host kubeconfig directory, not the kubeconfig file.
       # On the hosted Linux server this makes auto-bootstrap write /root/.kube/config
       # through /app/backend/.kube/config, equivalent to docker cp + chmod 600.
