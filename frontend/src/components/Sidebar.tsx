@@ -11,14 +11,12 @@ import {
   FileCode,
   BookOpen,
   GitBranch,
-  LogOut,
   Database,
   Cloud,
   BarChart3,
   SquareTerminal,
   Box,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
 
 const navGroups = [
   {
@@ -71,8 +69,6 @@ const navGroups = [
 ];
 
 export function Sidebar() {
-  const { user, logout } = useAuth();
-
   return (
     <aside className="w-64 flex-shrink-0 bg-slate-900 text-slate-100 flex flex-col h-screen sticky top-0">
       {/* Logo */}
@@ -119,25 +115,6 @@ export function Sidebar() {
         </div>
       </nav>
 
-      {/* User section */}
-      <div className="px-3 py-4 border-t border-slate-700">
-        <div className="flex items-center gap-3 px-3 py-2 mb-1">
-          <div className="w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center text-xs font-bold text-white uppercase">
-            {user?.username?.[0] ?? '?'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">{user?.username}</p>
-            <p className="text-xs text-slate-400 truncate">{user?.role?.replace(/_/g, ' ')}</p>
-          </div>
-        </div>
-        <button
-          onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
-        >
-          <LogOut className="h-4 w-4" />
-          Sign out
-        </button>
-      </div>
     </aside>
   );
 }
