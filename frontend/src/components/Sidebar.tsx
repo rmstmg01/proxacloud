@@ -72,21 +72,21 @@ export function Sidebar() {
   return (
     <aside className="w-60 flex-shrink-0 bg-slate-900 text-slate-100 flex flex-col h-screen sticky top-0">
       {/* Logo */}
-      <div className="px-5 py-5 border-b border-slate-700">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
+      <div className="border-b border-slate-700 px-4 py-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-500">
             <Server className="h-4 w-4 text-white" />
           </div>
-          <div>
-            <p className="text-sm font-bold text-white leading-tight">K8s Proxmox</p>
-            <p className="text-xs text-slate-400">Manager</p>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold leading-tight text-white">K8s Proxmox</p>
+            <p className="truncate text-[11px] leading-tight text-slate-400">Manager</p>
           </div>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 overflow-y-auto">
-        <div className="space-y-5">
+      <nav className="scrollbar-hidden flex-1 overflow-y-auto px-3 py-3">
+        <div className="space-y-4">
           {navGroups.map((group) => (
             <div key={group.label}>
               <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
