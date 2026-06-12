@@ -551,6 +551,9 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	if req.ImagePath == "" {
 		return CloudInitImage{}, errors.New("image_path is required")
 	}
+	if err := validateCloudInitImagePath(req.ImagePath); err != nil {
+		return CloudInitImage{}, err
+	}
 	if req.OSType == "" {
 		req.OSType = "ubuntu"
 	}
@@ -600,9 +603,9 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 	if err != nil {
 		return nil, fmt.Errorf("load proxmox credentials: %w", err)
 	}
-	content, err := s.proxmoxCredentials.ListStorageContent(cred, nodeName, "local", "iso")
+	content, err := s.proxmoxCredentials.ListStorageContent(cred, nodeName, "local", "import")
 	if err != nil {
-		return nil, fmt.Errorf("list Proxmox local:iso content on node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("list Proxmox local:import content on node %s: %w", nodeName, err)
 	}
 	discovered := make([]CloudInitImage, 0)
 	for _, item := range content {
@@ -616,7 +619,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 			Name:             meta.Name,
 			ImagePath:        volID,
 			OSType:           meta.OSType,
-			Description:      "Discovered from Proxmox local:iso on " + nodeName,
+			Description:      "Discovered from Proxmox local:import on " + nodeName,
 			IsDefault:        false,
 			SSHUser:          meta.SSHUser,
 			DefaultCPU:       meta.DefaultCPU,
@@ -631,7 +634,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 		discovered = append(discovered, image)
 	}
 	if len(discovered) == 0 {
-		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:iso on node %s. Move or upload the image under /var/lib/vz/template/iso on that Proxmox node, then discover again", nodeName)
+		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:import on node %s. Move or upload the image under /var/lib/vz/template/import on that Proxmox node, then discover again", nodeName)
 	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
@@ -704,21 +707,32 @@ func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, erro
 		if err != nil {
 			return CloudInitImage{}, fmt.Errorf("load cloud-init image: %w", err)
 		}
+		if err := validateCloudInitImagePath(image.ImagePath); err != nil {
+			return CloudInitImage{}, err
+		}
 		return image, nil
 	}
-	if strings.TrimSpace(imagePath) == "" {
+	imagePath = strings.TrimSpace(imagePath)
+	if imagePath == "" {
 		return CloudInitImage{}, errors.New("select a cloud-init image or provide image path")
 	}
+	if err := validateCloudInitImagePath(imagePath); err != nil {
+		return CloudInitImage{}, err
+	}
 	meta := inferCloudImageMetadata(filepath.Base(imagePath))
-	return CloudInitImage{ImagePath: strings.TrimSpace(imagePath), SSHUser: meta.SSHUser, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
+	return CloudInitImage{ImagePath: imagePath, SSHUser: meta.SSHUser, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
 }
 
 func isSupportedCloudImageVolID(volID string) bool {
 	lower := strings.ToLower(strings.TrimSpace(volID))
-	if !strings.HasPrefix(lower, "local:iso/") {
+	if !strings.HasPrefix(lower, "local:import/") {
 		return false
 	}
-	switch path.Ext(lower) {
+	return hasSupportedCloudImageExtension(lower)
+}
+
+func hasSupportedCloudImageExtension(name string) bool {
+	switch path.Ext(strings.ToLower(strings.TrimSpace(name))) {
 	case ".qcow2", ".img", ".raw":
 		return true
 	default:
@@ -726,10 +740,21 @@ func isSupportedCloudImageVolID(volID string) bool {
 	}
 }
 
+func validateCloudInitImagePath(imagePath string) error {
+	trimmed := strings.TrimSpace(imagePath)
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, ":iso/") && hasSupportedCloudImageExtension(lower) {
+		return fmt.Errorf("cloud image %q is stored as Proxmox ISO content. Move the uncompressed cloud image to /var/lib/vz/template/import on the Proxmox node and use local:import/%s", trimmed, proxmoxStorageFilename(trimmed))
+	}
+	return nil
+}
+
 func proxmoxStorageFilename(volID string) string {
 	filename := path.Base(strings.TrimSpace(volID))
 	if filename == "." || filename == "/" {
-		return strings.TrimPrefix(strings.TrimSpace(volID), "local:iso/")
+		trimmed := strings.TrimSpace(volID)
+		trimmed = strings.TrimPrefix(trimmed, "local:import/")
+		return strings.TrimPrefix(trimmed, "local:iso/")
 	}
 	return filename
 }

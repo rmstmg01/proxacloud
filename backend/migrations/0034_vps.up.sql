@@ -12,9 +12,9 @@ CREATE TABLE IF NOT EXISTS vps_cloud_init_images (
 INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default)
 VALUES (
     'Ubuntu 24.04 Cloud Image',
-    'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
+    'local:import/ubuntu-24.04-server-cloudimg-amd64.img',
     'ubuntu',
-    'Default Ubuntu 24.04 cloud-init image path',
+    'Default Ubuntu 24.04 cloud-init import image path',
     TRUE
 )
 ON CONFLICT (image_path) DO NOTHING;

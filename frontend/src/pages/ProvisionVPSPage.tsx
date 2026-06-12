@@ -402,7 +402,7 @@ export function ProvisionVPSPage() {
                   cloud_init_image_path: event.target.value,
                 }));
               }}
-              placeholder="local:iso/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
+              placeholder="local:import/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
               required
             />
             {form.cloud_init_image_id > 0 && (
@@ -471,7 +471,7 @@ export function ProvisionVPSPage() {
             label="Image path"
             value={imageForm.image_path}
             onChange={(event) => setImageForm({ ...imageForm, image_path: event.target.value })}
-            placeholder="local:iso/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
+            placeholder="local:import/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
             required
           />
           <Input label="OS type" value={imageForm.os_type} onChange={(event) => setImageForm({ ...imageForm, os_type: event.target.value })} required />

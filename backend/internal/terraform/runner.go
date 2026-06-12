@@ -922,6 +922,10 @@ variable "ip_address" {
   default = ""
 }
 
+locals {
+  cloud_init_image_is_import = can(regex(":import/", var.cloud_init_image))
+}
+
 resource "proxmox_virtual_environment_file" "cloud_init" {
   content_type = "snippets"
   datastore_id = "local"
@@ -965,7 +969,8 @@ resource "proxmox_virtual_environment_vm" "vps" {
 
   disk {
     datastore_id = "local-lvm"
-    file_id      = var.cloud_init_image
+    file_id      = local.cloud_init_image_is_import ? null : var.cloud_init_image
+    import_from  = local.cloud_init_image_is_import ? var.cloud_init_image : null
     interface    = "scsi0"
     size         = var.disk_gb
   }
