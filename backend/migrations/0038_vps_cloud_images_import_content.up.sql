@@ -33,3 +33,14 @@ UPDATE vps_instances
    SET cloud_init_image_path = regexp_replace(cloud_init_image_path, '^local:iso/', 'local:import/'),
        updated_at = NOW()
  WHERE cloud_init_image_path ~* '^local:iso/.*\.(qcow2|img|raw)$';
+
+UPDATE vps_cloud_init_images
+   SET os_type = 'almalinux',
+       ssh_user = 'almalinux',
+       default_cpu = GREATEST(default_cpu, 2),
+       default_memory_mb = GREATEST(default_memory_mb, 2048),
+       default_disk_gb = GREATEST(default_disk_gb, 20),
+       updated_at = NOW()
+ WHERE lower(name) LIKE '%almalinux%'
+    OR lower(image_path) LIKE '%almalinux%'
+    OR lower(source_path) LIKE '%almalinux%';

@@ -956,6 +956,7 @@ resource "proxmox_virtual_environment_vm" "vps" {
 
   cpu {
     cores = var.cpu
+    type  = "host"
   }
 
   memory {

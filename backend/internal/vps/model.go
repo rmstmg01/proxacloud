@@ -554,20 +554,21 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	if err := validateCloudInitImagePath(req.ImagePath); err != nil {
 		return CloudInitImage{}, err
 	}
-	if req.OSType == "" {
-		req.OSType = "ubuntu"
+	meta := inferCloudImageMetadata(proxmoxStorageFilename(req.ImagePath))
+	if req.OSType == "" || (req.OSType == "ubuntu" && meta.OSType != "generic" && meta.OSType != "ubuntu") {
+		req.OSType = meta.OSType
 	}
 	if req.SSHUser == "" {
-		req.SSHUser = defaultSSHUserForOS(req.OSType)
+		req.SSHUser = meta.SSHUser
 	}
 	if req.DefaultCPU <= 0 {
-		req.DefaultCPU = 1
+		req.DefaultCPU = meta.DefaultCPU
 	}
 	if req.DefaultMemoryMB <= 0 {
-		req.DefaultMemoryMB = 1024
+		req.DefaultMemoryMB = meta.DefaultMemoryMB
 	}
 	if req.DefaultDiskGB <= 0 {
-		req.DefaultDiskGB = 20
+		req.DefaultDiskGB = meta.DefaultDiskGB
 	}
 	if req.IsDefault {
 		if _, err := s.db.Exec(`UPDATE vps_cloud_init_images SET is_default = FALSE WHERE is_default = TRUE`); err != nil {
@@ -634,7 +635,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 		discovered = append(discovered, image)
 	}
 	if len(discovered) == 0 {
-		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:import on node %s. Move or upload the image under /var/lib/vz/template/import on that Proxmox node, then discover again", nodeName)
+		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:import on node %s. Move or upload the image under /var/lib/vz/import on that Proxmox node, then discover again", nodeName)
 	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
@@ -744,7 +745,7 @@ func validateCloudInitImagePath(imagePath string) error {
 	trimmed := strings.TrimSpace(imagePath)
 	lower := strings.ToLower(trimmed)
 	if strings.Contains(lower, ":iso/") && hasSupportedCloudImageExtension(lower) {
-		return fmt.Errorf("cloud image %q is stored as Proxmox ISO content. Move the uncompressed cloud image to /var/lib/vz/template/import on the Proxmox node and use local:import/%s", trimmed, proxmoxStorageFilename(trimmed))
+		return fmt.Errorf("cloud image %q is stored as Proxmox ISO content. Move the uncompressed cloud image to /var/lib/vz/import on the Proxmox node and use local:import/%s", trimmed, proxmoxStorageFilename(trimmed))
 	}
 	return nil
 }
