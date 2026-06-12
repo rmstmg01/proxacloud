@@ -25,7 +25,16 @@ export const createVPSCloudInitImage = (body: {
   os_type: string;
   description: string;
   is_default: boolean;
+  ssh_user?: string;
+  default_cpu?: number;
+  default_memory_mb?: number;
+  default_disk_gb?: number;
+  source_path?: string;
+  detected_node_name?: string;
 }) => client.post<VPSCloudInitImage>('/vps/cloud-init-images', body).then((r) => r.data);
+
+export const discoverVPSCloudInitImages = (nodeName: string) =>
+  client.post<VPSCloudInitImage[]>('/vps/cloud-init-images/discover', { node_name: nodeName }).then((r) => r.data);
 
 export const createVPSInstance = (body: {
   name: string;
@@ -41,6 +50,7 @@ export const createVPSInstance = (body: {
   cpu: number;
   memory_mb: number;
   disk_gb: number;
+  ssh_user: string;
   root_password: string;
   apply: boolean;
 }) => client.post<VPSCreateResponse>('/vps', body).then((r) => r.data);

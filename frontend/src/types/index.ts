@@ -108,6 +108,12 @@ export interface VPSCloudInitImage {
   os_type: string;
   description: string;
   is_default: boolean;
+  ssh_user: string;
+  default_cpu: number;
+  default_memory_mb: number;
+  default_disk_gb: number;
+  source_path: string;
+  detected_node_name: string;
   created_at: string;
   updated_at: string;
 }

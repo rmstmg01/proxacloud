@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,6 +24,8 @@ const (
 	IPModeDHCP   = "dhcp"
 	IPModeManual = "manual"
 	IPModeAuto   = "auto"
+
+	defaultCloudImageDir = "/var/lib/vz/template/cloud-images"
 )
 
 var (
@@ -60,22 +64,34 @@ type Service struct {
 }
 
 type CloudInitImage struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	ImagePath   string    `json:"image_path"`
-	OSType      string    `json:"os_type"`
-	Description string    `json:"description"`
-	IsDefault   bool      `json:"is_default"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID               int64     `json:"id"`
+	Name             string    `json:"name"`
+	ImagePath        string    `json:"image_path"`
+	OSType           string    `json:"os_type"`
+	Description      string    `json:"description"`
+	IsDefault        bool      `json:"is_default"`
+	SSHUser          string    `json:"ssh_user"`
+	DefaultCPU       int       `json:"default_cpu"`
+	DefaultMemoryMB  int       `json:"default_memory_mb"`
+	DefaultDiskGB    int       `json:"default_disk_gb"`
+	SourcePath       string    `json:"source_path"`
+	DetectedNodeName string    `json:"detected_node_name"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type CreateCloudInitImageRequest struct {
-	Name        string `json:"name"`
-	ImagePath   string `json:"image_path"`
-	OSType      string `json:"os_type"`
-	Description string `json:"description"`
-	IsDefault   bool   `json:"is_default"`
+	Name             string `json:"name"`
+	ImagePath        string `json:"image_path"`
+	OSType           string `json:"os_type"`
+	Description      string `json:"description"`
+	IsDefault        bool   `json:"is_default"`
+	SSHUser          string `json:"ssh_user"`
+	DefaultCPU       int    `json:"default_cpu"`
+	DefaultMemoryMB  int    `json:"default_memory_mb"`
+	DefaultDiskGB    int    `json:"default_disk_gb"`
+	SourcePath       string `json:"source_path"`
+	DetectedNodeName string `json:"detected_node_name"`
 }
 
 type Instance struct {
@@ -126,6 +142,7 @@ type CreateRequest struct {
 	CPU                 int    `json:"cpu"`
 	MemoryMB            int    `json:"memory_mb"`
 	DiskGB              int    `json:"disk_gb"`
+	SSHUser             string `json:"ssh_user"`
 	RootPassword        string `json:"root_password"`
 	Apply               bool   `json:"apply"`
 }
@@ -232,7 +249,13 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	req.CloudInitImageID = image.ID
 	req.CloudInitImagePath = image.ImagePath
 
-	sshUser := "ubuntu"
+	sshUser := strings.TrimSpace(req.SSHUser)
+	if sshUser == "" {
+		sshUser = strings.TrimSpace(image.SSHUser)
+	}
+	if sshUser == "" {
+		sshUser = "ubuntu"
+	}
 	sshPublicKey := ""
 	if req.SSHKeyPairID > 0 {
 		pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
@@ -240,10 +263,6 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 			return CreateResponse{}, fmt.Errorf("load ssh key pair: %w", err)
 		}
 		sshPublicKey = strings.TrimSpace(pair.PublicKey)
-		sshUser = strings.TrimSpace(pair.SSHUser)
-		if sshUser == "" {
-			sshUser = "ubuntu"
-		}
 	}
 
 	rootPassword := strings.TrimSpace(req.RootPassword)
@@ -502,7 +521,7 @@ func (s *Service) ListEvents(id int64) ([]Event, error) {
 }
 
 func (s *Service) ListImages() ([]CloudInitImage, error) {
-	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, created_at, updated_at FROM vps_cloud_init_images ORDER BY is_default DESC, name ASC`)
+	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at FROM vps_cloud_init_images ORDER BY is_default DESC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list cloud-init images: %w", err)
 	}
@@ -510,7 +529,7 @@ func (s *Service) ListImages() ([]CloudInitImage, error) {
 	out := []CloudInitImage{}
 	for rows.Next() {
 		var image CloudInitImage
-		if err := rows.Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.CreatedAt, &image.UpdatedAt); err != nil {
+		if err := scanCloudInitImage(rows, &image); err != nil {
 			return nil, err
 		}
 		out = append(out, image)
@@ -523,6 +542,9 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	req.ImagePath = strings.TrimSpace(req.ImagePath)
 	req.OSType = strings.TrimSpace(req.OSType)
 	req.Description = strings.TrimSpace(req.Description)
+	req.SSHUser = strings.TrimSpace(req.SSHUser)
+	req.SourcePath = strings.TrimSpace(req.SourcePath)
+	req.DetectedNodeName = strings.TrimSpace(req.DetectedNodeName)
 	if req.Name == "" {
 		return CloudInitImage{}, errors.New("name is required")
 	}
@@ -532,6 +554,18 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	if req.OSType == "" {
 		req.OSType = "ubuntu"
 	}
+	if req.SSHUser == "" {
+		req.SSHUser = defaultSSHUserForOS(req.OSType)
+	}
+	if req.DefaultCPU <= 0 {
+		req.DefaultCPU = 1
+	}
+	if req.DefaultMemoryMB <= 0 {
+		req.DefaultMemoryMB = 1024
+	}
+	if req.DefaultDiskGB <= 0 {
+		req.DefaultDiskGB = 20
+	}
 	if req.IsDefault {
 		if _, err := s.db.Exec(`UPDATE vps_cloud_init_images SET is_default = FALSE WHERE is_default = TRUE`); err != nil {
 			return CloudInitImage{}, fmt.Errorf("clear default cloud-init image: %w", err)
@@ -539,15 +573,57 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	}
 	var image CloudInitImage
 	err := s.db.QueryRow(
-		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, name, image_path, os_type, description, is_default, created_at, updated_at`,
-		req.Name, req.ImagePath, req.OSType, req.Description, req.IsDefault,
-	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.CreatedAt, &image.UpdatedAt)
+		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (image_path) DO UPDATE SET name = EXCLUDED.name, os_type = EXCLUDED.os_type, description = EXCLUDED.description, is_default = EXCLUDED.is_default, ssh_user = EXCLUDED.ssh_user, default_cpu = EXCLUDED.default_cpu, default_memory_mb = EXCLUDED.default_memory_mb, default_disk_gb = EXCLUDED.default_disk_gb, source_path = EXCLUDED.source_path, detected_node_name = EXCLUDED.detected_node_name, updated_at = NOW()
+		 RETURNING id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at`,
+		req.Name, req.ImagePath, req.OSType, req.Description, req.IsDefault, req.SSHUser, req.DefaultCPU, req.DefaultMemoryMB, req.DefaultDiskGB, req.SourcePath, req.DetectedNodeName,
+	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.CreatedAt, &image.UpdatedAt)
 	if err != nil {
 		return CloudInitImage{}, fmt.Errorf("create cloud-init image: %w", err)
 	}
 	return image, nil
+}
+
+func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
+	entries, err := os.ReadDir(defaultCloudImageDir)
+	if err != nil {
+		return nil, fmt.Errorf("scan cloud image directory %s: %w", defaultCloudImageDir, err)
+	}
+	discovered := make([]CloudInitImage, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		ext := strings.ToLower(filepath.Ext(name))
+		if ext != ".qcow2" && ext != ".img" && ext != ".raw" {
+			continue
+		}
+		path := filepath.Join(defaultCloudImageDir, name)
+		meta := inferCloudImageMetadata(name)
+		image, err := s.CreateImage(CreateCloudInitImageRequest{
+			Name:             meta.Name,
+			ImagePath:        path,
+			OSType:           meta.OSType,
+			Description:      "Discovered from " + defaultCloudImageDir,
+			IsDefault:        false,
+			SSHUser:          meta.SSHUser,
+			DefaultCPU:       meta.DefaultCPU,
+			DefaultMemoryMB:  meta.DefaultMemoryMB,
+			DefaultDiskGB:    meta.DefaultDiskGB,
+			SourcePath:       path,
+			DetectedNodeName: strings.TrimSpace(nodeName),
+		})
+		if err != nil {
+			return nil, err
+		}
+		discovered = append(discovered, image)
+	}
+	sort.Slice(discovered, func(i, j int) bool {
+		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
+	})
+	return discovered, nil
 }
 
 func (s *Service) validateCreateRequest(req *CreateRequest) error {
@@ -555,6 +631,7 @@ func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	req.Description = strings.TrimSpace(req.Description)
 	req.ProxmoxNodeName = strings.TrimSpace(req.ProxmoxNodeName)
 	req.CloudInitImagePath = strings.TrimSpace(req.CloudInitImagePath)
+	req.SSHUser = strings.TrimSpace(req.SSHUser)
 	req.IPMode = strings.TrimSpace(strings.ToLower(req.IPMode))
 	req.IPAddress = strings.TrimSpace(req.IPAddress)
 	if req.IPMode == "" {
@@ -606,8 +683,8 @@ func (s *Service) validateNode(credentialID int64, nodeName string) error {
 func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, error) {
 	if id > 0 {
 		var image CloudInitImage
-		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1`, id).
-			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.CreatedAt, &image.UpdatedAt)
+		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1`, id).
+			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.CreatedAt, &image.UpdatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return CloudInitImage{}, errors.New("selected cloud-init image not found")
 		}
@@ -619,7 +696,8 @@ func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, erro
 	if strings.TrimSpace(imagePath) == "" {
 		return CloudInitImage{}, errors.New("select a cloud-init image or provide image path")
 	}
-	return CloudInitImage{ImagePath: strings.TrimSpace(imagePath)}, nil
+	meta := inferCloudImageMetadata(filepath.Base(imagePath))
+	return CloudInitImage{ImagePath: strings.TrimSpace(imagePath), SSHUser: meta.SSHUser, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
 }
 
 func (s *Service) resolveIPAddress(req CreateRequest) (string, error) {
@@ -750,6 +828,87 @@ func scanInstance(rows interface {
 		&rec.CreatedAt,
 		&rec.UpdatedAt,
 	)
+}
+
+func scanCloudInitImage(rows interface {
+	Scan(dest ...any) error
+}, image *CloudInitImage) error {
+	return rows.Scan(
+		&image.ID,
+		&image.Name,
+		&image.ImagePath,
+		&image.OSType,
+		&image.Description,
+		&image.IsDefault,
+		&image.SSHUser,
+		&image.DefaultCPU,
+		&image.DefaultMemoryMB,
+		&image.DefaultDiskGB,
+		&image.SourcePath,
+		&image.DetectedNodeName,
+		&image.CreatedAt,
+		&image.UpdatedAt,
+	)
+}
+
+type inferredCloudImage struct {
+	Name            string
+	OSType          string
+	SSHUser         string
+	DefaultCPU      int
+	DefaultMemoryMB int
+	DefaultDiskGB   int
+}
+
+func inferCloudImageMetadata(filename string) inferredCloudImage {
+	lower := strings.ToLower(filename)
+	name := strings.TrimSuffix(filename, filepath.Ext(filename))
+	out := inferredCloudImage{
+		Name:            strings.NewReplacer("_", " ", "-", " ").Replace(name),
+		OSType:          "generic",
+		SSHUser:         "cloud-user",
+		DefaultCPU:      2,
+		DefaultMemoryMB: 2048,
+		DefaultDiskGB:   20,
+	}
+	switch {
+	case strings.Contains(lower, "almalinux"):
+		out.OSType = "almalinux"
+		out.SSHUser = "almalinux"
+	case strings.Contains(lower, "ubuntu"):
+		out.OSType = "ubuntu"
+		out.SSHUser = "ubuntu"
+	case strings.Contains(lower, "debian"):
+		out.OSType = "debian"
+		out.SSHUser = "debian"
+	case strings.Contains(lower, "rocky"):
+		out.OSType = "rocky"
+		out.SSHUser = "rocky"
+	case strings.Contains(lower, "centos"):
+		out.OSType = "centos"
+		out.SSHUser = "centos"
+	case strings.Contains(lower, "fedora"):
+		out.OSType = "fedora"
+		out.SSHUser = "fedora"
+	}
+	return out
+}
+
+func defaultSSHUserForOS(osType string) string {
+	switch strings.ToLower(strings.TrimSpace(osType)) {
+	case "almalinux":
+		return "almalinux"
+	case "ubuntu":
+		return "ubuntu"
+	case "debian":
+		return "debian"
+	case "rocky":
+		return "rocky"
+	case "centos", "fedora", "generic":
+		return "cloud-user"
+	default:
+		return "cloud-user"
+	}
 }
 
 func terraformAuthFromCredential(cred proxmox.Credential) terraform.ProxmoxAuth {

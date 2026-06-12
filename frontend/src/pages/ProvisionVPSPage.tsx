@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus } from 'lucide-react';
-import { createVPSCloudInitImage, createVPSInstance, getVPSCloudInitImages } from '../api/vps';
+import { createVPSCloudInitImage, createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
 import { createSSHKey, getSSHKeys } from '../api/sshKeys';
@@ -12,6 +12,22 @@ import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
+import type { VPSCloudInitImage } from '../types';
+
+function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_image_path: string; ssh_user: string; cpu: number; memory_mb: number; disk_gb: number }>(
+  prev: T,
+  image: VPSCloudInitImage,
+): T {
+  return {
+    ...prev,
+    cloud_init_image_id: image.id,
+    cloud_init_image_path: image.image_path,
+    ssh_user: image.ssh_user || prev.ssh_user,
+    cpu: image.default_cpu || prev.cpu,
+    memory_mb: image.default_memory_mb || prev.memory_mb,
+    disk_gb: image.default_disk_gb || prev.disk_gb,
+  };
+}
 
 export function ProvisionVPSPage() {
   const navigate = useNavigate();
@@ -46,6 +62,7 @@ export function ProvisionVPSPage() {
     cloud_init_image_id: 0,
     cloud_init_image_path: '',
     ssh_key_pair_id: 0,
+    ssh_user: 'ubuntu',
     ip_mode: 'auto' as 'dhcp' | 'manual' | 'auto',
     ip_address: '',
     cpu: 1,
@@ -70,11 +87,7 @@ export function ProvisionVPSPage() {
   useEffect(() => {
     const defaultImage = images?.find((image) => image.is_default) ?? images?.[0];
     if (defaultImage && form.cloud_init_image_id === 0 && form.cloud_init_image_path === '') {
-      setForm((prev) => ({
-        ...prev,
-        cloud_init_image_id: defaultImage.id,
-        cloud_init_image_path: defaultImage.image_path,
-      }));
+      setForm((prev) => applyImageDefaults(prev, defaultImage));
     }
   }, [images, form.cloud_init_image_id, form.cloud_init_image_path]);
 
@@ -115,13 +128,19 @@ export function ProvisionVPSPage() {
     mutationFn: createVPSCloudInitImage,
     onSuccess: (image) => {
       queryClient.invalidateQueries({ queryKey: ['vps-cloud-init-images'] });
-      setForm((prev) => ({
-        ...prev,
-        cloud_init_image_id: image.id,
-        cloud_init_image_path: image.image_path,
-      }));
+      setForm((prev) => applyImageDefaults(prev, image));
       setImageForm({ name: '', image_path: '', os_type: 'ubuntu', description: '', is_default: false });
       setImageModalOpen(false);
+    },
+  });
+  const discoverImagesMutation = useMutation({
+    mutationFn: () => discoverVPSCloudInitImages(form.proxmox_node_name),
+    onSuccess: (discovered) => {
+      queryClient.invalidateQueries({ queryKey: ['vps-cloud-init-images'] });
+      const preferred = discovered.find((image) => image.image_path.toLowerCase().includes('almalinux')) ?? discovered[0];
+      if (preferred) {
+        setForm((prev) => applyImageDefaults(prev, preferred));
+      }
     },
   });
 
@@ -306,6 +325,12 @@ export function ProvisionVPSPage() {
               </Button>
             </div>
             <Input
+              label="SSH user"
+              value={form.ssh_user}
+              onChange={(event) => setField('ssh_user', event.target.value)}
+              required
+            />
+            <Input
               label="Root password"
               type="password"
               value={form.root_password}
@@ -328,27 +353,30 @@ export function ProvisionVPSPage() {
                 onChange={(event) => {
                   const selectedID = Number(event.target.value);
                   const selected = images?.find((image) => image.id === selectedID);
-                  setForm((prev) => ({
-                    ...prev,
-                    cloud_init_image_id: selectedID,
-                    cloud_init_image_path: selected ? selected.image_path : prev.cloud_init_image_path,
-                  }));
+                  if (selected) {
+                    setForm((prev) => applyImageDefaults(prev, selected));
+                  } else {
+                    setForm((prev) => ({ ...prev, cloud_init_image_id: 0, cloud_init_image_path: '' }));
+                  }
                 }}
               >
-                <option value={0}>-- Custom image path --</option>
+                <option value={0}>-- Select discovered image --</option>
                 {images?.map((image) => (
                   <option key={image.id} value={image.id}>
                     {image.name} {image.is_default ? '(default)' : ''}
                   </option>
                 ))}
               </Select>
+              <Button type="button" variant="secondary" onClick={() => discoverImagesMutation.mutate()} loading={discoverImagesMutation.isPending}>
+                Discover Images
+              </Button>
               <Button type="button" variant="secondary" onClick={() => setImageModalOpen(true)}>
                 <Plus className="h-4 w-4" />
                 Add Image
               </Button>
             </div>
             <Input
-              label="Image path"
+              label="Detected image path"
               value={form.cloud_init_image_path}
               onChange={(event) => {
                 setForm((prev) => ({
@@ -357,9 +385,15 @@ export function ProvisionVPSPage() {
                   cloud_init_image_path: event.target.value,
                 }));
               }}
-              placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img"
+              placeholder="/var/lib/vz/template/cloud-images/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
               required
             />
+            {form.cloud_init_image_id > 0 && (
+              <p className="text-xs text-slate-500">
+                Selecting an image applies its defaults for SSH user, CPU, RAM, and disk. Root password remains user-provided.
+              </p>
+            )}
+            {discoverImagesMutation.error && <ErrorMessage error={discoverImagesMutation.error} />}
           </CardContent>
         </Card>
 
