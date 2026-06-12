@@ -327,6 +327,65 @@ func (c *Client) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, v
 	return proxyWebSockets(downstream, upstream)
 }
 
+func (c *Client) CreateVMConsoleSessionByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsoleSession, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return VMConsoleSession{}, errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return VMConsoleSession{}, errors.New("vm name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return VMConsoleSession{}, fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return VMConsoleSession{}, err
+	}
+	return c.createVMConsoleSession(httpClient, base, cred, proxmoxNodeName, vm)
+}
+
+func (c *Client) ProxyVMConsoleSession(cred Credential, session VMConsoleSession, w http.ResponseWriter, r *http.Request) error {
+	if session.VMID <= 0 {
+		return errors.New("vmid is required")
+	}
+	if strings.TrimSpace(session.NodeName) == "" {
+		return errors.New("proxmox node name is required")
+	}
+	if strings.TrimSpace(session.Port) == "" || strings.TrimSpace(session.Ticket) == "" {
+		return errors.New("proxmox console session is incomplete")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	upstream, err := c.dialVMConsoleWebSocket(httpClient, base, cred, session)
+	if err != nil {
+		return err
+	}
+	defer upstream.Close()
+
+	upgrader := websocket.Upgrader{
+		Subprotocols: []string{"binary"},
+		CheckOrigin:  func(_ *http.Request) bool { return true },
+	}
+	downstream, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return fmt.Errorf("upgrade project console websocket: %w", err)
+	}
+	defer downstream.Close()
+
+	return proxyWebSockets(downstream, upstream)
+}
+
 func (c *Client) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	containerName = strings.TrimSpace(containerName)

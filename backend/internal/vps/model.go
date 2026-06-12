@@ -2,8 +2,10 @@ package vps
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s-proxmox-manager/backend/internal/networks"
@@ -47,6 +50,8 @@ type ProxmoxCredentialStore interface {
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
+	CreateVMConsoleSessionByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsoleSession, error)
+	ProxyVMConsoleSession(cred proxmox.Credential, session proxmox.VMConsoleSession, w http.ResponseWriter, r *http.Request) error
 	ProxyVMConsoleByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 }
@@ -64,6 +69,15 @@ type Service struct {
 	secrets            secrets.Store
 	terraformRunner    *terraform.Runner
 	autoApply          bool
+	consoleSessionsMu  sync.Mutex
+	consoleSessions    map[string]consoleSessionRecord
+}
+
+type consoleSessionRecord struct {
+	VPSID      int64
+	Credential proxmox.Credential
+	Session    proxmox.VMConsoleSession
+	ExpiresAt  time.Time
 }
 
 type CloudInitImage struct {
@@ -167,11 +181,14 @@ type ActionResponse struct {
 }
 
 type ConsoleResponse struct {
-	VPSID    int64    `json:"vps_id"`
-	VMID     int      `json:"vmid"`
-	NodeName string   `json:"node_name"`
-	URL      string   `json:"url"`
-	Warnings []string `json:"warnings"`
+	VPSID         int64    `json:"vps_id"`
+	VMID          int      `json:"vmid"`
+	NodeName      string   `json:"node_name"`
+	URL           string   `json:"url"`
+	SessionID     string   `json:"session_id"`
+	WebSocketPath string   `json:"websocket_path"`
+	Password      string   `json:"password"`
+	Warnings      []string `json:"warnings"`
 }
 
 func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool) *Service {
@@ -184,6 +201,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 		secrets:            secretStore,
 		terraformRunner:    terraformRunner,
 		autoApply:          autoApply,
+		consoleSessions:    make(map[string]consoleSessionRecord),
 	}
 }
 
@@ -490,29 +508,54 @@ func (s *Service) Console(id int64) (ConsoleResponse, error) {
 	if err != nil {
 		return ConsoleResponse{}, err
 	}
-	_ = s.insertEvent(id, "console", "info", "Project console page opened", rec.VMName)
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return ConsoleResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	session, err := s.proxmoxCredentials.CreateVMConsoleSessionByName(cred, rec.ProxmoxNodeName, rec.VMName)
+	if err != nil {
+		_ = s.insertEvent(id, "console", "error", "Create Proxmox console session failed", err.Error())
+		return ConsoleResponse{VPSID: id, Warnings: []string{err.Error()}}, err
+	}
+	sessionID, err := newConsoleSessionID()
+	if err != nil {
+		return ConsoleResponse{}, err
+	}
+	expiresAt := time.Now().Add(2 * time.Minute)
+	s.storeConsoleSession(sessionID, consoleSessionRecord{
+		VPSID:      id,
+		Credential: cred,
+		Session:    session,
+		ExpiresAt:  expiresAt,
+	})
+
+	_ = s.insertEvent(id, "console", "info", "Project console session created", fmt.Sprintf("node=%s vmid=%d", session.NodeName, session.VMID))
 	return ConsoleResponse{
-		VPSID:    id,
-		NodeName: rec.ProxmoxNodeName,
-		URL:      fmt.Sprintf("/vps/%d/console", id),
-		Warnings: []string{},
+		VPSID:         id,
+		VMID:          session.VMID,
+		NodeName:      session.NodeName,
+		URL:           fmt.Sprintf("/vps/%d/console?session=%s", id, sessionID),
+		SessionID:     sessionID,
+		WebSocketPath: fmt.Sprintf("/api/v1/vps/%d/console/ws?session=%s", id, sessionID),
+		Password:      session.Ticket,
+		Warnings:      []string{},
 	}, nil
 }
 
 func (s *Service) ProxyConsole(w http.ResponseWriter, r *http.Request, id int64) error {
-	rec, err := s.Get(id)
-	if err != nil {
-		return err
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session"))
+	if sessionID == "" {
+		return errors.New("console session is required")
 	}
-	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
-	if err != nil {
-		return fmt.Errorf("load proxmox credentials: %w", err)
+	rec, ok := s.takeConsoleSession(sessionID, id)
+	if !ok {
+		return errors.New("console session is missing or expired; reconnect the console")
 	}
-	if err := s.proxmoxCredentials.ProxyVMConsoleByName(cred, rec.ProxmoxNodeName, rec.VMName, w, r); err != nil {
+	if err := s.proxmoxCredentials.ProxyVMConsoleSession(rec.Credential, rec.Session, w, r); err != nil {
 		_ = s.insertEvent(id, "console", "error", "Project console websocket failed", err.Error())
 		return err
 	}
-	_ = s.insertEvent(id, "console", "info", "Project console websocket closed", rec.VMName)
+	_ = s.insertEvent(id, "console", "info", "Project console websocket closed", fmt.Sprintf("node=%s vmid=%d", rec.Session.NodeName, rec.Session.VMID))
 	return nil
 }
 
@@ -902,6 +945,41 @@ func (s *Service) updateStatus(id int64, status string) error {
 func (s *Service) insertEvent(id int64, action, level, message, output string) error {
 	_, err := s.db.Exec(`INSERT INTO vps_events (vps_id, action, level, message, output) VALUES ($1, $2, $3, $4, $5)`, id, action, level, message, output)
 	return err
+}
+
+func newConsoleSessionID() (string, error) {
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate console session id: %w", err)
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (s *Service) storeConsoleSession(id string, rec consoleSessionRecord) {
+	now := time.Now()
+	s.consoleSessionsMu.Lock()
+	defer s.consoleSessionsMu.Unlock()
+	for key, existing := range s.consoleSessions {
+		if now.After(existing.ExpiresAt) {
+			delete(s.consoleSessions, key)
+		}
+	}
+	s.consoleSessions[id] = rec
+}
+
+func (s *Service) takeConsoleSession(id string, vpsID int64) (consoleSessionRecord, bool) {
+	now := time.Now()
+	s.consoleSessionsMu.Lock()
+	defer s.consoleSessionsMu.Unlock()
+	rec, ok := s.consoleSessions[id]
+	if !ok {
+		return consoleSessionRecord{}, false
+	}
+	delete(s.consoleSessions, id)
+	if rec.VPSID != vpsID || now.After(rec.ExpiresAt) {
+		return consoleSessionRecord{}, false
+	}
+	return rec, true
 }
 
 func scanInstance(rows interface {

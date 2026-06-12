@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import RFB from '@novnc/novnc';
 import { ArrowLeft, Monitor, Power, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { openVPSConsole } from '../api/vps';
 import { Button } from '../components/ui/Button';
 
 type ConsoleState = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -29,16 +30,11 @@ export function VPSConsolePage() {
       return undefined;
     }
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsURL = `${wsProtocol}//${window.location.host}/api/v1/vps/${vpsID}/console/ws?token=${encodeURIComponent(token)}`;
-    const rfb = new RFB(screenRef.current, wsURL, { shared: true, wsProtocols: ['binary'] });
-    rfb.scaleViewport = true;
-    rfb.resizeSession = false;
-    rfb.viewOnly = false;
-    rfbRef.current = rfb;
-
+    let cancelled = false;
+    let rfb: RFB | null = null;
+    let consolePassword = '';
     setState('connecting');
-    setMessage('Connecting to VM console...');
+    setMessage('Creating console session...');
 
     const handleConnect = () => {
       setState('connected');
@@ -55,22 +51,48 @@ export function VPSConsolePage() {
       setMessage(detail?.reason || 'Console security negotiation failed.');
     };
     const handleCredentialsRequired = () => {
-      setState('error');
-      setMessage('The console requested additional VNC credentials.');
+      if (rfb) {
+        rfb.sendCredentials({ password: consolePassword });
+      }
     };
 
-    rfb.addEventListener('connect', handleConnect);
-    rfb.addEventListener('disconnect', handleDisconnect);
-    rfb.addEventListener('securityfailure', handleSecurityFailure);
-    rfb.addEventListener('credentialsrequired', handleCredentialsRequired);
+    openVPSConsole(vpsID)
+      .then((session) => {
+        if (cancelled || !screenRef.current) return;
+        consolePassword = session.password;
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const separator = session.websocket_path.includes('?') ? '&' : '?';
+        const wsURL = `${wsProtocol}//${window.location.host}${session.websocket_path}${separator}token=${encodeURIComponent(token)}`;
+        rfb = new RFB(screenRef.current, wsURL, {
+          shared: true,
+          wsProtocols: ['binary'],
+          credentials: { password: session.password },
+        });
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.viewOnly = false;
+        rfbRef.current = rfb;
+        rfb.addEventListener('connect', handleConnect);
+        rfb.addEventListener('disconnect', handleDisconnect);
+        rfb.addEventListener('securityfailure', handleSecurityFailure);
+        rfb.addEventListener('credentialsrequired', handleCredentialsRequired);
+        setMessage('Connecting to VM console...');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = err?.response?.data?.error || err?.message || 'Unable to create console session.';
+        setState('error');
+        setMessage(msg);
+      });
 
     return () => {
-      rfb.removeEventListener('connect', handleConnect);
-      rfb.removeEventListener('disconnect', handleDisconnect);
-      rfb.removeEventListener('securityfailure', handleSecurityFailure);
-      rfb.removeEventListener('credentialsrequired', handleCredentialsRequired);
-      rfb.disconnect();
-      if (rfbRef.current === rfb) {
+      cancelled = true;
+      rfb?.removeEventListener('connect', handleConnect);
+      rfb?.removeEventListener('disconnect', handleDisconnect);
+      rfb?.removeEventListener('securityfailure', handleSecurityFailure);
+      rfb?.removeEventListener('credentialsrequired', handleCredentialsRequired);
+      rfb?.disconnect();
+      if (rfb && rfbRef.current === rfb) {
         rfbRef.current = null;
       }
     };

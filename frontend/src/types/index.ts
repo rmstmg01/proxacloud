@@ -165,6 +165,9 @@ export interface VPSConsoleResponse {
   vmid: number;
   node_name: string;
   url: string;
+  session_id: string;
+  websocket_path: string;
+  password: string;
   warnings: string[];
 }
 

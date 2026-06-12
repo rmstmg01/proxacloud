@@ -255,6 +255,14 @@ func (s *Service) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vm
 	return s.client.VMConsoleURLByName(cred, proxmoxNodeName, vmName)
 }
 
+func (s *Service) CreateVMConsoleSessionByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsoleSession, error) {
+	return s.client.CreateVMConsoleSessionByName(cred, proxmoxNodeName, vmName)
+}
+
+func (s *Service) ProxyVMConsoleSession(cred Credential, session VMConsoleSession, w http.ResponseWriter, r *http.Request) error {
+	return s.client.ProxyVMConsoleSession(cred, session, w, r)
+}
+
 func (s *Service) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error {
 	return s.client.ProxyVMConsoleByName(cred, proxmoxNodeName, vmName, w, r)
 }

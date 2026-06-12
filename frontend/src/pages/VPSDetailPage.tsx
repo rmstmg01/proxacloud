@@ -5,7 +5,6 @@ import { ArrowLeft, History, Monitor, Play, Power, RefreshCw, RotateCcw } from '
 import {
   getVPSEvents,
   getVPSInstance,
-  openVPSConsole,
   redeployVPSInstance,
   refreshVPSStatus,
   restartVPSInstance,
@@ -60,7 +59,6 @@ export function VPSDetailPage() {
   const startMutation = useMutation({ mutationFn: startVPSInstance, onSuccess: invalidate });
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
-  const consoleMutation = useMutation({ mutationFn: openVPSConsole });
 
   const confirmRedeploy = (event: FormEvent) => {
     event.preventDefault();
@@ -70,21 +68,7 @@ export function VPSDetailPage() {
 
   const openConsole = () => {
     if (!vps) return;
-    const consoleWindow = window.open('about:blank', '_blank');
-    consoleMutation.mutate(vps.id, {
-      onSuccess: (result) => {
-        invalidate();
-        if (consoleWindow) {
-          consoleWindow.opener = null;
-          consoleWindow.location.href = result.url;
-          return;
-        }
-        window.open(result.url, '_blank', 'noopener,noreferrer');
-      },
-      onError: () => {
-        consoleWindow?.close();
-      },
-    });
+    window.open(`/vps/${vps.id}/console`, '_blank', 'noopener,noreferrer');
   };
 
   if (!Number.isFinite(vpsID) || vpsID <= 0) {
@@ -111,13 +95,12 @@ export function VPSDetailPage() {
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
-      {consoleMutation.error && <ErrorMessage error={consoleMutation.error} />}
       {showEvents && eventsError && <ErrorMessage error={eventsError} />}
 
       {vps && (
         <div className="space-y-6">
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" onClick={openConsole} loading={consoleMutation.isPending}>
+            <Button variant="primary" onClick={openConsole}>
               <Monitor className="h-4 w-4" />
               Console
             </Button>

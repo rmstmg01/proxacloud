@@ -5,6 +5,7 @@ declare module '@novnc/novnc' {
     resizeSession: boolean;
     viewOnly: boolean;
     disconnect(): void;
+    sendCredentials(credentials: Record<string, string>): void;
     sendCtrlAltDel(): void;
   }
 }
