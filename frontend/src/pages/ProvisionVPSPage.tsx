@@ -136,6 +136,17 @@ export function ProvisionVPSPage() {
   const discoverImagesMutation = useMutation({
     mutationFn: () => discoverVPSCloudInitImages(form.proxmox_node_name),
     onSuccess: (discovered) => {
+      queryClient.setQueryData<VPSCloudInitImage[]>(['vps-cloud-init-images'], (current = []) => {
+        const merged = new Map<number, VPSCloudInitImage>();
+        current.forEach((image) => merged.set(image.id, image));
+        discovered.forEach((image) => merged.set(image.id, image));
+        return Array.from(merged.values()).sort((a, b) => {
+          if (a.is_default !== b.is_default) {
+            return a.is_default ? -1 : 1;
+          }
+          return a.name.localeCompare(b.name);
+        });
+      });
       queryClient.invalidateQueries({ queryKey: ['vps-cloud-init-images'] });
       const preferred = discovered.find((image) => image.image_path.toLowerCase().includes('almalinux')) ?? discovered[0];
       if (preferred) {

@@ -627,6 +627,9 @@ func (s *Service) DiscoverImages(nodeName string) ([]CloudInitImage, error) {
 		}
 		discovered = append(discovered, image)
 	}
+	if len(discovered) == 0 {
+		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in %s. Confirm the backend container can see the files, for example: docker compose exec backend ls -l %s", s.cloudImageDir, s.cloudImageDir)
+	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
 	})
