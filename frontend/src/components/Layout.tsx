@@ -41,7 +41,7 @@ export function Layout({ children }: LayoutProps) {
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-x-hidden">
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur sm:px-6">
+        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
           <div className="flex w-full items-center justify-end">
             <div ref={accountRef} className="relative">
               <button
@@ -107,7 +107,7 @@ export function Layout({ children }: LayoutProps) {
             </div>
           </div>
         </header>
-        <div className="w-full px-4 py-6 sm:px-6">{children}</div>
+        <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6">{children}</div>
       </main>
     </div>
   );
