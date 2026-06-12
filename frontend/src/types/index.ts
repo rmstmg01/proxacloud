@@ -162,6 +162,68 @@ export interface VPSCreateResponse {
   warnings: string[];
 }
 
+export interface ContainerTemplate {
+  id: number;
+  name: string;
+  template_path: string;
+  os_type: string;
+  description: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContainerInstance {
+  id: number;
+  name: string;
+  description: string;
+  proxmox_credential_id: number;
+  proxmox_node_name: string;
+  network_profile_id: number;
+  network_name?: string;
+  template_id: number;
+  template_path: string;
+  ssh_key_pair_id: number;
+  container_name: string;
+  ip_mode: 'dhcp' | 'manual' | 'auto';
+  ip_address: string;
+  cpu: number;
+  memory_mb: number;
+  disk_gb: number;
+  unprivileged: boolean;
+  nesting: boolean;
+  terraform_work_dir: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContainerEvent {
+  id: number;
+  container_id: number;
+  action: string;
+  level: string;
+  message: string;
+  output: string;
+  created_at: string;
+}
+
+export interface ContainerActionResponse {
+  container_id: number;
+  action: string;
+  status: string;
+  output?: string;
+  warnings: string[];
+}
+
+export interface ContainerCreateResponse {
+  container_id: number;
+  status: string;
+  terraform_work_dir: string;
+  terraform_output?: string;
+  warnings: string[];
+}
+
 export type TopologyType = 'single' | 'dual' | 'tri';
 
 export interface Placement {

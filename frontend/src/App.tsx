@@ -24,6 +24,9 @@ import { MonitoringPage } from './pages/MonitoringPage';
 import { VPSPage } from './pages/VPSPage';
 import { ProvisionVPSPage } from './pages/ProvisionVPSPage';
 import { VPSDetailPage } from './pages/VPSDetailPage';
+import { ContainersPage } from './pages/ContainersPage';
+import { ProvisionContainerPage } from './pages/ProvisionContainerPage';
+import { ContainerDetailPage } from './pages/ContainerDetailPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -103,6 +106,30 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <VPSDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/containers"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ContainersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/containers/new"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ProvisionContainerPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/containers/:id"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ContainerDetailPage />
                 </ProtectedRoute>
               }
             />

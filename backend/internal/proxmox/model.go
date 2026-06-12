@@ -229,6 +229,14 @@ func (s *Service) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmN
 	return s.client.GetVMStatusByName(cred, proxmoxNodeName, vmName)
 }
 
+func (s *Service) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {
+	return s.client.ControlContainerByName(cred, proxmoxNodeName, containerName, action)
+}
+
+func (s *Service) GetContainerStatusByName(cred Credential, proxmoxNodeName string, containerName string) (string, error) {
+	return s.client.GetContainerStatusByName(cred, proxmoxNodeName, containerName)
+}
+
 func (s *Service) ListCredentials() []Credential {
 	rows, err := s.db.Query(
 		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at

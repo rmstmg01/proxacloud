@@ -74,6 +74,27 @@ type StandaloneVPSSpec struct {
 	IPAddress       string   `json:"ip_address,omitempty"`
 }
 
+type StandaloneContainerSpec struct {
+	WorkspaceKey    string   `json:"-"`
+	Name            string   `json:"name"`
+	ProxmoxNodeName string   `json:"proxmox_node_name"`
+	CPU             int      `json:"cpu"`
+	MemoryMB        int      `json:"memory_mb"`
+	DiskGB          int      `json:"disk_gb"`
+	NetworkCIDR     string   `json:"network_cidr"`
+	Gateway         string   `json:"gateway"`
+	DNS             []string `json:"dns"`
+	Bridge          string   `json:"bridge"`
+	VLAN            int      `json:"vlan"`
+	TemplateImage   string   `json:"template_image"`
+	OSType          string   `json:"os_type"`
+	SSHPublicKey    string   `json:"ssh_public_key"`
+	RootPassword    string   `json:"root_password"`
+	IPAddress       string   `json:"ip_address,omitempty"`
+	Unprivileged    bool     `json:"unprivileged"`
+	Nesting         bool     `json:"nesting"`
+}
+
 type RunResult struct {
 	WorkDir string `json:"work_dir"`
 	Output  string `json:"output"`
@@ -247,6 +268,54 @@ func (r *Runner) PrepareStandaloneVPSWorkspace(spec StandaloneVPSSpec) (string, 
 	return workDir, nil
 }
 
+func (r *Runner) PrepareStandaloneContainerWorkspace(spec StandaloneContainerSpec) (string, error) {
+	if strings.TrimSpace(spec.Name) == "" {
+		return "", errors.New("container name is required")
+	}
+	if strings.TrimSpace(spec.ProxmoxNodeName) == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if strings.TrimSpace(spec.TemplateImage) == "" {
+		return "", errors.New("container template path is required")
+	}
+	if strings.TrimSpace(spec.RootPassword) == "" {
+		return "", errors.New("root password is required for LXC containers")
+	}
+	if spec.CPU <= 0 {
+		spec.CPU = 1
+	}
+	if spec.MemoryMB <= 0 {
+		spec.MemoryMB = 512
+	}
+	if spec.DiskGB <= 0 {
+		spec.DiskGB = 8
+	}
+	if strings.TrimSpace(spec.OSType) == "" {
+		spec.OSType = "debian"
+	}
+
+	workspaceKey := strings.TrimSpace(spec.WorkspaceKey)
+	if workspaceKey == "" {
+		workspaceKey = "container-" + spec.Name
+	}
+	workDir := r.WorkspaceDirForKey(workspaceKey)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return "", fmt.Errorf("create container workspace: %w", err)
+	}
+	if err := r.writeStandaloneContainerStaticFiles(workDir, ""); err != nil {
+		return "", err
+	}
+
+	tfvars, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal container terraform variables: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "terraform.tfvars.json"), tfvars, 0o644); err != nil {
+		return "", fmt.Errorf("write container terraform.tfvars.json: %w", err)
+	}
+	return workDir, nil
+}
+
 // initArgs returns the terraform init command arguments, using a local plugin
 // directory when one is configured to avoid calls to registry.terraform.io.
 func (r *Runner) initArgs() []string {
@@ -275,6 +344,13 @@ func (r *Runner) Apply(workDir string, auth ProxmoxAuth) (RunResult, error) {
 
 func (r *Runner) ApplyStandaloneVPS(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	if err := r.writeStandaloneVPSStaticFiles(workDir, auth.Endpoint); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
+	}
+	return r.applyPreparedWorkspace(workDir, auth)
+}
+
+func (r *Runner) ApplyStandaloneContainer(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStandaloneContainerStaticFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "failed"}, err
 	}
 	return r.applyPreparedWorkspace(workDir, auth)
@@ -323,6 +399,13 @@ func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth Proxmox
 
 func (r *Runner) DestroyStandaloneVPS(workDir string, auth ProxmoxAuth) (RunResult, error) {
 	if err := r.writeStandaloneVPSStaticFiles(workDir, auth.Endpoint); err != nil {
+		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
+	}
+	return r.destroyPreparedWorkspace(workDir, auth)
+}
+
+func (r *Runner) DestroyStandaloneContainer(workDir string, auth ProxmoxAuth) (RunResult, error) {
+	if err := r.writeStandaloneContainerStaticFiles(workDir, auth.Endpoint); err != nil {
 		return RunResult{WorkDir: workDir, Output: "", Status: "destroy-failed"}, err
 	}
 	return r.destroyPreparedWorkspace(workDir, auth)
@@ -490,6 +573,45 @@ func (r *Runner) writeStandaloneVPSStaticFiles(workDir string, endpoint string) 
 		return fmt.Errorf("write vps variables.tf: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) writeStandaloneContainerStaticFiles(workDir string, endpoint string) error {
+	if strings.TrimSpace(workDir) == "" {
+		return errors.New("terraform workspace directory is required")
+	}
+	mainTF := strings.Replace(standaloneContainerTerraformMainTF, "{{ .SSHNodeBlocks }}", standaloneContainerSSHNodeBlocks(workDir, endpoint), 1)
+	if err := os.WriteFile(filepath.Join(workDir, "main.tf"), []byte(mainTF), 0o644); err != nil {
+		return fmt.Errorf("write container main.tf: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "variables.tf"), []byte(terraformVariablesTF), 0o644); err != nil {
+		return fmt.Errorf("write container variables.tf: %w", err)
+	}
+	return nil
+}
+
+func standaloneContainerSSHNodeBlocks(workDir string, endpoint string) string {
+	nodeName := ""
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
+	if raw, err := os.ReadFile(tfvarsPath); err == nil {
+		var spec StandaloneContainerSpec
+		if json.Unmarshal(raw, &spec) == nil {
+			nodeName = strings.TrimSpace(spec.ProxmoxNodeName)
+		}
+	}
+	if nodeName == "" {
+		return ""
+	}
+	address := proxmoxSSHAddress(endpoint)
+	if address == "" {
+		address = nodeName
+	}
+	return fmt.Sprintf(`
+    node {
+      name    = %q
+      address = %q
+      port    = %d
+    }
+`, nodeName, address, defaultProxmoxSSHPort)
 }
 
 func standaloneVPSSSHNodeBlocks(workDir string, endpoint string) string {
@@ -846,6 +968,108 @@ resource "proxmox_virtual_environment_vm" "vps" {
     file_id      = var.cloud_init_image
     interface    = "scsi0"
     size         = var.disk_gb
+  }
+}
+`
+
+const standaloneContainerTerraformMainTF = `terraform {
+  required_version = ">= 1.6.0"
+
+  required_providers {
+    proxmox = {
+      source  = "bpg/proxmox"
+      version = ">= 0.66.0"
+    }
+  }
+}
+
+provider "proxmox" {
+  ssh {
+    agent = false
+{{ .SSHNodeBlocks }}
+  }
+}
+
+variable "name" {}
+variable "proxmox_node_name" {}
+variable "cpu" { type = number }
+variable "memory_mb" { type = number }
+variable "disk_gb" { type = number }
+variable "network_cidr" {}
+variable "gateway" {}
+variable "dns" { type = list(string) }
+variable "bridge" {}
+variable "vlan" { type = number }
+variable "template_image" {}
+variable "os_type" {}
+variable "ssh_public_key" {
+  type    = string
+  default = ""
+}
+variable "root_password" {
+  type      = string
+  sensitive = true
+}
+variable "ip_address" {
+  type    = string
+  default = ""
+}
+variable "unprivileged" { type = bool }
+variable "nesting" { type = bool }
+
+resource "proxmox_virtual_environment_container" "container" {
+  node_name    = var.proxmox_node_name
+  description  = "Managed by portal"
+  unprivileged = var.unprivileged
+  start_on_boot = true
+  started       = true
+
+  initialization {
+    hostname = var.name
+
+    dns {
+      servers = var.dns
+    }
+
+    ip_config {
+      ipv4 {
+        address = trimspace(var.ip_address) != "" ? "${var.ip_address}/${tonumber(split("/", var.network_cidr)[1])}" : "dhcp"
+        gateway = trimspace(var.ip_address) != "" ? var.gateway : null
+      }
+    }
+
+    user_account {
+      password = var.root_password
+      keys     = trimspace(var.ssh_public_key) != "" ? [var.ssh_public_key] : []
+    }
+  }
+
+  cpu {
+    cores = var.cpu
+  }
+
+  memory {
+    dedicated = var.memory_mb
+  }
+
+  disk {
+    datastore_id = "local-lvm"
+    size         = var.disk_gb
+  }
+
+  network_interface {
+    name    = "veth0"
+    bridge  = var.bridge
+    vlan_id = var.vlan
+  }
+
+  operating_system {
+    template_file_id = var.template_image
+    type             = var.os_type
+  }
+
+  features {
+    nesting = var.nesting
   }
 }
 `

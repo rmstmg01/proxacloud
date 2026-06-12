@@ -24,6 +24,12 @@ type qemuVMRef struct {
 	Status string
 }
 
+type containerRef struct {
+	VMID   int
+	Name   string
+	Status string
+}
+
 func NewClient() *Client {
 	return &Client{timeout: 15 * time.Second}
 }
@@ -182,6 +188,76 @@ func (c *Client) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmNa
 	return strings.TrimSpace(strings.ToLower(status)), nil
 }
 
+func (c *Client) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	containerName = strings.TrimSpace(containerName)
+	action = strings.TrimSpace(strings.ToLower(action))
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if containerName == "" {
+		return "", errors.New("container name is required")
+	}
+	if action != "shutdown" && action != "reboot" && action != "start" {
+		return "", fmt.Errorf("unsupported container power action %q", action)
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	container, err := c.findLXCContainer(httpClient, base, cred, proxmoxNodeName, containerName)
+	if err != nil {
+		return "", err
+	}
+
+	actualAction := action
+	status := strings.TrimSpace(strings.ToLower(container.Status))
+	if action == "reboot" && status != "running" {
+		actualAction = "start"
+	}
+	if action == "shutdown" && status != "running" {
+		return "already-stopped", nil
+	}
+	if action == "start" && status == "running" {
+		return "already-running", nil
+	}
+
+	if err := c.runContainerAction(httpClient, base, cred, proxmoxNodeName, container.VMID, actualAction, normalActionWait(actualAction)); err != nil {
+		return "", err
+	}
+	return actualAction, nil
+}
+
+func (c *Client) GetContainerStatusByName(cred Credential, proxmoxNodeName string, containerName string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	containerName = strings.TrimSpace(containerName)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if containerName == "" {
+		return "", errors.New("container name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	container, err := c.findLXCContainer(httpClient, base, cred, proxmoxNodeName, containerName)
+	if err != nil {
+		return "", err
+	}
+	status, err := c.getLXCContainerStatus(httpClient, base, cred, proxmoxNodeName, container.VMID)
+	if err != nil {
+		return strings.TrimSpace(strings.ToLower(container.Status)), nil
+	}
+	return strings.TrimSpace(strings.ToLower(status)), nil
+}
+
 func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
@@ -203,6 +279,113 @@ func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, c
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func (c *Client) runContainerAction(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, action string, maxWait time.Duration) error {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "lxc", strconv.Itoa(vmid), "status", action)
+
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create container %s request: %w", action, err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox container %s: %w", action, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox container %s api returned status %d: %s", action, resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var taskResp struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&taskResp); err != nil {
+		return fmt.Errorf("decode proxmox container %s task response: %w", action, err)
+	}
+	if strings.TrimSpace(taskResp.Data) == "" {
+		return fmt.Errorf("proxmox container %s api returned an empty task id", action)
+	}
+	return c.waitForTask(httpClient, base, cred, proxmoxNodeName, taskResp.Data, action, maxWait)
+}
+
+func (c *Client) findLXCContainer(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, containerName string) (containerRef, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "lxc")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return containerRef{}, fmt.Errorf("create lxc list request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return containerRef{}, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return containerRef{}, fmt.Errorf("request proxmox lxc list: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return containerRef{}, fmt.Errorf("proxmox lxc list api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data []struct {
+			VMID   int    `json:"vmid"`
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return containerRef{}, fmt.Errorf("decode lxc list response: %w", err)
+	}
+	for _, item := range payload.Data {
+		if strings.EqualFold(strings.TrimSpace(item.Name), containerName) {
+			return containerRef{VMID: item.VMID, Name: item.Name, Status: item.Status}, nil
+		}
+	}
+	return containerRef{}, fmt.Errorf("container %q not found on proxmox node %q", containerName, proxmoxNodeName)
+}
+
+func (c *Client) getLXCContainerStatus(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int) (string, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "lxc", strconv.Itoa(vmid), "status", "current")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("create container status request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request proxmox container status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("proxmox container status api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode container status response: %w", err)
+	}
+	return payload.Data.Status, nil
 }
 
 func vmStatusMatchesAction(status string, action string) bool {

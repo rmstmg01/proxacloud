@@ -15,6 +15,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/cloudflaretunnels"
 	"k8s-proxmox-manager/backend/internal/clusters"
 	"k8s-proxmox-manager/backend/internal/config"
+	"k8s-proxmox-manager/backend/internal/containers"
 	"k8s-proxmox-manager/backend/internal/databaseclusters"
 	"k8s-proxmox-manager/backend/internal/db"
 	"k8s-proxmox-manager/backend/internal/monitoring"
@@ -107,6 +108,15 @@ func NewApp() (*App, error) {
 		terraformRunner,
 		cfg.TerraformAutoApply,
 	)
+	containerService := containers.NewService(
+		database,
+		networkService,
+		proxmoxService,
+		sshKeyService,
+		secretStore,
+		terraformRunner,
+		cfg.TerraformAutoApply,
+	)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
@@ -136,6 +146,7 @@ func NewApp() (*App, error) {
 	clusterHandler := clusters.NewHandler(clusterService)
 	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
 	vpsHandler := vps.NewHandler(vpsService)
+	containerHandler := containers.NewHandler(containerService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
@@ -231,6 +242,19 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/restart", vpsHandler.Restart)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/shutdown", vpsHandler.Shutdown)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/refresh-status", vpsHandler.RefreshStatus)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers", containerHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers", containerHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/templates", containerHandler.ListTemplates)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/templates", containerHandler.CreateTemplate)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/{id}", containerHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/containers/{id}", containerHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/{id}/events", containerHandler.ListEvents)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/deploy", containerHandler.Deploy)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/redeploy", containerHandler.Redeploy)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/start", containerHandler.Start)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/restart", containerHandler.Restart)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/shutdown", containerHandler.Shutdown)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/refresh-status", containerHandler.RefreshStatus)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels", cloudflareTunnelHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/cloudflare-tunnels", cloudflareTunnelHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Get)
