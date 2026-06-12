@@ -70,9 +70,9 @@ const navGroups = [
 
 export function Sidebar() {
   return (
-    <aside className="w-64 flex-shrink-0 bg-slate-900 text-slate-100 flex flex-col h-screen sticky top-0">
+    <aside className="w-60 flex-shrink-0 bg-slate-900 text-slate-100 flex flex-col h-screen sticky top-0">
       {/* Logo */}
-      <div className="px-6 py-5 border-b border-slate-700">
+      <div className="px-5 py-5 border-b border-slate-700">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
             <Server className="h-4 w-4 text-white" />
@@ -89,7 +89,7 @@ export function Sidebar() {
         <div className="space-y-5">
           {navGroups.map((group) => (
             <div key={group.label}>
-              <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 {group.label}
               </p>
               <div className="space-y-1">
@@ -98,7 +98,7 @@ export function Sidebar() {
                     key={to}
                     to={to}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                      `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                         isActive
                           ? 'bg-indigo-600 text-white'
                           : 'text-slate-300 hover:bg-slate-800 hover:text-white'

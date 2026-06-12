@@ -40,9 +40,9 @@ export function Layout({ children }: LayoutProps) {
   return (
     <div className="flex min-h-screen bg-slate-50">
       <Sidebar />
-      <main className="flex-1 overflow-x-hidden">
-        <header className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50/95 px-6 py-3 backdrop-blur">
-          <div className="mx-auto flex max-w-7xl items-center justify-end">
+      <main className="min-w-0 flex-1 overflow-x-hidden">
+        <header className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50/95 px-4 py-3 backdrop-blur sm:px-6">
+          <div className="flex w-full items-center justify-end">
             <div ref={accountRef} className="relative">
               <button
                 type="button"
@@ -107,7 +107,7 @@ export function Layout({ children }: LayoutProps) {
             </div>
           </div>
         </header>
-        <div className="max-w-7xl mx-auto px-6 py-8">{children}</div>
+        <div className="w-full px-4 py-6 sm:px-6">{children}</div>
       </main>
     </div>
   );
@@ -123,8 +123,8 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between mb-6">
-      <div>
+    <div className="mb-6 flex min-w-0 flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0">
         <h1 className="text-2xl font-bold text-slate-900">{title}</h1>
         {description && <p className="mt-1 text-sm text-slate-500">{description}</p>}
       </div>
