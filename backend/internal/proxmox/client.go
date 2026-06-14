@@ -1016,6 +1016,9 @@ func (c *Client) applyGuestFirewall(httpClient *http.Client, base *url.URL, cred
 	if err := c.setGuestFirewallEnabled(httpClient, base, cred, proxmoxNodeName, guestKind, vmid); err != nil {
 		return err
 	}
+	if err := c.enableGuestNetworkFirewall(httpClient, base, cred, proxmoxNodeName, guestKind, vmid); err != nil {
+		return err
+	}
 	if err := c.deleteManagedFirewallRules(httpClient, base, cred, proxmoxNodeName, guestKind, vmid, managedPrefix); err != nil {
 		return err
 	}
@@ -1025,6 +1028,104 @@ func (c *Client) applyGuestFirewall(httpClient *http.Client, base *url.URL, cred
 		}
 	}
 	return nil
+}
+
+func (c *Client) enableGuestNetworkFirewall(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int) error {
+	config, err := c.getGuestConfig(httpClient, base, cred, proxmoxNodeName, guestKind, vmid)
+	if err != nil {
+		return err
+	}
+
+	form := url.Values{}
+	for key, rawValue := range config {
+		if !isGuestNetworkKey(key) {
+			continue
+		}
+		value, ok := rawValue.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		updated := enableFirewallOption(value)
+		if updated != value {
+			form.Set(key, updated)
+		}
+	}
+	if len(form) == 0 {
+		return nil
+	}
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "config")
+	req, err := http.NewRequest(http.MethodPut, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create guest network firewall config request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request guest network firewall config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox guest network firewall config api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+	return nil
+}
+
+func (c *Client) getGuestConfig(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int) (map[string]any, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "config")
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create guest config request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request proxmox guest config: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("proxmox guest config api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode proxmox guest config response: %w", err)
+	}
+	return payload.Data, nil
+}
+
+func isGuestNetworkKey(key string) bool {
+	if !strings.HasPrefix(key, "net") || len(key) == 3 {
+		return false
+	}
+	for _, r := range key[3:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func enableFirewallOption(value string) string {
+	parts := strings.Split(value, ",")
+	for i, part := range parts {
+		if strings.HasPrefix(strings.TrimSpace(part), "firewall=") {
+			parts[i] = "firewall=1"
+			return strings.Join(parts, ",")
+		}
+	}
+	return value + ",firewall=1"
 }
 
 func (c *Client) setGuestFirewallEnabled(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int) error {
