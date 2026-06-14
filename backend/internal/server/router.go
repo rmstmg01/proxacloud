@@ -18,6 +18,7 @@ import (
 	"k8s-proxmox-manager/backend/internal/containers"
 	"k8s-proxmox-manager/backend/internal/databaseclusters"
 	"k8s-proxmox-manager/backend/internal/db"
+	"k8s-proxmox-manager/backend/internal/firewalls"
 	"k8s-proxmox-manager/backend/internal/monitoring"
 	"k8s-proxmox-manager/backend/internal/networks"
 	"k8s-proxmox-manager/backend/internal/proxmox"
@@ -117,6 +118,7 @@ func NewApp() (*App, error) {
 		terraformRunner,
 		cfg.TerraformAutoApply,
 	)
+	firewallService := firewalls.NewService(database)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
@@ -147,6 +149,7 @@ func NewApp() (*App, error) {
 	databaseClusterHandler := databaseclusters.NewHandler(databaseClusterService)
 	vpsHandler := vps.NewHandler(vpsService)
 	containerHandler := containers.NewHandler(containerService)
+	firewallHandler := firewalls.NewHandler(firewallService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
@@ -262,6 +265,18 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/restart", containerHandler.Restart)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/shutdown", containerHandler.Shutdown)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/{id}/refresh-status", containerHandler.RefreshStatus)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/firewalls", firewallHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/firewalls", firewallHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/firewalls/{id}", firewallHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/firewalls/{id}", firewallHandler.Update)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/firewalls/{id}", firewallHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/firewalls/{id}/rules", firewallHandler.CreateRule)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/firewalls/{id}/rules/{ruleId}", firewallHandler.UpdateRule)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/firewalls/{id}/rules/{ruleId}", firewallHandler.DeleteRule)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/firewalls/{id}/attachments", firewallHandler.CreateAttachment)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/firewalls/{id}/attachments/{attachmentId}", firewallHandler.DeleteAttachment)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/firewalls/{id}/apply", firewallHandler.Apply)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/firewalls/{id}/events", firewallHandler.ListEvents)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels", cloudflareTunnelHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/cloudflare-tunnels", cloudflareTunnelHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Get)

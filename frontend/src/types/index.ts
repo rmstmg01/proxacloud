@@ -99,6 +99,70 @@ export interface SSLCertificate {
   updated_at: string;
 }
 
+export type FirewallPolicy = 'allow' | 'deny';
+export type FirewallDirection = 'inbound' | 'outbound';
+export type FirewallAction = 'allow' | 'deny';
+export type FirewallProtocol = 'tcp' | 'udp' | 'icmp' | 'any';
+export type FirewallTargetType = 'vps' | 'container' | 'cluster_node' | 'database_node';
+
+export interface FirewallRule {
+  id: number;
+  firewall_group_id: number;
+  direction: FirewallDirection;
+  action: FirewallAction;
+  protocol: FirewallProtocol;
+  source_cidr: string;
+  destination_cidr: string;
+  port_start?: number;
+  port_end?: number;
+  priority: number;
+  description: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FirewallAttachment {
+  id: number;
+  firewall_group_id: number;
+  target_type: FirewallTargetType;
+  target_id: number;
+  target_name?: string;
+  created_at: string;
+}
+
+export interface FirewallGroup {
+  id: number;
+  name: string;
+  description: string;
+  default_inbound_policy: FirewallPolicy;
+  default_outbound_policy: FirewallPolicy;
+  enabled: boolean;
+  status: string;
+  last_applied_at?: string;
+  rules?: FirewallRule[];
+  attachments?: FirewallAttachment[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FirewallEvent {
+  id: number;
+  firewall_group_id: number;
+  action: string;
+  level: string;
+  message: string;
+  output: string;
+  created_at: string;
+}
+
+export interface FirewallApplyResponse {
+  firewall_group_id: number;
+  status: string;
+  message: string;
+  warnings: string[];
+}
+
 // ─── Topology ─────────────────────────────────────────────────────────────────
 
 export interface VPSCloudInitImage {

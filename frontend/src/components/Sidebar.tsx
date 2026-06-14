@@ -17,6 +17,7 @@ import {
   BarChart3,
   SquareTerminal,
   Box,
+  Shield,
 } from 'lucide-react';
 
 const navGroups = [
@@ -47,6 +48,7 @@ const navGroups = [
     label: 'Network & Access',
     items: [
       { to: '/networks', icon: Network, label: 'Networks' },
+      { to: '/firewalls', icon: Shield, label: 'Firewalls' },
       { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },
       { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },
     ],
