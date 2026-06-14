@@ -320,6 +320,7 @@ export function FirewallsPage() {
                       </Alert>
                     )}
                     {applyMut.error && <ErrorMessage error={applyMut.error} />}
+                    {deleteMut.error && <ErrorMessage error={deleteMut.error} />}
                   </CardContent>
                 </Card>
 

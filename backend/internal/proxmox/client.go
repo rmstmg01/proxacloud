@@ -516,6 +516,66 @@ func (c *Client) ApplyContainerFirewallByName(cred Credential, proxmoxNodeName s
 	return fmt.Sprintf("applied %d firewall rule(s) to container %s (%d)", len(rules), containerName, container.VMID), nil
 }
 
+func (c *Client) ClearVMFirewallByName(cred Credential, proxmoxNodeName string, vmName string, managedPrefix string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	managedPrefix = strings.TrimSpace(managedPrefix)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return "", errors.New("vm name is required")
+	}
+	if managedPrefix == "" {
+		return "", errors.New("managed firewall prefix is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return "", err
+	}
+	if err := c.deleteManagedFirewallRules(httpClient, base, cred, proxmoxNodeName, "qemu", vm.VMID, managedPrefix); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("removed managed firewall rule(s) from VM %s (%d)", vmName, vm.VMID), nil
+}
+
+func (c *Client) ClearContainerFirewallByName(cred Credential, proxmoxNodeName string, containerName string, managedPrefix string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	containerName = strings.TrimSpace(containerName)
+	managedPrefix = strings.TrimSpace(managedPrefix)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if containerName == "" {
+		return "", errors.New("container name is required")
+	}
+	if managedPrefix == "" {
+		return "", errors.New("managed firewall prefix is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	container, err := c.findLXCContainer(httpClient, base, cred, proxmoxNodeName, containerName)
+	if err != nil {
+		return "", err
+	}
+	if err := c.deleteManagedFirewallRules(httpClient, base, cred, proxmoxNodeName, "lxc", container.VMID, managedPrefix); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("removed managed firewall rule(s) from container %s (%d)", containerName, container.VMID), nil
+}
+
 func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second

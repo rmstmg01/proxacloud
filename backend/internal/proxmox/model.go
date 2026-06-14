@@ -301,6 +301,14 @@ func (s *Service) ApplyContainerFirewallByName(cred Credential, proxmoxNodeName 
 	return s.client.ApplyContainerFirewallByName(cred, proxmoxNodeName, containerName, rules, managedPrefix)
 }
 
+func (s *Service) ClearVMFirewallByName(cred Credential, proxmoxNodeName string, vmName string, managedPrefix string) (string, error) {
+	return s.client.ClearVMFirewallByName(cred, proxmoxNodeName, vmName, managedPrefix)
+}
+
+func (s *Service) ClearContainerFirewallByName(cred Credential, proxmoxNodeName string, containerName string, managedPrefix string) (string, error) {
+	return s.client.ClearContainerFirewallByName(cred, proxmoxNodeName, containerName, managedPrefix)
+}
+
 func (s *Service) ListCredentials() []Credential {
 	rows, err := s.db.Query(
 		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at

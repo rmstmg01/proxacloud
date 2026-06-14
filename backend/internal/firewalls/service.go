@@ -25,6 +25,8 @@ type ProxmoxFirewallApplier interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ApplyVMFirewallByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, rules []proxmox.FirewallRuleSpec, managedPrefix string) (string, error)
 	ApplyContainerFirewallByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, rules []proxmox.FirewallRuleSpec, managedPrefix string) (string, error)
+	ClearVMFirewallByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, managedPrefix string) (string, error)
+	ClearContainerFirewallByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, managedPrefix string) (string, error)
 }
 
 func NewService(db *sql.DB, proxmoxApplier ProxmoxFirewallApplier) *Service {
@@ -141,6 +143,19 @@ func (s *Service) Update(id int64, req UpdateGroupRequest) (Group, error) {
 }
 
 func (s *Service) Delete(id int64) error {
+	group, err := s.Get(id)
+	if err != nil {
+		return err
+	}
+	if len(group.Attachments) > 0 {
+		outputs, err := s.clearGroupFirewall(group)
+		if err != nil {
+			_ = s.addEvent(id, "delete.cleanup", "error", "Failed to remove Proxmox firewall rules before delete", err.Error())
+			return err
+		}
+		_ = s.addEvent(id, "delete.cleanup", "success", "Removed Proxmox firewall rules before delete", strings.Join(outputs, "\n"))
+	}
+
 	res, err := s.db.Exec(`DELETE FROM firewall_groups WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("delete firewall group: %w", err)
@@ -421,6 +436,64 @@ func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, ru
 		return s.proxmox.ApplyContainerFirewallByName(cred, nodeName, containerName, rules, managedPrefix)
 	default:
 		return "", fmt.Errorf("target type %q is not supported for apply", attachment.TargetType)
+	}
+}
+
+func (s *Service) clearGroupFirewall(group Group) ([]string, error) {
+	if s.proxmox == nil {
+		return nil, errors.New("proxmox firewall applier is not configured")
+	}
+	outputs := []string{}
+	failures := []string{}
+	for _, attachment := range group.Attachments {
+		output, err := s.clearAttachmentFirewall(group, attachment)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s:%d: %v", attachment.TargetType, attachment.TargetID, err))
+			continue
+		}
+		outputs = append(outputs, output)
+	}
+	if len(failures) > 0 {
+		return outputs, fmt.Errorf("remove proxmox firewall rules: %s", strings.Join(failures, "; "))
+	}
+	return outputs, nil
+}
+
+func (s *Service) clearAttachmentFirewall(group Group, attachment Attachment) (string, error) {
+	managedPrefix := managedRulePrefix(group.ID)
+	switch attachment.TargetType {
+	case TargetVPS:
+		var credentialID int64
+		var nodeName, vmName string
+		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, vm_name FROM vps_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &vmName)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", errors.New("vps target not found")
+			}
+			return "", fmt.Errorf("load vps target: %w", err)
+		}
+		cred, err := s.proxmox.GetCredentialWithSecrets(credentialID)
+		if err != nil {
+			return "", err
+		}
+		return s.proxmox.ClearVMFirewallByName(cred, nodeName, vmName, managedPrefix)
+	case TargetContainer:
+		var credentialID int64
+		var nodeName, containerName string
+		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, container_name FROM container_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &containerName)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", errors.New("container target not found")
+			}
+			return "", fmt.Errorf("load container target: %w", err)
+		}
+		cred, err := s.proxmox.GetCredentialWithSecrets(credentialID)
+		if err != nil {
+			return "", err
+		}
+		return s.proxmox.ClearContainerFirewallByName(cred, nodeName, containerName, managedPrefix)
+	default:
+		return "", fmt.Errorf("target type %q is not supported for cleanup", attachment.TargetType)
 	}
 }
 
