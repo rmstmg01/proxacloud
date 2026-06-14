@@ -456,6 +456,66 @@ func (c *Client) GetContainerStatusByName(cred Credential, proxmoxNodeName strin
 	return strings.TrimSpace(strings.ToLower(status)), nil
 }
 
+func (c *Client) ApplyVMFirewallByName(cred Credential, proxmoxNodeName string, vmName string, rules []FirewallRuleSpec, managedPrefix string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	managedPrefix = strings.TrimSpace(managedPrefix)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return "", errors.New("vm name is required")
+	}
+	if managedPrefix == "" {
+		return "", errors.New("managed firewall prefix is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return "", err
+	}
+	if err := c.applyGuestFirewall(httpClient, base, cred, proxmoxNodeName, "qemu", vm.VMID, rules, managedPrefix); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("applied %d firewall rule(s) to VM %s (%d)", len(rules), vmName, vm.VMID), nil
+}
+
+func (c *Client) ApplyContainerFirewallByName(cred Credential, proxmoxNodeName string, containerName string, rules []FirewallRuleSpec, managedPrefix string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	containerName = strings.TrimSpace(containerName)
+	managedPrefix = strings.TrimSpace(managedPrefix)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if containerName == "" {
+		return "", errors.New("container name is required")
+	}
+	if managedPrefix == "" {
+		return "", errors.New("managed firewall prefix is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	container, err := c.findLXCContainer(httpClient, base, cred, proxmoxNodeName, containerName)
+	if err != nil {
+		return "", err
+	}
+	if err := c.applyGuestFirewall(httpClient, base, cred, proxmoxNodeName, "lxc", container.VMID, rules, managedPrefix); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("applied %d firewall rule(s) to container %s (%d)", len(rules), containerName, container.VMID), nil
+}
+
 func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
@@ -950,6 +1010,183 @@ func (c *Client) getTaskStatus(httpClient *http.Client, base *url.URL, cred Cred
 	}
 
 	return strings.TrimSpace(payload.Data.Status), strings.TrimSpace(payload.Data.ExitStatus), nil
+}
+
+func (c *Client) applyGuestFirewall(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int, rules []FirewallRuleSpec, managedPrefix string) error {
+	if err := c.setGuestFirewallEnabled(httpClient, base, cred, proxmoxNodeName, guestKind, vmid); err != nil {
+		return err
+	}
+	if err := c.deleteManagedFirewallRules(httpClient, base, cred, proxmoxNodeName, guestKind, vmid, managedPrefix); err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if err := c.createGuestFirewallRule(httpClient, base, cred, proxmoxNodeName, guestKind, vmid, rule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) setGuestFirewallEnabled(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int) error {
+	form := url.Values{}
+	form.Set("enable", "1")
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "firewall", "options")
+	req, err := http.NewRequest(http.MethodPut, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create firewall options request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox firewall options: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox firewall options api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+	return nil
+}
+
+func (c *Client) deleteManagedFirewallRules(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int, managedPrefix string) error {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "firewall", "rules")
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create firewall rules list request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox firewall rules: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox firewall rules api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data []struct {
+			Pos     int    `json:"pos"`
+			Comment string `json:"comment"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return fmt.Errorf("decode proxmox firewall rules response: %w", err)
+	}
+
+	for i := len(payload.Data) - 1; i >= 0; i-- {
+		rule := payload.Data[i]
+		if !strings.HasPrefix(rule.Comment, managedPrefix) {
+			continue
+		}
+		if err := c.deleteGuestFirewallRule(httpClient, base, cred, proxmoxNodeName, guestKind, vmid, rule.Pos); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) deleteGuestFirewallRule(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int, pos int) error {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "firewall", "rules", strconv.Itoa(pos))
+	req, err := http.NewRequest(http.MethodDelete, reqURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create firewall rule delete request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete proxmox firewall rule: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox firewall rule delete api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+	return nil
+}
+
+func (c *Client) createGuestFirewallRule(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, guestKind string, vmid int, rule FirewallRuleSpec) error {
+	form := url.Values{}
+	form.Set("type", proxmoxFirewallDirection(rule.Direction))
+	form.Set("action", proxmoxFirewallAction(rule.Action))
+	form.Set("enable", proxmoxBool(rule.Enabled))
+	if proto := strings.TrimSpace(strings.ToLower(rule.Protocol)); proto != "" && proto != "any" {
+		form.Set("proto", proto)
+	}
+	if source := strings.TrimSpace(rule.SourceCIDR); source != "" {
+		form.Set("source", source)
+	}
+	if dest := strings.TrimSpace(rule.DestinationCIDR); dest != "" {
+		form.Set("dest", dest)
+	}
+	if rule.PortStart != nil {
+		form.Set("dport", proxmoxFirewallPortRange(rule.PortStart, rule.PortEnd))
+	}
+	if comment := strings.TrimSpace(rule.ManagedComment); comment != "" {
+		form.Set("comment", comment)
+	}
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, guestKind, strconv.Itoa(vmid), "firewall", "rules")
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create firewall rule request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("create proxmox firewall rule: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox firewall rule create api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+	return nil
+}
+
+func proxmoxFirewallDirection(direction string) string {
+	if strings.TrimSpace(strings.ToLower(direction)) == "outbound" {
+		return "out"
+	}
+	return "in"
+}
+
+func proxmoxFirewallAction(action string) string {
+	if strings.TrimSpace(strings.ToLower(action)) == "deny" {
+		return "DROP"
+	}
+	return "ACCEPT"
+}
+
+func proxmoxBool(value bool) string {
+	if value {
+		return "1"
+	}
+	return "0"
+}
+
+func proxmoxFirewallPortRange(start *int, end *int) string {
+	if start == nil {
+		return ""
+	}
+	if end == nil || *end == *start {
+		return strconv.Itoa(*start)
+	}
+	return fmt.Sprintf("%d:%d", *start, *end)
 }
 
 func (c *Client) httpClient(cred Credential) *http.Client {

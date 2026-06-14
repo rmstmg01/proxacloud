@@ -315,7 +315,7 @@ export function FirewallsPage() {
                       <Summary label="Attachments" value={String(firewall.attachments?.length ?? 0)} />
                     </div>
                     {applyMut.data && (
-                      <Alert variant="warning" title="Apply queued" className="mt-4">
+                      <Alert variant={applyMut.data.status === 'applied' ? 'success' : 'warning'} title="Apply result" className="mt-4">
                         {applyMut.data.message}
                       </Alert>
                     )}

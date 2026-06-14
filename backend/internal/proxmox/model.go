@@ -68,6 +68,20 @@ type VMConsoleSession struct {
 	Cert     string `json:"cert,omitempty"`
 }
 
+type FirewallRuleSpec struct {
+	Direction       string
+	Action          string
+	Protocol        string
+	SourceCIDR      string
+	DestinationCIDR string
+	PortStart       *int
+	PortEnd         *int
+	Priority        int
+	Description     string
+	Enabled         bool
+	ManagedComment  string
+}
+
 type Service struct {
 	db      *sql.DB
 	client  *Client
@@ -277,6 +291,14 @@ func (s *Service) ControlContainerByName(cred Credential, proxmoxNodeName string
 
 func (s *Service) GetContainerStatusByName(cred Credential, proxmoxNodeName string, containerName string) (string, error) {
 	return s.client.GetContainerStatusByName(cred, proxmoxNodeName, containerName)
+}
+
+func (s *Service) ApplyVMFirewallByName(cred Credential, proxmoxNodeName string, vmName string, rules []FirewallRuleSpec, managedPrefix string) (string, error) {
+	return s.client.ApplyVMFirewallByName(cred, proxmoxNodeName, vmName, rules, managedPrefix)
+}
+
+func (s *Service) ApplyContainerFirewallByName(cred Credential, proxmoxNodeName string, containerName string, rules []FirewallRuleSpec, managedPrefix string) (string, error) {
+	return s.client.ApplyContainerFirewallByName(cred, proxmoxNodeName, containerName, rules, managedPrefix)
 }
 
 func (s *Service) ListCredentials() []Credential {

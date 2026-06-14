@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+
+	"k8s-proxmox-manager/backend/internal/proxmox"
 )
 
 var (
@@ -15,11 +17,18 @@ var (
 )
 
 type Service struct {
-	db *sql.DB
+	db      *sql.DB
+	proxmox ProxmoxFirewallApplier
 }
 
-func NewService(db *sql.DB) *Service {
-	return &Service{db: db}
+type ProxmoxFirewallApplier interface {
+	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+	ApplyVMFirewallByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, rules []proxmox.FirewallRuleSpec, managedPrefix string) (string, error)
+	ApplyContainerFirewallByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, rules []proxmox.FirewallRuleSpec, managedPrefix string) (string, error)
+}
+
+func NewService(db *sql.DB, proxmoxApplier ProxmoxFirewallApplier) *Service {
+	return &Service{db: db, proxmox: proxmoxApplier}
 }
 
 func (s *Service) List() ([]Group, error) {
@@ -330,14 +339,121 @@ func (s *Service) Apply(groupID int64) (ApplyResponse, error) {
 	if len(group.Attachments) == 0 {
 		warnings = append(warnings, "firewall has no attached targets")
 	}
-
-	message := "Firewall desired state recorded. Proxmox rule application adapter is pending."
-	_, err = s.db.Exec(`UPDATE firewall_groups SET status = 'pending_apply', updated_at = NOW() WHERE id = $1`, groupID)
-	if err != nil {
-		return ApplyResponse{}, fmt.Errorf("mark firewall pending apply: %w", err)
+	if s.proxmox == nil {
+		return ApplyResponse{}, errors.New("proxmox firewall applier is not configured")
 	}
-	_ = s.addEvent(groupID, "apply", "warning", message, "")
-	return ApplyResponse{FirewallGroupID: groupID, Status: "pending_apply", Message: message, Warnings: warnings}, nil
+
+	rules := proxmoxRulesFromGroup(group)
+	outputs := []string{}
+	failures := []string{}
+	for _, attachment := range group.Attachments {
+		output, applyErr := s.applyAttachmentFirewall(group, attachment, rules)
+		if applyErr != nil {
+			failures = append(failures, fmt.Sprintf("%s:%d: %v", attachment.TargetType, attachment.TargetID, applyErr))
+			continue
+		}
+		outputs = append(outputs, output)
+	}
+
+	status := "applied"
+	level := "success"
+	message := fmt.Sprintf("Firewall applied to %d target(s)", len(outputs))
+	if len(failures) > 0 {
+		status = "failed"
+		level = "error"
+		message = fmt.Sprintf("Firewall apply failed for %d target(s)", len(failures))
+		if len(outputs) > 0 {
+			status = "partial"
+			level = "warning"
+			message = fmt.Sprintf("Firewall applied to %d target(s), failed for %d target(s)", len(outputs), len(failures))
+		}
+		warnings = append(warnings, failures...)
+	}
+	if len(group.Attachments) == 0 {
+		status = "applied"
+		level = "warning"
+		message = "Firewall has no attached targets"
+	}
+
+	_, err = s.db.Exec(`UPDATE firewall_groups SET status = $2, last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, groupID, status)
+	if err != nil {
+		return ApplyResponse{}, fmt.Errorf("mark firewall apply result: %w", err)
+	}
+	_ = s.addEvent(groupID, "apply", level, message, strings.Join(append(outputs, failures...), "\n"))
+	if len(failures) > 0 && len(outputs) == 0 {
+		return ApplyResponse{FirewallGroupID: groupID, Status: status, Message: message, Warnings: warnings}, errors.New(message)
+	}
+	return ApplyResponse{FirewallGroupID: groupID, Status: status, Message: message, Warnings: warnings}, nil
+}
+
+func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, rules []proxmox.FirewallRuleSpec) (string, error) {
+	managedPrefix := managedRulePrefix(group.ID)
+	switch attachment.TargetType {
+	case TargetVPS:
+		var credentialID int64
+		var nodeName, vmName string
+		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, vm_name FROM vps_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &vmName)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", errors.New("vps target not found")
+			}
+			return "", fmt.Errorf("load vps target: %w", err)
+		}
+		cred, err := s.proxmox.GetCredentialWithSecrets(credentialID)
+		if err != nil {
+			return "", err
+		}
+		return s.proxmox.ApplyVMFirewallByName(cred, nodeName, vmName, rules, managedPrefix)
+	case TargetContainer:
+		var credentialID int64
+		var nodeName, containerName string
+		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, container_name FROM container_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &containerName)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", errors.New("container target not found")
+			}
+			return "", fmt.Errorf("load container target: %w", err)
+		}
+		cred, err := s.proxmox.GetCredentialWithSecrets(credentialID)
+		if err != nil {
+			return "", err
+		}
+		return s.proxmox.ApplyContainerFirewallByName(cred, nodeName, containerName, rules, managedPrefix)
+	default:
+		return "", fmt.Errorf("target type %q is not supported for apply", attachment.TargetType)
+	}
+}
+
+func proxmoxRulesFromGroup(group Group) []proxmox.FirewallRuleSpec {
+	out := []proxmox.FirewallRuleSpec{}
+	for _, rule := range group.Rules {
+		out = append(out, proxmox.FirewallRuleSpec{
+			Direction:       rule.Direction,
+			Action:          rule.Action,
+			Protocol:        rule.Protocol,
+			SourceCIDR:      rule.SourceCIDR,
+			DestinationCIDR: rule.DestinationCIDR,
+			PortStart:       rule.PortStart,
+			PortEnd:         rule.PortEnd,
+			Priority:        rule.Priority,
+			Description:     rule.Description,
+			Enabled:         rule.Enabled,
+			ManagedComment:  managedRuleComment(group.ID, rule),
+		})
+	}
+	return out
+}
+
+func managedRulePrefix(groupID int64) string {
+	return fmt.Sprintf("k8s-proxmox-manager firewall:%d", groupID)
+}
+
+func managedRuleComment(groupID int64, rule Rule) string {
+	description := strings.TrimSpace(rule.Description)
+	if description == "" {
+		return fmt.Sprintf("%s rule:%d", managedRulePrefix(groupID), rule.ID)
+	}
+	return fmt.Sprintf("%s rule:%d %s", managedRulePrefix(groupID), rule.ID, description)
 }
 
 func (s *Service) ListEvents(groupID int64) ([]Event, error) {

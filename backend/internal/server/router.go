@@ -118,7 +118,7 @@ func NewApp() (*App, error) {
 		terraformRunner,
 		cfg.TerraformAutoApply,
 	)
-	firewallService := firewalls.NewService(database)
+	firewallService := firewalls.NewService(database, proxmoxService)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
