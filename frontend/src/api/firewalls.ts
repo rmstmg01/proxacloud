@@ -49,6 +49,19 @@ export const createFirewallRule = (firewallID: number, body: {
   enabled: boolean;
 }) => client.post<FirewallRule>(`/firewalls/${firewallID}/rules`, body).then((r) => r.data);
 
+export const updateFirewallRule = (firewallID: number, ruleID: number, body: {
+  direction: FirewallDirection;
+  action: 'allow' | 'deny';
+  protocol: FirewallProtocol;
+  source_cidr: string;
+  destination_cidr: string;
+  port_start?: number;
+  port_end?: number;
+  priority: number;
+  description: string;
+  enabled: boolean;
+}) => client.put<FirewallRule>(`/firewalls/${firewallID}/rules/${ruleID}`, body).then((r) => r.data);
+
 export const deleteFirewallRule = (firewallID: number, ruleID: number) =>
   client.delete<{ id: number; deleted: boolean }>(`/firewalls/${firewallID}/rules/${ruleID}`).then((r) => r.data);
 

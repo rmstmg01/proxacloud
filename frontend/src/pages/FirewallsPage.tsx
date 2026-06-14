@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Shield, Trash2, Zap } from 'lucide-react';
+import { Pencil, Plus, RotateCw, Shield, Trash2 } from 'lucide-react';
 import {
   applyFirewall,
   createFirewall,
@@ -12,6 +12,8 @@ import {
   getFirewall,
   getFirewallEvents,
   getFirewalls,
+  updateFirewall,
+  updateFirewallRule,
 } from '../api/firewalls';
 import { getContainerInstances } from '../api/containers';
 import { getVPSInstances } from '../api/vps';
@@ -28,6 +30,7 @@ import type {
   FirewallDirection,
   FirewallPolicy,
   FirewallProtocol,
+  FirewallRule,
   FirewallTargetType,
 } from '../types';
 
@@ -56,10 +59,12 @@ export function FirewallsPage() {
   const qc = useQueryClient();
   const [selectedID, setSelectedID] = useState<number | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editGroupOpen, setEditGroupOpen] = useState(false);
   const [ruleOpen, setRuleOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [groupForm, setGroupForm] = useState(defaultGroupForm);
   const [ruleForm, setRuleForm] = useState(defaultRuleForm);
+  const [editingRuleID, setEditingRuleID] = useState<number | null>(null);
   const [attachForm, setAttachForm] = useState({
     target_type: 'vps' as FirewallTargetType,
     target_id: '',
@@ -129,12 +134,23 @@ export function FirewallsPage() {
     },
   });
 
+  const updateMut = useMutation({
+    mutationFn: () => {
+      if (selectedID === null) throw new Error('select a firewall first');
+      return updateFirewall(selectedID, groupForm);
+    },
+    onSuccess: () => {
+      setEditGroupOpen(false);
+      refreshSelected();
+    },
+  });
+
   const ruleMut = useMutation({
     mutationFn: () => {
       if (selectedID === null) throw new Error('select a firewall first');
       const protocol = ruleForm.protocol;
       const hasPorts = protocol === 'tcp' || protocol === 'udp';
-      return createFirewallRule(selectedID, {
+      const body = {
         direction: ruleForm.direction,
         action: ruleForm.action,
         protocol,
@@ -145,11 +161,16 @@ export function FirewallsPage() {
         priority: Number(ruleForm.priority),
         description: ruleForm.description,
         enabled: ruleForm.enabled,
-      });
+      };
+      if (editingRuleID !== null) {
+        return updateFirewallRule(selectedID, editingRuleID, body);
+      }
+      return createFirewallRule(selectedID, body);
     },
     onSuccess: () => {
       setRuleOpen(false);
       setRuleForm(defaultRuleForm);
+      setEditingRuleID(null);
       refreshSelected();
     },
   });
@@ -193,6 +214,11 @@ export function FirewallsPage() {
     createMut.mutate(groupForm);
   };
 
+  const handleUpdateGroup = (e: FormEvent) => {
+    e.preventDefault();
+    updateMut.mutate();
+  };
+
   const handleCreateRule = (e: FormEvent) => {
     e.preventDefault();
     ruleMut.mutate();
@@ -212,6 +238,41 @@ export function FirewallsPage() {
   };
 
   const selectedTargetValue = attachForm.target_id ? `${attachForm.target_type}:${attachForm.target_id}` : '';
+
+  const openEditGroup = () => {
+    if (!firewall) return;
+    setGroupForm({
+      name: firewall.name,
+      description: firewall.description,
+      default_inbound_policy: firewall.default_inbound_policy,
+      default_outbound_policy: firewall.default_outbound_policy,
+      enabled: firewall.enabled,
+    });
+    setEditGroupOpen(true);
+  };
+
+  const openCreateRule = () => {
+    setEditingRuleID(null);
+    setRuleForm(defaultRuleForm);
+    setRuleOpen(true);
+  };
+
+  const openEditRule = (rule: FirewallRule) => {
+    setEditingRuleID(rule.id);
+    setRuleForm({
+      direction: rule.direction,
+      action: rule.action,
+      protocol: rule.protocol,
+      source_cidr: rule.source_cidr,
+      destination_cidr: rule.destination_cidr,
+      port_start: rule.port_start ? String(rule.port_start) : '',
+      port_end: rule.port_end ? String(rule.port_end) : '',
+      priority: String(rule.priority),
+      description: rule.description,
+      enabled: rule.enabled,
+    });
+    setRuleOpen(true);
+  };
 
   return (
     <Layout>
@@ -285,14 +346,17 @@ export function FirewallsPage() {
                       <p className="mt-1 text-sm text-slate-500">{firewall.description || 'No description'}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Button variant="secondary" onClick={() => setRuleOpen(true)}>
+                      <Button variant="secondary" onClick={openEditGroup}>
+                        <Pencil className="h-4 w-4" /> Edit
+                      </Button>
+                      <Button variant="secondary" onClick={openCreateRule}>
                         <Plus className="h-4 w-4" /> Rule
                       </Button>
                       <Button variant="secondary" onClick={() => setAttachOpen(true)}>
                         <Plus className="h-4 w-4" /> Attach
                       </Button>
                       <Button onClick={() => applyMut.mutate()} loading={applyMut.isPending}>
-                        <Zap className="h-4 w-4" /> Apply
+                        <RotateCw className="h-4 w-4" /> Re-sync
                       </Button>
                       <Button
                         variant="danger"
@@ -314,6 +378,9 @@ export function FirewallsPage() {
                       <Summary label="Rules" value={String(firewall.rules?.length ?? 0)} />
                       <Summary label="Attachments" value={String(firewall.attachments?.length ?? 0)} />
                     </div>
+                    <Alert variant="info" title="Automatic sync" className="mt-4">
+                      Rule, group, attach, and detach changes are applied to Proxmox immediately.
+                    </Alert>
                     {applyMut.data && (
                       <Alert variant={applyMut.data.status === 'applied' ? 'success' : 'warning'} title="Apply result" className="mt-4">
                         {applyMut.data.message}
@@ -360,14 +427,19 @@ export function FirewallsPage() {
                               </td>
                               <td className="max-w-xs truncate px-5 py-3 text-slate-600">{rule.description || '-'}</td>
                               <td className="px-5 py-3 text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => deleteRuleMut.mutate({ firewallID: firewall.id, ruleID: rule.id })}
-                                  loading={deleteRuleMut.isPending && deleteRuleMut.variables?.ruleID === rule.id}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
+                                <div className="flex justify-end gap-2">
+                                  <Button variant="ghost" size="sm" onClick={() => openEditRule(rule)}>
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => deleteRuleMut.mutate({ firewallID: firewall.id, ruleID: rule.id })}
+                                    loading={deleteRuleMut.isPending && deleteRuleMut.variables?.ruleID === rule.id}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -377,6 +449,11 @@ export function FirewallsPage() {
                   ) : (
                     <CardContent>
                       <p className="text-sm text-slate-500">No firewall rules yet.</p>
+                    </CardContent>
+                  )}
+                  {(ruleMut.error || deleteRuleMut.error) && (
+                    <CardContent>
+                      <ErrorMessage error={ruleMut.error || deleteRuleMut.error} />
                     </CardContent>
                   )}
                 </Card>
@@ -414,6 +491,11 @@ export function FirewallsPage() {
                   ) : (
                     <CardContent>
                       <p className="text-sm text-slate-500">No compute targets attached.</p>
+                    </CardContent>
+                  )}
+                  {deleteAttachmentMut.error && (
+                    <CardContent>
+                      <ErrorMessage error={deleteAttachmentMut.error} />
                     </CardContent>
                   )}
                 </Card>
@@ -478,6 +560,14 @@ export function FirewallsPage() {
               <option value="deny">Deny</option>
             </Select>
           </div>
+          <Select
+            label="State"
+            value={groupForm.enabled ? 'enabled' : 'disabled'}
+            onChange={(e) => setGroupForm({ ...groupForm, enabled: e.target.value === 'enabled' })}
+          >
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </Select>
           {createMut.error && <ErrorMessage error={createMut.error} />}
           <div className="flex gap-3 pt-2">
             <Button type="submit" loading={createMut.isPending}>Create</Button>
@@ -486,7 +576,61 @@ export function FirewallsPage() {
         </form>
       </Modal>
 
-      <Modal open={ruleOpen} onClose={() => setRuleOpen(false)} title="Add Firewall Rule">
+      <Modal open={editGroupOpen} onClose={() => setEditGroupOpen(false)} title="Edit Firewall">
+        <form onSubmit={handleUpdateGroup} className="space-y-4">
+          <Input
+            label="Name"
+            value={groupForm.name}
+            onChange={(e) => setGroupForm({ ...groupForm, name: e.target.value })}
+            required
+          />
+          <Input
+            label="Description"
+            value={groupForm.description}
+            onChange={(e) => setGroupForm({ ...groupForm, description: e.target.value })}
+          />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Select
+              label="Inbound Policy"
+              value={groupForm.default_inbound_policy}
+              onChange={(e) => setGroupForm({ ...groupForm, default_inbound_policy: e.target.value as FirewallPolicy })}
+            >
+              <option value="deny">Deny</option>
+              <option value="allow">Allow</option>
+            </Select>
+            <Select
+              label="Outbound Policy"
+              value={groupForm.default_outbound_policy}
+              onChange={(e) => setGroupForm({ ...groupForm, default_outbound_policy: e.target.value as FirewallPolicy })}
+            >
+              <option value="allow">Allow</option>
+              <option value="deny">Deny</option>
+            </Select>
+          </div>
+          <Select
+            label="State"
+            value={groupForm.enabled ? 'enabled' : 'disabled'}
+            onChange={(e) => setGroupForm({ ...groupForm, enabled: e.target.value === 'enabled' })}
+          >
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </Select>
+          {updateMut.error && <ErrorMessage error={updateMut.error} />}
+          <div className="flex gap-3 pt-2">
+            <Button type="submit" loading={updateMut.isPending}>Save</Button>
+            <Button type="button" variant="secondary" onClick={() => setEditGroupOpen(false)}>Cancel</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={ruleOpen}
+        onClose={() => {
+          setRuleOpen(false);
+          setEditingRuleID(null);
+        }}
+        title={editingRuleID === null ? 'Add Firewall Rule' : 'Edit Firewall Rule'}
+      >
         <form onSubmit={handleCreateRule} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-3">
             <Select
@@ -564,10 +708,27 @@ export function FirewallsPage() {
             onChange={(e) => setRuleForm({ ...ruleForm, description: e.target.value })}
             placeholder="Allow SSH"
           />
+          <Select
+            label="State"
+            value={ruleForm.enabled ? 'enabled' : 'disabled'}
+            onChange={(e) => setRuleForm({ ...ruleForm, enabled: e.target.value === 'enabled' })}
+          >
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </Select>
           {ruleMut.error && <ErrorMessage error={ruleMut.error} />}
           <div className="flex gap-3 pt-2">
-            <Button type="submit" loading={ruleMut.isPending}>Add Rule</Button>
-            <Button type="button" variant="secondary" onClick={() => setRuleOpen(false)}>Cancel</Button>
+            <Button type="submit" loading={ruleMut.isPending}>{editingRuleID === null ? 'Add Rule' : 'Save Rule'}</Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setRuleOpen(false);
+                setEditingRuleID(null);
+              }}
+            >
+              Cancel
+            </Button>
           </div>
         </form>
       </Modal>
@@ -587,7 +748,7 @@ export function FirewallsPage() {
           </Select>
           {attachMut.error && <ErrorMessage error={attachMut.error} />}
           <div className="flex gap-3 pt-2">
-            <Button type="submit" loading={attachMut.isPending}>Attach</Button>
+            <Button type="submit" loading={attachMut.isPending}>Attach and Apply</Button>
             <Button type="button" variant="secondary" onClick={() => setAttachOpen(false)}>Cancel</Button>
           </div>
         </form>

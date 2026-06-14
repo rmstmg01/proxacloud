@@ -139,7 +139,14 @@ func (s *Service) Update(id int64, req UpdateGroupRequest) (Group, error) {
 		return Group{}, fmt.Errorf("update firewall group: %w", err)
 	}
 	_ = s.addEvent(id, "update", "info", "Firewall group updated", "")
-	return s.Get(id)
+	group, err := s.Get(id)
+	if err != nil {
+		return Group{}, err
+	}
+	if _, err := s.syncGroup(group, "group.update"); err != nil {
+		return group, err
+	}
+	return group, nil
 }
 
 func (s *Service) Delete(id int64) error {
@@ -222,6 +229,9 @@ func (s *Service) CreateRule(groupID int64, req CreateRuleRequest) (Rule, error)
 	}
 	_ = s.markModified(groupID)
 	_ = s.addEvent(groupID, "rule.create", "info", "Firewall rule added", "")
+	if _, err := s.syncGroupByID(groupID, "rule.create.sync"); err != nil {
+		return rec, err
+	}
 	return rec, nil
 }
 
@@ -258,6 +268,9 @@ func (s *Service) UpdateRule(groupID, ruleID int64, req UpdateRuleRequest) (Rule
 	}
 	_ = s.markModified(groupID)
 	_ = s.addEvent(groupID, "rule.update", "info", "Firewall rule updated", "")
+	if _, err := s.syncGroupByID(groupID, "rule.update.sync"); err != nil {
+		return rec, err
+	}
 	return rec, nil
 }
 
@@ -272,6 +285,9 @@ func (s *Service) DeleteRule(groupID, ruleID int64) error {
 	}
 	_ = s.markModified(groupID)
 	_ = s.addEvent(groupID, "rule.delete", "info", "Firewall rule deleted", "")
+	if _, err := s.syncGroupByID(groupID, "rule.delete.sync"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -328,10 +344,35 @@ func (s *Service) CreateAttachment(groupID int64, req CreateAttachmentRequest) (
 	}
 	_ = s.markModified(groupID)
 	_ = s.addEvent(groupID, "attachment.create", "info", "Firewall attachment added", fmt.Sprintf("%s:%d", req.TargetType, req.TargetID))
+	group, err := s.Get(groupID)
+	if err != nil {
+		return rec, err
+	}
+	resp, err := s.syncGroup(group, "attachment.create.sync")
+	if err != nil {
+		_, _ = s.db.Exec(`DELETE FROM firewall_attachments WHERE id = $1`, rec.ID)
+		_ = s.addEvent(groupID, "attachment.apply", "error", "Failed to apply firewall to attached target", err.Error())
+		return rec, err
+	}
+	_ = s.addEvent(groupID, "attachment.apply", "success", "Firewall applied to attached target", resp.Message)
 	return rec, nil
 }
 
 func (s *Service) DeleteAttachment(groupID, attachmentID int64) error {
+	group, err := s.Get(groupID)
+	if err != nil {
+		return err
+	}
+	attachment, err := findAttachment(group.Attachments, attachmentID)
+	if err != nil {
+		return err
+	}
+	output, err := s.clearAttachmentFirewall(group, attachment)
+	if err != nil {
+		_ = s.addEvent(groupID, "attachment.detach", "error", "Failed to remove firewall rules from detached target", err.Error())
+		return err
+	}
+
 	res, err := s.db.Exec(`DELETE FROM firewall_attachments WHERE firewall_group_id = $1 AND id = $2`, groupID, attachmentID)
 	if err != nil {
 		return fmt.Errorf("delete firewall attachment: %w", err)
@@ -341,7 +382,7 @@ func (s *Service) DeleteAttachment(groupID, attachmentID int64) error {
 		return ErrAttachmentNotFound
 	}
 	_ = s.markModified(groupID)
-	_ = s.addEvent(groupID, "attachment.delete", "info", "Firewall attachment removed", "")
+	_ = s.addEvent(groupID, "attachment.delete", "info", "Firewall attachment removed", output)
 	return nil
 }
 
@@ -350,12 +391,38 @@ func (s *Service) Apply(groupID int64) (ApplyResponse, error) {
 	if err != nil {
 		return ApplyResponse{}, err
 	}
+	return s.syncGroup(group, "sync")
+}
+
+func (s *Service) syncGroupByID(groupID int64, eventAction string) (ApplyResponse, error) {
+	group, err := s.Get(groupID)
+	if err != nil {
+		return ApplyResponse{}, err
+	}
+	return s.syncGroup(group, eventAction)
+}
+
+func (s *Service) syncGroup(group Group, eventAction string) (ApplyResponse, error) {
 	warnings := []string{}
 	if len(group.Attachments) == 0 {
 		warnings = append(warnings, "firewall has no attached targets")
 	}
 	if s.proxmox == nil {
 		return ApplyResponse{}, errors.New("proxmox firewall applier is not configured")
+	}
+	if !group.Enabled {
+		outputs, err := s.clearGroupFirewall(group)
+		if err != nil {
+			_, _ = s.db.Exec(`UPDATE firewall_groups SET status = 'failed', updated_at = NOW() WHERE id = $1`, group.ID)
+			_ = s.addEvent(group.ID, eventAction, "error", "Disabled firewall cleanup failed", err.Error())
+			return ApplyResponse{FirewallGroupID: group.ID, Status: "failed", Message: "Disabled firewall cleanup failed", Warnings: []string{err.Error()}}, err
+		}
+		_, err = s.db.Exec(`UPDATE firewall_groups SET status = 'disabled', last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, group.ID)
+		if err != nil {
+			return ApplyResponse{}, fmt.Errorf("mark firewall disabled: %w", err)
+		}
+		_ = s.addEvent(group.ID, eventAction, "success", "Firewall disabled and managed rules removed", strings.Join(outputs, "\n"))
+		return ApplyResponse{FirewallGroupID: group.ID, Status: "disabled", Message: "Firewall disabled and managed rules removed", Warnings: warnings}, nil
 	}
 
 	rules := proxmoxRulesFromGroup(group)
@@ -390,15 +457,15 @@ func (s *Service) Apply(groupID int64) (ApplyResponse, error) {
 		message = "Firewall has no attached targets"
 	}
 
-	_, err = s.db.Exec(`UPDATE firewall_groups SET status = $2, last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, groupID, status)
+	_, err := s.db.Exec(`UPDATE firewall_groups SET status = $2, last_applied_at = NOW(), updated_at = NOW() WHERE id = $1`, group.ID, status)
 	if err != nil {
 		return ApplyResponse{}, fmt.Errorf("mark firewall apply result: %w", err)
 	}
-	_ = s.addEvent(groupID, "apply", level, message, strings.Join(append(outputs, failures...), "\n"))
+	_ = s.addEvent(group.ID, eventAction, level, message, strings.Join(append(outputs, failures...), "\n"))
 	if len(failures) > 0 && len(outputs) == 0 {
-		return ApplyResponse{FirewallGroupID: groupID, Status: status, Message: message, Warnings: warnings}, errors.New(message)
+		return ApplyResponse{FirewallGroupID: group.ID, Status: status, Message: message, Warnings: warnings}, errors.New(message)
 	}
-	return ApplyResponse{FirewallGroupID: groupID, Status: status, Message: message, Warnings: warnings}, nil
+	return ApplyResponse{FirewallGroupID: group.ID, Status: status, Message: message, Warnings: warnings}, nil
 }
 
 func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, rules []proxmox.FirewallRuleSpec) (string, error) {
@@ -497,9 +564,21 @@ func (s *Service) clearAttachmentFirewall(group Group, attachment Attachment) (s
 	}
 }
 
+func findAttachment(attachments []Attachment, attachmentID int64) (Attachment, error) {
+	for _, attachment := range attachments {
+		if attachment.ID == attachmentID {
+			return attachment, nil
+		}
+	}
+	return Attachment{}, ErrAttachmentNotFound
+}
+
 func proxmoxRulesFromGroup(group Group) []proxmox.FirewallRuleSpec {
 	out := []proxmox.FirewallRuleSpec{}
 	for _, rule := range group.Rules {
+		if !rule.Enabled {
+			continue
+		}
 		out = append(out, proxmox.FirewallRuleSpec{
 			Direction:       rule.Direction,
 			Action:          rule.Action,
