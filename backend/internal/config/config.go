@@ -38,7 +38,7 @@ func Load() Config {
 	return Config{
 		AppEnv:                getenv("APP_ENV", "dev"),
 		Address:               getenv("APP_ADDR", ":8080"),
-		DatabaseURL:           getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/proxacloud?sslmode=disable"),
+		DatabaseURL:           getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/k8s_proxmox?sslmode=disable"),
 		AutoMigrate:           getenvBool("AUTO_MIGRATE", true),
 		TerraformBinary:       getenv("TERRAFORM_BINARY", "terraform"),
 		TerraformWorkDir:      getenv("TERRAFORM_WORKDIR", "infra/terraform/runs"),
@@ -51,7 +51,7 @@ func Load() Config {
 		JWTSecret:             getenv("JWT_SECRET", "change-me-in-prod"),
 		SecretEncryptionKey:   getenv("SECRET_ENCRYPTION_KEY", "dev-only-change-me-secret-key"),
 		JWTTTLMinutes:         getenvInt("JWT_TTL_MINUTES", 120),
-		SuperAdminUsername:    getenv("SUPER_ADMIN_USERNAME", "proxacloud-admin"),
+		SuperAdminUsername:    getenv("SUPER_ADMIN_USERNAME", "k8s-admin"),
 		SuperAdminPassword:    getenv("SUPER_ADMIN_PASSWORD", "ChangeMeNow!"),
 		DefaultNetworkName:    getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
 		DefaultNetworkCIDR:    getenv("DEFAULT_NETWORK_CIDR", "192.168.8.0/24"),

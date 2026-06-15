@@ -210,7 +210,7 @@ The backend seeds a super admin on startup if no matching user exists.
 Default development credentials:
 
 ```text
-Username: proxacloud-admin
+Username: k8s-admin
 Password: ChangeMeNow!
 ```
 
@@ -224,7 +224,7 @@ Copy `.env.example` to `.env` and update values for your environment.
 | --- | --- | --- |
 | `APP_ENV` | `dev` | Application environment label |
 | `APP_ADDR` | `:8080` | Backend listen address |
-| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/proxacloud?sslmode=disable` | PostgreSQL connection string |
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/k8s_proxmox?sslmode=disable` | PostgreSQL connection string |
 | `AUTO_MIGRATE` | `true` | Run migrations on backend startup |
 | `TERRAFORM_BINARY` | `terraform` | Terraform executable |
 | `TERRAFORM_WORKDIR` | `infra/terraform/runs` | Terraform run/workspace directory |
@@ -238,7 +238,7 @@ Copy `.env.example` to `.env` and update values for your environment.
 | `JWT_SECRET` | `change-me-in-prod` | JWT signing secret |
 | `SECRET_ENCRYPTION_KEY` | `dev-only-change-me-secret-key` | Encryption key for stored secrets |
 | `JWT_TTL_MINUTES` | `120` | JWT lifetime |
-| `SUPER_ADMIN_USERNAME` | `proxacloud-admin` | Seeded admin username |
+| `SUPER_ADMIN_USERNAME` | `k8s-admin` | Seeded admin username |
 | `SUPER_ADMIN_PASSWORD` | `ChangeMeNow!` | Seeded admin password |
 | `DEFAULT_NETWORK_NAME` | `homelab-default` | Seeded network profile name |
 | `DEFAULT_NETWORK_CIDR` | `192.168.8.0/24` | Seeded network CIDR |

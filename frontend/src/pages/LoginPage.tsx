@@ -51,7 +51,7 @@ export function LoginPage() {
               autoFocus
               autoComplete="username"
               required
-              placeholder="proxacloud-admin"
+              placeholder="k8s-admin"
             />
             <Input
               label="Password"
@@ -70,7 +70,7 @@ export function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-slate-500 mt-6">
-          Default credentials: <span className="text-slate-300">proxacloud-admin</span>
+          Default credentials: <span className="text-slate-300">k8s-admin</span>
         </p>
       </div>
     </div>
