@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"k8s-proxmox-manager/backend/internal/rbac"
+	"proxacloud/backend/internal/rbac"
 )
 
 type contextKey string

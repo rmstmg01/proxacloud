@@ -1,4 +1,4 @@
-module k8s-proxmox-manager/backend
+module proxacloud/backend
 
 go 1.23
 

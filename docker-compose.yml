@@ -1,18 +1,18 @@
 services:
   postgres:
     image: postgres:16
-    container_name: k8s-proxmox-postgres
+    container_name: proxacloud-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: k8s_proxmox
+      POSTGRES_DB: proxacloud
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d k8s_proxmox"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d proxacloud"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -24,18 +24,18 @@ services:
       args:
         GOPROXY: https://goproxy.cn,https://proxy.golang.org,https://goproxy.io
         GOSUMDB: "off"
-    container_name: k8s-proxmox-backend
+    container_name: proxacloud-backend
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       APP_ADDR: ":8080"
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/k8s_proxmox?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/proxacloud?sslmode=disable
       AUTO_MIGRATE: "true"
       JWT_SECRET: change-me-in-prod
       JWT_TTL_MINUTES: "120"
-      SUPER_ADMIN_USERNAME: k8s-admin
+      SUPER_ADMIN_USERNAME: proxacloud-admin
       SUPER_ADMIN_PASSWORD: ChangeMeNow!
       DEFAULT_NETWORK_NAME: homelab-default
       DEFAULT_NETWORK_CIDR: 192.168.8.0/24
@@ -67,7 +67,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: k8s-proxmox-frontend
+    container_name: proxacloud-frontend
     restart: unless-stopped
     depends_on:
       - backend
@@ -79,7 +79,7 @@ services:
 
   kubectl-runner:
     image: bitnami/kubectl:1.30
-    container_name: k8s-proxmox-kubectl-runner
+    container_name: proxacloud-kubectl-runner
     profiles:
       - ops
     depends_on:

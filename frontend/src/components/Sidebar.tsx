@@ -78,12 +78,12 @@ export function Sidebar() {
       {/* Logo */}
       <div className="border-b border-slate-700 px-4 py-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-500">
-            <Server className="h-4 w-4 text-white" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-indigo-500">
+            <Cloud className="h-5 w-5 text-white" />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold leading-tight text-white">K8s Proxmox</p>
-            <p className="truncate text-[11px] leading-tight text-slate-400">Manager</p>
+            <p className="truncate text-sm font-semibold leading-tight text-white">ProxaCloud</p>
+            <p className="truncate text-[11px] leading-tight text-slate-400">Private cloud</p>
           </div>
         </div>
       </div>

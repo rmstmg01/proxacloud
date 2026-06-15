@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s-proxmox-manager/backend/internal/secrets"
+	"proxacloud/backend/internal/secrets"
 )
 
 var ErrCertificateNotFound = errors.New("ssl certificate not found")

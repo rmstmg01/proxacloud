@@ -64,7 +64,7 @@ func (s *Service) Stack() (MonitoringStack, error) {
 
 func (s *Service) UpsertStack(req UpsertStackRequest) (MonitoringStack, error) {
 	req.Namespace = nonEmpty(req.Namespace, "monitoring")
-	req.GrafanaDomain = nonEmpty(req.GrafanaDomain, "grafana.proxaops.com")
+	req.GrafanaDomain = nonEmpty(req.GrafanaDomain, "grafana.proxacloud.com")
 	req.PrometheusStorageSize = nonEmpty(req.PrometheusStorageSize, "50Gi")
 	req.GrafanaStorageSize = nonEmpty(req.GrafanaStorageSize, "10Gi")
 	req.Retention = nonEmpty(req.Retention, "15d")

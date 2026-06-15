@@ -26,7 +26,7 @@ import { PageSpinner } from '../components/ui/Spinner';
 
 const stackDefaults = {
   namespace: 'monitoring',
-  grafana_domain: 'grafana.proxaops.com',
+  grafana_domain: 'grafana.proxacloud.com',
   storage_class: '',
   prometheus_storage_size: '50Gi',
   grafana_storage_size: '10Gi',
@@ -42,7 +42,7 @@ const clusterDefaults = {
   environment: 'production',
   mode: 'in_cluster',
   prometheus_url: '',
-  grafana_url: 'https://grafana.proxaops.com',
+  grafana_url: 'https://grafana.proxacloud.com',
   agent_namespace: 'monitoring',
   remote_write_url: 'http://kube-prometheus-stack-prometheus.monitoring:9090/api/v1/write',
   notes: '',

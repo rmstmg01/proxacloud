@@ -448,8 +448,8 @@ export function DashboardPage() {
   return (
     <Layout>
       <PageHeader
-        title="Dashboard"
-        description="A focused cloud overview for health, resource dashboards, and infrastructure capacity."
+        title="ProxaCloud Dashboard"
+        description="A focused cloud overview for health, compute, networking, and infrastructure capacity."
       />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -489,7 +489,7 @@ export function DashboardPage() {
 
       <div className="mb-6">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold text-slate-950">Resource Dashboards</h2>
+          <h2 className="text-base font-semibold text-slate-950">Cloud Resources</h2>
           <p className="text-sm text-slate-500">Open a resource area for details and creation actions.</p>
         </div>
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">

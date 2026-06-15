@@ -4,7 +4,7 @@
 
 - Create backend skeleton
 - Implement login with JWT
-- Seed super admin user (`k8s-admin`)
+- Seed super admin user (`proxacloud-admin`)
 - Implement role model (`normal_user`, `super_user`, `super_admin`)
 - Add user management endpoints
 - Add network profile endpoints for CIDR/gateway/bridge/VLAN

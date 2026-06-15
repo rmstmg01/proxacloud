@@ -26,7 +26,7 @@ import type { ClusterSummary } from '../types';
 
 const defaultRoutes = [
   {
-    hostname: 'proxaops.com',
+    hostname: 'proxacloud.com',
     path: '',
     service_namespace: 'pscs',
     service_name: 'website',
@@ -34,7 +34,7 @@ const defaultRoutes = [
     service_scheme: 'http',
   },
   {
-    hostname: 'www.proxaops.com',
+    hostname: 'www.proxacloud.com',
     path: '',
     service_namespace: 'pscs',
     service_name: 'website',
@@ -42,7 +42,7 @@ const defaultRoutes = [
     service_scheme: 'http',
   },
   {
-    hostname: 'admin.proxaops.com',
+    hostname: 'admin.proxacloud.com',
     path: '',
     service_namespace: 'pscs',
     service_name: 'frontend',
@@ -50,7 +50,7 @@ const defaultRoutes = [
     service_scheme: 'http',
   },
   {
-    hostname: 'api.proxaops.com',
+    hostname: 'api.proxacloud.com',
     path: '',
     service_namespace: 'pscs',
     service_name: 'backend',

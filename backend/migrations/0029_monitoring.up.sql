@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS monitoring_stacks (
     id BIGSERIAL PRIMARY KEY,
     namespace TEXT NOT NULL DEFAULT 'monitoring',
-    grafana_domain TEXT NOT NULL DEFAULT 'grafana.proxaops.com',
+    grafana_domain TEXT NOT NULL DEFAULT 'grafana.proxacloud.com',
     storage_class TEXT NOT NULL DEFAULT '',
     prometheus_storage_size TEXT NOT NULL DEFAULT '50Gi',
     grafana_storage_size TEXT NOT NULL DEFAULT '10Gi',

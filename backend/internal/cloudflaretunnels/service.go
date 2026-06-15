@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s-proxmox-manager/backend/internal/secrets"
+	"proxacloud/backend/internal/secrets"
 )
 
 const cloudflareAPIBaseURL = "https://api.cloudflare.com/client/v4"

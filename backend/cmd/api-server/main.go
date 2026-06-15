@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"k8s-proxmox-manager/backend/internal/server"
+	"proxacloud/backend/internal/server"
 )
 
 func main() {

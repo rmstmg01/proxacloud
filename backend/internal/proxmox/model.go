@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s-proxmox-manager/backend/internal/secrets"
+	"proxacloud/backend/internal/secrets"
 
 	"github.com/lib/pq"
 )

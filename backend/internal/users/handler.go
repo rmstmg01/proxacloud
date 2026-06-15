@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"k8s-proxmox-manager/backend/internal/auth"
-	"k8s-proxmox-manager/backend/internal/rbac"
+	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/rbac"
 )
 
 type Handler struct {

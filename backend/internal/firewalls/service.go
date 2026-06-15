@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"k8s-proxmox-manager/backend/internal/proxmox"
+	"proxacloud/backend/internal/proxmox"
 )
 
 var (
@@ -597,7 +597,7 @@ func proxmoxRulesFromGroup(group Group) []proxmox.FirewallRuleSpec {
 }
 
 func managedRulePrefix(groupID int64) string {
-	return fmt.Sprintf("k8s-proxmox-manager firewall:%d", groupID)
+	return fmt.Sprintf("proxacloud firewall:%d", groupID)
 }
 
 func managedRuleComment(groupID int64, rule Rule) string {

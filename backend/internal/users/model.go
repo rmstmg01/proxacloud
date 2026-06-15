@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"k8s-proxmox-manager/backend/internal/rbac"
+	"proxacloud/backend/internal/rbac"
 )
 
 var (

@@ -126,7 +126,7 @@ export function SSLCertificatesPage() {
             label="Name"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="proxaops-wildcard"
+            placeholder="proxacloud-wildcard"
             required
           />
           <Input label="fullchain.pem" type="file" accept=".pem,.crt" onChange={loadPEMFile('fullchain_pem')} />

@@ -206,6 +206,7 @@ spec:
               memory: 64Mi
             limits:
               memory: 256Mi
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -216,7 +217,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: proxaops.com
+    - host: proxacloud.com
       http:
         paths:
           - path: /
@@ -226,7 +227,7 @@ spec:
                 name: website
                 port:
                   number: 80
-    - host: www.proxaops.com
+    - host: www.proxacloud.com
       http:
         paths:
           - path: /
@@ -236,7 +237,27 @@ spec:
                 name: website
                 port:
                   number: 80
-    - host: admin.proxaops.com
+    - host: waveproxy.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: website
+                port:
+                  number: 80
+    - host: www.waveproxy.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: website
+                port:
+                  number: 80
+    - host: admin.proxacloud.com
       http:
         paths:
           - path: /
@@ -246,7 +267,27 @@ spec:
                 name: frontend
                 port:
                   number: 80
-    - host: api.proxaops.com
+    - host: admin.waveproxy.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    - host: api.proxacloud.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+    - host: api.waveproxy.com
       http:
         paths:
           - path: /

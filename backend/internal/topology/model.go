@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"k8s-proxmox-manager/backend/internal/proxmox"
+	"proxacloud/backend/internal/proxmox"
 )
 
 const (

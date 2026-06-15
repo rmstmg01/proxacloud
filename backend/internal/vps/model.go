@@ -18,11 +18,11 @@ import (
 	"sync"
 	"time"
 
-	"k8s-proxmox-manager/backend/internal/networks"
-	"k8s-proxmox-manager/backend/internal/proxmox"
-	"k8s-proxmox-manager/backend/internal/secrets"
-	"k8s-proxmox-manager/backend/internal/sshkeys"
-	"k8s-proxmox-manager/backend/internal/terraform"
+	"proxacloud/backend/internal/networks"
+	"proxacloud/backend/internal/proxmox"
+	"proxacloud/backend/internal/secrets"
+	"proxacloud/backend/internal/sshkeys"
+	"proxacloud/backend/internal/terraform"
 )
 
 const (

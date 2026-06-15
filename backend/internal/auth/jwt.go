@@ -6,7 +6,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"k8s-proxmox-manager/backend/internal/rbac"
+	"proxacloud/backend/internal/rbac"
 )
 
 type TokenService struct {

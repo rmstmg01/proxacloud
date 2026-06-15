@@ -5,7 +5,7 @@ import { Layout, PageHeader } from '../components/Layout';
 import { Badge } from '../components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 
-const namespace = 'proxaops';
+const namespace = 'proxacloud';
 const dbNamespace = 'pscs';
 const dbService = 'pscs-prod-db-cluster';
 const dbHost = `${dbService}.${dbNamespace}`;
@@ -105,7 +105,7 @@ kubectl describe nodes`,
     icon: RefreshCcw,
     badge: 'Daily Use',
     description:
-      'Use these commands when a new image has been published, configuration changed, or pods need to be recreated. The examples use the proxaops namespace.',
+      'Use these commands when a new image has been published, configuration changed, or pods need to be recreated. The examples use the proxacloud namespace.',
     commands: [
       {
         label: 'Restart example application deployments',
@@ -269,9 +269,9 @@ kubectl logs -n kube-system TRAEFIK_POD_NAME -f`,
       },
       {
         label: 'Generate public requests while watching logs',
-        command: `curl http://proxaops.com
-curl http://www.proxaops.com
-curl http://admin.proxaops.com`,
+        command: `curl http://proxacloud.com
+curl http://www.proxacloud.com
+curl http://admin.proxacloud.com`,
       },
       {
         label: 'Cloudflare Tunnel public 404 checks',
@@ -282,14 +282,14 @@ kubectl describe ingress pscs-web -n pscs`,
       },
       {
         label: 'Prove Traefik host routing from inside the cluster',
-        command: `kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: proxaops.com" http://traefik.traefik.svc.cluster.local/
-kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: www.proxaops.com" http://traefik.traefik.svc.cluster.local/
+        command: `kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: proxacloud.com" http://traefik.traefik.svc.cluster.local/
+kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i -H "Host: www.proxacloud.com" http://traefik.traefik.svc.cluster.local/
 kubectl run curl-test -n pscs --rm -it --image=curlimages/curl --restart=Never -- curl -i http://website.pscs.svc.cluster.local/`,
       },
       {
         label: 'Remove stale duplicate ingress rules',
-        command: `kubectl describe ingress proxaops-production pscs-production -n pscs
-kubectl delete ingress proxaops-production pscs-production -n pscs
+        command: `kubectl describe ingress proxacloud-production pscs-production -n pscs
+kubectl delete ingress proxacloud-production pscs-production -n pscs
 kubectl get ingress -n pscs`,
       },
       {
@@ -297,17 +297,17 @@ kubectl get ingress -n pscs`,
         command: `kubectl rollout restart deployment/cloudflared -n cloudflare-tunnel
 kubectl rollout status deployment/cloudflared -n cloudflare-tunnel
 kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=80
-curl -i https://proxaops.com/
-curl -i https://www.proxaops.com/`,
+curl -i https://proxacloud.com/
+curl -i https://www.proxacloud.com/`,
       },
     ],
     notes: [
-      'Public website traffic routes to the website Service for proxaops.com and www.proxaops.com.',
-      'Public admin traffic routes to the frontend Service for admin.proxaops.com.',
+      'Public website traffic routes to the website Service for proxacloud.com and www.proxacloud.com.',
+      'Public admin traffic routes to the frontend Service for admin.proxacloud.com.',
       'When pods are Running but public traffic returns 404, first decide which layer returns the 404: Cloudflare Tunnel fallback, Traefik host matching, or the website container.',
-      'Cloudflare Tunnel public hostnames for proxaops.com, www.proxaops.com, admin.proxaops.com, and api.proxaops.com should point to http://traefik.traefik.svc.cluster.local:80.',
+      'Cloudflare Tunnel public hostnames for proxacloud.com, www.proxacloud.com, admin.proxacloud.com, and api.proxacloud.com should point to http://traefik.traefik.svc.cluster.local:80.',
       'If Cloudflare routes to Traefik, make sure the public hostname is preserved with the HTTP Host Header setting; otherwise Traefik may receive traefik.traefik.svc.cluster.local and return 404 page not found.',
-      'A cluster curl that returns website HTML with Host: www.proxaops.com proves Kubernetes, Traefik, the Ingress, Service, and website pods are working.',
+      'A cluster curl that returns website HTML with Host: www.proxacloud.com proves Kubernetes, Traefik, the Ingress, Service, and website pods are working.',
       'After changing Cloudflare Tunnel public hostnames or HTTP host header settings, restart cloudflared so every connector pulls the latest config.',
       'Duplicate Ingresses for the same host and path can shadow the correct pscs-web rule, especially if they point to Services that no longer exist.',
       'If container logs are empty, the frontend or website image may not write access logs to stdout or stderr. Check Traefik access logs next.',
@@ -719,7 +719,7 @@ const commonErrors = [
     category: 'Image',
     meaning: 'Kubernetes tried to pull a container image, failed, and is backing off before retrying.',
     causes: 'Wrong image name or tag, private registry without imagePullSecret, expired token, rate limit, DNS/network issue, or registry outage.',
-    steps: 'Run kubectl describe pod POD_NAME -n proxaops, read the Events section, verify the image exists, check imagePullSecrets, then restart the deployment after fixing credentials or tags.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxacloud, read the Events section, verify the image exists, check imagePullSecrets, then restart the deployment after fixing credentials or tags.',
   },
   {
     error: 'ErrImagePull',
@@ -733,7 +733,7 @@ const commonErrors = [
     category: 'Image',
     meaning: 'The image value in the manifest is not a valid container image reference.',
     causes: 'Missing repository, invalid characters, uppercase registry path, malformed tag, or empty image value from a template variable.',
-    steps: 'Inspect the deployment YAML, fix the image value, then run kubectl rollout restart deployment/DEPLOYMENT_NAME -n proxaops.',
+    steps: 'Inspect the deployment YAML, fix the image value, then run kubectl rollout restart deployment/DEPLOYMENT_NAME -n proxacloud.',
   },
   {
     error: 'ImageInspectError',
@@ -747,7 +747,7 @@ const commonErrors = [
     category: 'Container',
     meaning: 'The container starts, exits, and Kubernetes repeatedly restarts it with increasing delay.',
     causes: 'Application startup crash, missing env vars, bad config, database unavailable, failed migration, bad command, or app exits successfully too quickly.',
-    steps: 'Run kubectl logs POD_NAME -n proxaops and kubectl logs POD_NAME -n proxaops --previous. Check env vars, secrets, config maps, probes, and dependent services.',
+    steps: 'Run kubectl logs POD_NAME -n proxacloud and kubectl logs POD_NAME -n proxacloud --previous. Check env vars, secrets, config maps, probes, and dependent services.',
   },
   {
     error: 'RunContainerError',
@@ -768,7 +768,7 @@ const commonErrors = [
     category: 'Config',
     meaning: 'Kubernetes cannot build the container config before handing it to the runtime.',
     causes: 'Referenced Secret or ConfigMap missing, missing key in Secret/ConfigMap, invalid env var reference, or bad projected volume.',
-    steps: 'Describe the pod and check Events. Then run kubectl get secrets -n proxaops and kubectl get configmaps -n proxaops to confirm referenced objects exist.',
+    steps: 'Describe the pod and check Events. Then run kubectl get secrets -n proxacloud and kubectl get configmaps -n proxacloud to confirm referenced objects exist.',
   },
   {
     error: 'ContainerCannotRun',
@@ -796,14 +796,14 @@ const commonErrors = [
     category: 'Resource',
     meaning: 'The container used more memory than its limit and was killed by the kernel.',
     causes: 'Memory limit too low, memory leak, large startup workload, inefficient query, or traffic spike.',
-    steps: 'Run kubectl describe pod POD_NAME -n proxaops, check Last State, review memory limits, inspect kubectl top pods -n proxaops, and increase limits or fix memory usage.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxacloud, check Last State, review memory limits, inspect kubectl top pods -n proxacloud, and increase limits or fix memory usage.',
   },
   {
     error: 'Pending',
     category: 'Scheduling',
     meaning: 'The pod exists but has not been scheduled onto a node or cannot finish setup.',
     causes: 'Insufficient CPU/memory, node taints, node selector mismatch, unbound PVC, missing storage class, or image pull setup waiting.',
-    steps: 'Run kubectl describe pod POD_NAME -n proxaops and read Events. Check kubectl get nodes, kubectl get pvc -n proxaops, and node taints.',
+    steps: 'Run kubectl describe pod POD_NAME -n proxacloud and read Events. Check kubectl get nodes, kubectl get pvc -n proxacloud, and node taints.',
   },
   {
     error: 'Unschedulable',
@@ -922,7 +922,7 @@ const commonErrors = [
     category: 'Lifecycle',
     meaning: 'The pod is waiting for init containers to finish before app containers start.',
     causes: 'Long-running init container, failed init container, image pull issue, or dependency wait script.',
-    steps: 'Run kubectl get pod POD_NAME -n proxaops -o jsonpath="{.status.initContainerStatuses}" and check init container logs.',
+    steps: 'Run kubectl get pod POD_NAME -n proxacloud -o jsonpath="{.status.initContainerStatuses}" and check init container logs.',
   },
   {
     error: 'Completed',
@@ -936,14 +936,14 @@ const commonErrors = [
     category: 'Lifecycle',
     meaning: 'A container terminated with a non-zero exit code.',
     causes: 'Application crash, bad command, failed dependency, permission error, or unhandled exception.',
-    steps: 'Check kubectl logs POD_NAME -n proxaops --previous and inspect the termination exit code in kubectl describe pod.',
+    steps: 'Check kubectl logs POD_NAME -n proxacloud --previous and inspect the termination exit code in kubectl describe pod.',
   },
   {
     error: 'Terminating',
     category: 'Lifecycle',
     meaning: 'The pod is being deleted and Kubernetes is waiting for containers, finalizers, or volumes to shut down.',
     causes: 'Normal deletion, stuck finalizer, node unreachable, volume detach delay, or app not handling SIGTERM.',
-    steps: 'Wait for graceful shutdown, inspect finalizers with kubectl get pod POD_NAME -n proxaops -o yaml, and avoid force delete unless necessary.',
+    steps: 'Wait for graceful shutdown, inspect finalizers with kubectl get pod POD_NAME -n proxacloud -o yaml, and avoid force delete unless necessary.',
   },
   {
     error: 'BackOff',
@@ -1013,7 +1013,7 @@ const commonErrors = [
     category: 'Storage',
     meaning: 'A PersistentVolumeClaim has not bound to a PersistentVolume.',
     causes: 'No matching PV, StorageClass issue, dynamic provisioner failure, capacity mismatch, or access mode mismatch.',
-    steps: 'Run kubectl describe pvc PVC_NAME -n proxaops and kubectl get storageclass. Check provisioner logs if dynamic provisioning is expected.',
+    steps: 'Run kubectl describe pvc PVC_NAME -n proxacloud and kubectl get storageclass. Check provisioner logs if dynamic provisioning is expected.',
   },
   {
     error: 'MountVolume.SetUp failed',
@@ -1090,7 +1090,7 @@ const commonErrors = [
     category: 'Network',
     meaning: 'A Service has no Ready pods behind it.',
     causes: 'Selector mismatch, pods not Ready, deployment scaled to zero, failed readiness probe, or wrong namespace.',
-    steps: 'Run kubectl get endpoints SERVICE_NAME -n proxaops and compare service selectors with pod labels.',
+    steps: 'Run kubectl get endpoints SERVICE_NAME -n proxacloud and compare service selectors with pod labels.',
   },
   {
     error: 'service has no active endpoints',
@@ -1174,7 +1174,7 @@ const commonErrors = [
     category: 'Registry',
     meaning: 'The registry rejected the image pull because credentials are missing or invalid.',
     causes: 'Missing imagePullSecret, expired token, wrong GitHub token scope, or secret in the wrong namespace.',
-    steps: 'Recreate the registry secret in proxaops, attach it to the service account, and restart the deployment.',
+    steps: 'Recreate the registry secret in proxacloud, attach it to the service account, and restart the deployment.',
   },
   {
     error: 'Denied',
@@ -1202,7 +1202,7 @@ const commonErrors = [
     category: 'Registry',
     meaning: 'The node tried to pull from a private registry without usable credentials.',
     causes: 'Missing imagePullSecret, secret not attached to pod/service account, or secret in another namespace.',
-    steps: 'Create the docker-registry secret in proxaops and add it to imagePullSecrets or the default service account.',
+    steps: 'Create the docker-registry secret in proxacloud and add it to imagePullSecrets or the default service account.',
   },
   {
     error: 'x509: certificate signed by unknown authority',
@@ -1223,14 +1223,14 @@ const commonErrors = [
     category: 'Config',
     meaning: 'A pod references a ConfigMap that does not exist in the same namespace.',
     causes: 'ConfigMap not applied, wrong namespace, typo in name, or deployment applied before config.',
-    steps: 'Create the ConfigMap in proxaops or fix the reference name, then restart affected pods.',
+    steps: 'Create the ConfigMap in proxacloud or fix the reference name, then restart affected pods.',
   },
   {
     error: 'secret not found',
     category: 'Config',
     meaning: 'A pod references a Secret that does not exist in the same namespace.',
     causes: 'Secret not created, wrong namespace, typo in name, or sealed/external secret sync failed.',
-    steps: 'Create or sync the Secret in proxaops, verify key names, and restart the deployment.',
+    steps: 'Create or sync the Secret in proxacloud, verify key names, and restart the deployment.',
   },
   {
     error: "couldn't find key",
@@ -1265,7 +1265,7 @@ const commonErrors = [
     category: 'Deployment',
     meaning: 'A Deployment rollout did not make progress before its deadline.',
     causes: 'Pods failing readiness, image pull errors, crash loops, insufficient capacity, or bad rollout config.',
-    steps: 'Run kubectl rollout status deployment/DEPLOYMENT_NAME -n proxaops and kubectl describe deployment DEPLOYMENT_NAME -n proxaops, then inspect failing pods.',
+    steps: 'Run kubectl rollout status deployment/DEPLOYMENT_NAME -n proxacloud and kubectl describe deployment DEPLOYMENT_NAME -n proxacloud, then inspect failing pods.',
   },
   {
     error: 'ReplicaFailure',
@@ -1448,7 +1448,7 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
             <div>
               <CardTitle>Quick Commands</CardTitle>
               <p className="mt-1 text-sm text-slate-500">
-                Copy these commands when you need a fast cluster check or restart. Replace proxaops with your namespace when needed.
+                Copy these commands when you need a fast cluster check or restart. Replace proxacloud with your namespace when needed.
               </p>
             </div>
           </CardHeader>
@@ -1536,7 +1536,7 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
             <div>
               <CardTitle>Kubernetes Cluster</CardTitle>
               <p className="mt-1 text-sm text-slate-500">
-                Cluster health, deployment, registry, pod, networking, storage, and Kubernetes error troubleshooting. Examples use proxaops as a generic namespace.
+                Cluster health, deployment, registry, pod, networking, storage, and Kubernetes error troubleshooting. Examples use proxacloud as a generic namespace.
               </p>
             </div>
           </CardHeader>
@@ -1589,7 +1589,7 @@ export function DocumentsPage({ category = 'quick-commands' }: { category?: Docu
           <CardHeader>
             <CardTitle>Common Error Messages</CardTitle>
             <p className="mt-1 text-sm text-slate-500">
-              A practical catalog of Kubernetes statuses and event messages. The troubleshooting steps use proxaops as the example namespace.
+              A practical catalog of Kubernetes statuses and event messages. The troubleshooting steps use proxacloud as the example namespace.
             </p>
           </CardHeader>
           <CardContent>

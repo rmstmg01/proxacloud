@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s-proxmox-manager/backend/internal/secrets"
+	"proxacloud/backend/internal/secrets"
 )
 
 var ErrKeyPairNotFound = errors.New("ssh key pair not found")

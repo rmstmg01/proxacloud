@@ -28,7 +28,7 @@ Base URL: `http://localhost:8080`
 ### 1) Login
 
 ```powershell
-$body = @{ username = "k8s-admin"; password = "ChangeMeNow!" } | ConvertTo-Json
+$body = @{ username = "proxacloud-admin"; password = "ChangeMeNow!" } | ConvertTo-Json
 $resp = Invoke-RestMethod -Method Post -Uri "http://localhost:8080/api/v1/auth/login" -ContentType "application/json" -Body $body
 $token = $resp.token
 ```

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Server } from 'lucide-react';
+import { Cloud } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
@@ -34,10 +34,10 @@ export function LoginPage() {
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 bg-indigo-600 rounded-2xl mb-4 shadow-lg">
-            <Server className="h-7 w-7 text-white" />
+            <Cloud className="h-7 w-7 text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-white">K8s Proxmox Manager</h1>
-          <p className="text-slate-400 text-sm mt-1">Sign in to your account</p>
+          <h1 className="text-2xl font-bold text-white">ProxaCloud</h1>
+          <p className="text-slate-400 text-sm mt-1">Private cloud control plane</p>
         </div>
 
         {/* Card */}
@@ -51,7 +51,7 @@ export function LoginPage() {
               autoFocus
               autoComplete="username"
               required
-              placeholder="k8s-admin"
+              placeholder="proxacloud-admin"
             />
             <Input
               label="Password"
@@ -70,7 +70,7 @@ export function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-slate-500 mt-6">
-          Default credentials: <span className="text-slate-300">k8s-admin</span>
+          Default credentials: <span className="text-slate-300">proxacloud-admin</span>
         </p>
       </div>
     </div>

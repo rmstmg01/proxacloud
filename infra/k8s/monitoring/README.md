@@ -5,7 +5,7 @@ This directory contains the production baseline for central Kubernetes monitorin
 Default architecture:
 
 - `kube-prometheus-stack` in the `monitoring` namespace
-- Grafana exposed through Traefik at `grafana.proxaops.com`
+- Grafana exposed through Traefik at `grafana.proxacloud.com`
 - Prometheus and Alertmanager kept internal by default
 - ServiceMonitors for PSCS backend/gateway metrics
 - Future clusters added through remote-write agents or federation
