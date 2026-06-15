@@ -199,6 +199,7 @@ func NewApp() (*App, error) {
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/users", userHandler.ListUsers)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users", userHandler.CreateUser)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}", userHandler.UpdateUser)
 
 			protected.Get("/vpcs", networkHandler.ListVPCs)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vpcs", networkHandler.CreateVPC)

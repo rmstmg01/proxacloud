@@ -13,3 +13,13 @@ export const createUser = (body: {
   role: string;
 }) =>
   client.post<User>('/users', body).then((r) => r.data);
+
+export const updateUser = (
+  id: number,
+  body: {
+    full_name: string;
+    email: string;
+    contact_number: string;
+    role: string;
+  },
+) => client.put<User>(`/users/${id}`, body).then((r) => r.data);

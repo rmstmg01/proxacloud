@@ -15,6 +15,7 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrUserExists         = errors.New("user already exists")
+	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidRole        = errors.New("invalid role")
 )
 
@@ -97,6 +98,50 @@ func (s *Service) CreateUser(username, password string, role rbac.Role, profile 
 
 	created.Role = role
 	return sanitizeUser(created), nil
+}
+
+func (s *Service) UpdateUser(id int64, role rbac.Role, profile ProfileInput) (User, error) {
+	if id <= 0 {
+		return User{}, ErrUserNotFound
+	}
+	if !rbac.IsValidRole(role) {
+		return User{}, ErrInvalidRole
+	}
+	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile.Email = strings.TrimSpace(strings.ToLower(profile.Email))
+	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
+
+	roleID, err := s.getRoleID(role)
+	if err != nil {
+		return User{}, err
+	}
+
+	var updated User
+	var roleName string
+	err = s.db.QueryRow(
+		`UPDATE users
+		 SET full_name = $2,
+		     email = $3,
+		     contact_number = $4,
+		     role_id = $5
+		 WHERE id = $1
+		 RETURNING id, username, full_name, email, contact_number, created_at,
+		           (SELECT name FROM roles WHERE id = $5)`,
+		id,
+		profile.FullName,
+		profile.Email,
+		profile.ContactNumber,
+		roleID,
+	).Scan(&updated.ID, &updated.Username, &updated.FullName, &updated.Email, &updated.ContactNumber, &updated.CreatedAt, &roleName)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrUserNotFound
+		}
+		return User{}, fmt.Errorf("update user: %w", err)
+	}
+
+	updated.Role = rbac.Role(roleName)
+	return sanitizeUser(updated), nil
 }
 
 func (s *Service) Authenticate(username, password string) (User, error) {

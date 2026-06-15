@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
 
 	"proxacloud/backend/internal/auth"
 	"proxacloud/backend/internal/rbac"
@@ -95,6 +98,44 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, user)
+}
+
+func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+
+	var req struct {
+		FullName      string `json:"full_name"`
+		Email         string `json:"email"`
+		ContactNumber string `json:"contact_number"`
+		Role          string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	user, err := h.users.UpdateUser(id, rbac.Role(req.Role), ProfileInput{
+		FullName:      req.FullName,
+		Email:         req.Email,
+		ContactNumber: req.ContactNumber,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUserNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrInvalidRole):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, user)
 }
 
 func (h *Handler) ListUsers(w http.ResponseWriter, _ *http.Request) {
