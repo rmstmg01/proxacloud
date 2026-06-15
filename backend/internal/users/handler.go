@@ -64,9 +64,12 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Role     string `json:"role"`
+		Username      string `json:"username"`
+		FullName      string `json:"full_name"`
+		Email         string `json:"email"`
+		ContactNumber string `json:"contact_number"`
+		Password      string `json:"password"`
+		Role          string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
@@ -74,7 +77,11 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := rbac.Role(req.Role)
-	user, err := h.users.CreateUser(req.Username, req.Password, role)
+	user, err := h.users.CreateUser(req.Username, req.Password, role, ProfileInput{
+		FullName:      req.FullName,
+		Email:         req.Email,
+		ContactNumber: req.ContactNumber,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrUserExists):

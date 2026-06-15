@@ -19,11 +19,20 @@ var (
 )
 
 type User struct {
-	ID           int64     `json:"id"`
-	Username     string    `json:"username"`
-	Role         rbac.Role `json:"role"`
-	CreatedAt    time.Time `json:"created_at"`
-	PasswordHash string    `json:"-"`
+	ID            int64     `json:"id"`
+	Username      string    `json:"username"`
+	FullName      string    `json:"full_name"`
+	Email         string    `json:"email"`
+	ContactNumber string    `json:"contact_number"`
+	Role          rbac.Role `json:"role"`
+	CreatedAt     time.Time `json:"created_at"`
+	PasswordHash  string    `json:"-"`
+}
+
+type ProfileInput struct {
+	FullName      string
+	Email         string
+	ContactNumber string
 }
 
 type Service struct {
@@ -39,15 +48,18 @@ func (s *Service) SeedSuperAdmin(username, password string) error {
 		return nil
 	}
 
-	_, err := s.CreateUser(username, password, rbac.RoleSuperAdmin)
+	_, err := s.CreateUser(username, password, rbac.RoleSuperAdmin, ProfileInput{})
 	if err != nil && !errors.Is(err, ErrUserExists) {
 		return err
 	}
 	return nil
 }
 
-func (s *Service) CreateUser(username, password string, role rbac.Role) (User, error) {
+func (s *Service) CreateUser(username, password string, role rbac.Role, profile ProfileInput) (User, error) {
 	username = strings.TrimSpace(strings.ToLower(username))
+	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile.Email = strings.TrimSpace(strings.ToLower(profile.Email))
+	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
 	if username == "" || len(password) < 8 {
 		return User{}, errors.New("username required and password must have at least 8 characters")
 	}
@@ -66,13 +78,16 @@ func (s *Service) CreateUser(username, password string, role rbac.Role) (User, e
 
 	var created User
 	err = s.db.QueryRow(
-		`INSERT INTO users (username, password_hash, role_id)
-		 VALUES ($1, $2, $3)
-		 RETURNING id, username, created_at`,
+		`INSERT INTO users (username, full_name, email, contact_number, password_hash, role_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, username, full_name, email, contact_number, created_at`,
 		username,
+		profile.FullName,
+		profile.Email,
+		profile.ContactNumber,
 		string(hash),
 		roleID,
-	).Scan(&created.ID, &created.Username, &created.CreatedAt)
+	).Scan(&created.ID, &created.Username, &created.FullName, &created.Email, &created.ContactNumber, &created.CreatedAt)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
 			return User{}, ErrUserExists
@@ -90,12 +105,12 @@ func (s *Service) Authenticate(username, password string) (User, error) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.password_hash, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.password_hash, u.created_at, r.name
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt, &roleName)
+	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.CreatedAt, &roleName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrInvalidCredentials
@@ -117,12 +132,12 @@ func (s *Service) GetByUsername(username string) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.created_at, r.name
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.CreatedAt, &roleName)
+	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.CreatedAt, &roleName)
 	if err != nil {
 		return User{}, false
 	}
@@ -133,7 +148,7 @@ func (s *Service) GetByUsername(username string) (User, bool) {
 
 func (s *Service) ListUsers() []User {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.created_at, r.name
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 ORDER BY u.created_at ASC`,
@@ -147,7 +162,7 @@ func (s *Service) ListUsers() []User {
 	for rows.Next() {
 		var user User
 		var roleName string
-		if scanErr := rows.Scan(&user.ID, &user.Username, &user.CreatedAt, &roleName); scanErr != nil {
+		if scanErr := rows.Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.CreatedAt, &roleName); scanErr != nil {
 			continue
 		}
 		user.Role = rbac.Role(roleName)

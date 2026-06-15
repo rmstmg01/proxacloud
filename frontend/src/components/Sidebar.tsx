@@ -56,7 +56,7 @@ const navGroups = [
   {
     label: 'Platform Settings',
     items: [
-      { to: '/proxmox', icon: Cpu, label: 'Proxmox' },
+      { to: '/proxmox', icon: Cpu, label: 'Nodes' },
       { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
       { to: '/users', icon: Users, label: 'Users' },
     ],

@@ -5,6 +5,9 @@ export type Role = 'normal_user' | 'super_user' | 'super_admin';
 export interface User {
   id: number;
   username: string;
+  full_name: string;
+  email: string;
+  contact_number: string;
   role: Role;
   created_at: string;
 }

@@ -17,11 +17,12 @@ export function UsersPage() {
   const qc = useQueryClient();
   const { data: users, isLoading, error } = useQuery({ queryKey: ['users'], queryFn: getUsers });
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ username: '', password: '', role: 'normal_user' });
+  const emptyForm = { username: '', full_name: '', email: '', contact_number: '', password: '', role: 'normal_user' };
+  const [form, setForm] = useState(emptyForm);
 
   const createMut = useMutation({
     mutationFn: createUser,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); setCreateOpen(false); setForm({ username: '', password: '', role: 'normal_user' }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); setCreateOpen(false); setForm(emptyForm); },
   });
 
   const handleCreate = (e: FormEvent) => {
@@ -59,6 +60,9 @@ export function UsersPage() {
                   <tr className="border-b border-slate-200 bg-slate-50">
                     <th className="text-left px-6 py-3 font-medium text-slate-600">ID</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Username</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Full Name</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Email Address</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Contact Number</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Role</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
                   </tr>
@@ -71,6 +75,9 @@ export function UsersPage() {
                         {u.username}
                         {u.id === me?.id && <span className="ml-2 text-xs text-indigo-500">(you)</span>}
                       </td>
+                      <td className="px-6 py-3 text-slate-600">{u.full_name || '-'}</td>
+                      <td className="px-6 py-3 text-slate-600">{u.email || '-'}</td>
+                      <td className="px-6 py-3 text-slate-600">{u.contact_number || '-'}</td>
                       <td className="px-6 py-3"><RoleBadge role={u.role} /></td>
                       <td className="px-6 py-3 text-slate-500">{new Date(u.created_at).toLocaleDateString()}</td>
                     </tr>
@@ -85,6 +92,9 @@ export function UsersPage() {
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="Create User">
         <form onSubmit={handleCreate} className="space-y-4">
           <Input label="Username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required placeholder="alice" />
+          <Input label="Full Name" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} placeholder="Alice Sharma" />
+          <Input label="Email Address" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="alice@example.com" />
+          <Input label="Contact Number" type="tel" value={form.contact_number} onChange={(e) => setForm({ ...form, contact_number: e.target.value })} placeholder="+1 555 0100" />
           <Input label="Password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
           <Select label="Role" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
             <option value="normal_user">Normal User</option>
