@@ -17,12 +17,43 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+func (h *Handler) ListVPCs(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.service.ListVPCs())
+}
+
+func (h *Handler) CreateVPC(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		CIDR        string `json:"cidr"`
+		Description string `json:"description"`
+		IsDefault   bool   `json:"is_default"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	created, err := h.service.CreateVPC(VPC{
+		Name:        req.Name,
+		CIDR:        req.CIDR,
+		Description: req.Description,
+		IsDefault:   req.IsDefault,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, created)
+}
+
 func (h *Handler) List(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.List())
 }
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		VPCID     int64    `json:"vpc_id"`
 		Name      string   `json:"name"`
 		CIDR      string   `json:"cidr"`
 		Gateway   string   `json:"gateway"`
@@ -37,6 +68,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.service.Create(Profile{
+		VPCID:     req.VPCID,
 		Name:      req.Name,
 		CIDR:      req.CIDR,
 		Gateway:   req.Gateway,
@@ -61,6 +93,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
+		VPCID   int64    `json:"vpc_id"`
 		Name    string   `json:"name"`
 		CIDR    string   `json:"cidr"`
 		Gateway string   `json:"gateway"`
@@ -74,6 +107,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := h.service.Update(id, Profile{
+		VPCID:   req.VPCID,
 		Name:    req.Name,
 		CIDR:    req.CIDR,
 		Gateway: req.Gateway,
@@ -84,6 +118,8 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNetworkNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrVPCNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

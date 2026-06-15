@@ -1,5 +1,11 @@
 import client from './client';
-import type { NetworkProfile, NodeNetworkTag, NetworkReservedIP } from '../types';
+import type { NetworkProfile, NodeNetworkTag, NetworkReservedIP, VPC } from '../types';
+
+export const getVPCs = () =>
+  client.get<VPC[]>('/vpcs').then((r) => r.data);
+
+export const createVPC = (body: { name: string; cidr: string; description: string; is_default: boolean }) =>
+  client.post<VPC>('/vpcs', body).then((r) => r.data);
 
 export const getNetworks = () =>
   client.get<NetworkProfile[]>('/networks').then((r) => r.data);

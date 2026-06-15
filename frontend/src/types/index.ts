@@ -19,8 +19,20 @@ export interface LoginResponse {
 
 // ─── Networks ─────────────────────────────────────────────────────────────────
 
+export interface VPC {
+  id: number;
+  name: string;
+  cidr: string;
+  description: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface NetworkProfile {
   id: number;
+  vpc_id: number;
+  vpc_name?: string;
   name: string;
   cidr: string;
   gateway: string;

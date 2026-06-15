@@ -47,7 +47,7 @@ const navGroups = [
   {
     label: 'Network & Access',
     items: [
-      { to: '/networks', icon: Network, label: 'Networks' },
+      { to: '/networks', icon: Network, label: 'VPC Networks' },
       { to: '/firewalls', icon: Shield, label: 'Firewalls' },
       { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },
       { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },

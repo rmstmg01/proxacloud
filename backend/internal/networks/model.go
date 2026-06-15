@@ -13,11 +13,24 @@ import (
 
 var (
 	ErrNetworkNotFound    = errors.New("network profile not found")
+	ErrVPCNotFound        = errors.New("vpc not found")
 	ErrReservedIPNotFound = errors.New("reserved ip not found")
 )
 
+type VPC struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	CIDR        string    `json:"cidr"`
+	Description string    `json:"description"`
+	IsDefault   bool      `json:"is_default"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type Profile struct {
 	ID        int64     `json:"id"`
+	VPCID     int64     `json:"vpc_id"`
+	VPCName   string    `json:"vpc_name,omitempty"`
 	Name      string    `json:"name"`
 	CIDR      string    `json:"cidr"`
 	Gateway   string    `json:"gateway"`
@@ -60,8 +73,73 @@ func NewService(db *sql.DB) *Service {
 	return &Service{db: db}
 }
 
+func (s *Service) CreateVPC(vpc VPC) (VPC, error) {
+	if err := validateVPC(vpc); err != nil {
+		return VPC{}, err
+	}
+
+	if vpc.IsDefault {
+		if _, err := s.db.Exec(`UPDATE vpcs SET is_default = FALSE WHERE is_default = TRUE`); err != nil {
+			return VPC{}, fmt.Errorf("clear default vpc: %w", err)
+		}
+	}
+
+	var hasDefault bool
+	_ = s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM vpcs WHERE is_default = TRUE)`).Scan(&hasDefault)
+	if !hasDefault {
+		vpc.IsDefault = true
+	}
+
+	err := s.db.QueryRow(
+		`INSERT INTO vpcs (name, cidr, description, is_default)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, name, cidr, description, is_default, created_at, updated_at`,
+		strings.TrimSpace(vpc.Name),
+		strings.TrimSpace(vpc.CIDR),
+		strings.TrimSpace(vpc.Description),
+		vpc.IsDefault,
+	).Scan(&vpc.ID, &vpc.Name, &vpc.CIDR, &vpc.Description, &vpc.IsDefault, &vpc.CreatedAt, &vpc.UpdatedAt)
+	if err != nil {
+		return VPC{}, fmt.Errorf("insert vpc: %w", err)
+	}
+
+	return vpc, nil
+}
+
+func (s *Service) ListVPCs() []VPC {
+	rows, err := s.db.Query(
+		`SELECT id, name, cidr, description, is_default, created_at, updated_at
+		 FROM vpcs
+		 ORDER BY is_default DESC, name ASC`,
+	)
+	if err != nil {
+		return []VPC{}
+	}
+	defer rows.Close()
+
+	out := make([]VPC, 0)
+	for rows.Next() {
+		var vpc VPC
+		if scanErr := rows.Scan(&vpc.ID, &vpc.Name, &vpc.CIDR, &vpc.Description, &vpc.IsDefault, &vpc.CreatedAt, &vpc.UpdatedAt); scanErr != nil {
+			continue
+		}
+		out = append(out, vpc)
+	}
+
+	return out
+}
+
 func (s *Service) Create(profile Profile) (Profile, error) {
 	if err := validateProfile(profile); err != nil {
+		return Profile{}, err
+	}
+	if profile.VPCID <= 0 {
+		defaultVPCID, err := s.defaultVPCID()
+		if err != nil {
+			return Profile{}, err
+		}
+		profile.VPCID = defaultVPCID
+	} else if _, err := s.GetVPCByID(profile.VPCID); err != nil {
 		return Profile{}, err
 	}
 
@@ -78,9 +156,10 @@ func (s *Service) Create(profile Profile) (Profile, error) {
 	}
 
 	err := s.db.QueryRow(
-		`INSERT INTO network_profiles (name, cidr, gateway, dns, bridge, vlan, is_default)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
+		`INSERT INTO network_profiles (vpc_id, name, cidr, gateway, dns, bridge, vlan, is_default)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING id, vpc_id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
+		profile.VPCID,
 		strings.TrimSpace(profile.Name),
 		strings.TrimSpace(profile.CIDR),
 		strings.TrimSpace(profile.Gateway),
@@ -90,6 +169,7 @@ func (s *Service) Create(profile Profile) (Profile, error) {
 		profile.IsDefault,
 	).Scan(
 		&profile.ID,
+		&profile.VPCID,
 		&profile.Name,
 		&profile.CIDR,
 		&profile.Gateway,
@@ -109,9 +189,10 @@ func (s *Service) Create(profile Profile) (Profile, error) {
 
 func (s *Service) List() []Profile {
 	rows, err := s.db.Query(
-		`SELECT id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at
-		 FROM network_profiles
-		 ORDER BY id ASC`,
+		`SELECT p.id, p.vpc_id, COALESCE(v.name, ''), p.name, p.cidr, p.gateway, p.dns, p.bridge, p.vlan, p.is_default, p.created_at, p.updated_at
+		 FROM network_profiles p
+		 LEFT JOIN vpcs v ON v.id = p.vpc_id
+		 ORDER BY v.is_default DESC, v.name ASC, p.id ASC`,
 	)
 	if err != nil {
 		return []Profile{}
@@ -123,6 +204,8 @@ func (s *Service) List() []Profile {
 		var p Profile
 		if scanErr := rows.Scan(
 			&p.ID,
+			&p.VPCID,
+			&p.VPCName,
 			&p.Name,
 			&p.CIDR,
 			&p.Gateway,
@@ -144,12 +227,15 @@ func (s *Service) List() []Profile {
 func (s *Service) GetByID(id int64) (Profile, error) {
 	var p Profile
 	err := s.db.QueryRow(
-		`SELECT id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at
-		 FROM network_profiles
-		 WHERE id = $1`,
+		`SELECT p.id, p.vpc_id, COALESCE(v.name, ''), p.name, p.cidr, p.gateway, p.dns, p.bridge, p.vlan, p.is_default, p.created_at, p.updated_at
+		 FROM network_profiles p
+		 LEFT JOIN vpcs v ON v.id = p.vpc_id
+		 WHERE p.id = $1`,
 		id,
 	).Scan(
 		&p.ID,
+		&p.VPCID,
+		&p.VPCName,
 		&p.Name,
 		&p.CIDR,
 		&p.Gateway,
@@ -174,20 +260,31 @@ func (s *Service) Update(id int64, updates Profile) (Profile, error) {
 	if err := validateProfile(updates); err != nil {
 		return Profile{}, err
 	}
+	if updates.VPCID <= 0 {
+		current, err := s.GetByID(id)
+		if err != nil {
+			return Profile{}, err
+		}
+		updates.VPCID = current.VPCID
+	} else if _, err := s.GetVPCByID(updates.VPCID); err != nil {
+		return Profile{}, err
+	}
 
 	var updated Profile
 	err := s.db.QueryRow(
 		`UPDATE network_profiles
-		 SET name = $2,
-		     cidr = $3,
-		     gateway = $4,
-		     dns = $5,
-		     bridge = $6,
-		     vlan = $7,
+		 SET vpc_id = $2,
+		     name = $3,
+		     cidr = $4,
+		     gateway = $5,
+		     dns = $6,
+		     bridge = $7,
+		     vlan = $8,
 		     updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
+		 RETURNING id, vpc_id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
 		id,
+		updates.VPCID,
 		strings.TrimSpace(updates.Name),
 		strings.TrimSpace(updates.CIDR),
 		strings.TrimSpace(updates.Gateway),
@@ -196,6 +293,7 @@ func (s *Service) Update(id int64, updates Profile) (Profile, error) {
 		updates.VLAN,
 	).Scan(
 		&updated.ID,
+		&updated.VPCID,
 		&updated.Name,
 		&updated.CIDR,
 		&updated.Gateway,
@@ -216,6 +314,23 @@ func (s *Service) Update(id int64, updates Profile) (Profile, error) {
 	return updated, nil
 }
 
+func (s *Service) GetVPCByID(id int64) (VPC, error) {
+	var vpc VPC
+	err := s.db.QueryRow(
+		`SELECT id, name, cidr, description, is_default, created_at, updated_at
+		 FROM vpcs
+		 WHERE id = $1`,
+		id,
+	).Scan(&vpc.ID, &vpc.Name, &vpc.CIDR, &vpc.Description, &vpc.IsDefault, &vpc.CreatedAt, &vpc.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return VPC{}, ErrVPCNotFound
+		}
+		return VPC{}, fmt.Errorf("get vpc: %w", err)
+	}
+	return vpc, nil
+}
+
 func (s *Service) SetDefault(id int64) (Profile, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -233,10 +348,11 @@ func (s *Service) SetDefault(id int64) (Profile, error) {
 		 SET is_default = TRUE,
 		     updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
+		 RETURNING id, vpc_id, name, cidr, gateway, dns, bridge, vlan, is_default, created_at, updated_at`,
 		id,
 	).Scan(
 		&updated.ID,
+		&updated.VPCID,
 		&updated.Name,
 		&updated.CIDR,
 		&updated.Gateway,
@@ -571,6 +687,40 @@ func validateProfile(p Profile) error {
 	}
 
 	return nil
+}
+
+func validateVPC(vpc VPC) error {
+	vpc.Name = strings.TrimSpace(vpc.Name)
+	vpc.CIDR = strings.TrimSpace(vpc.CIDR)
+	if vpc.Name == "" {
+		return errors.New("vpc name is required")
+	}
+	if _, _, err := net.ParseCIDR(vpc.CIDR); err != nil {
+		return errors.New("vpc cidr is invalid")
+	}
+	return nil
+}
+
+func (s *Service) defaultVPCID() (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM vpcs WHERE is_default = TRUE ORDER BY id ASC LIMIT 1`).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("load default vpc: %w", err)
+	}
+
+	var created VPC
+	err = s.db.QueryRow(
+		`INSERT INTO vpcs (name, cidr, description, is_default)
+		 VALUES ('default-vpc', '192.168.0.0/16', 'Default VPC for subnet compatibility', TRUE)
+		 RETURNING id, name, cidr, description, is_default, created_at, updated_at`,
+	).Scan(&created.ID, &created.Name, &created.CIDR, &created.Description, &created.IsDefault, &created.CreatedAt, &created.UpdatedAt)
+	if err != nil {
+		return 0, fmt.Errorf("create default vpc: %w", err)
+	}
+	return created.ID, nil
 }
 
 func normalizeDNS(in []string) []string {

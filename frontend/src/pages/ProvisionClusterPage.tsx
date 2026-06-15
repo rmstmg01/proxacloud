@@ -260,14 +260,14 @@ export function ProvisionClusterPage() {
               required
             />
             <Select
-              label="Network profile"
+              label="Subnet"
               value={form.network_profile_id}
               onChange={(e) => setField('network_profile_id', Number(e.target.value))}
             >
-              <option value={0}>-- Select network --</option>
+              <option value={0}>-- Select subnet --</option>
               {networks?.map((n) => (
                 <option key={n.id} value={n.id}>
-                  {n.name} {n.is_default ? '(default)' : ''}
+                  {n.vpc_name || 'default-vpc'} / {n.name} {n.is_default ? '(default)' : ''}
                 </option>
               ))}
             </Select>
@@ -333,9 +333,9 @@ export function ProvisionClusterPage() {
             )}
 
             <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
-              <p className="text-sm font-medium text-slate-800">Per-node network profile mapping</p>
+              <p className="text-sm font-medium text-slate-800">Per-node subnet mapping</p>
               <p className="text-xs text-slate-600">
-                Assign CIDR source per Proxmox node. If not set, cluster Network profile is used.
+                Assign CIDR source per Proxmox node. If not set, the selected cluster subnet is used.
               </p>
               {enabledNodesByName.length === 0 ? (
                 <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>
@@ -349,7 +349,7 @@ export function ProvisionClusterPage() {
                         readOnly
                       />
                       <Select
-                        label="Network profile"
+                        label="Subnet"
                         value={form.node_network_profile_ids[node.node_name] ?? 0}
                         onChange={(e) => {
                           const selected = Number(e.target.value);
@@ -362,10 +362,10 @@ export function ProvisionClusterPage() {
                           }));
                         }}
                       >
-                        <option value={0}>Use selected cluster network profile</option>
+                        <option value={0}>Use selected cluster subnet</option>
                         {networks?.map((n) => (
                           <option key={n.id} value={n.id}>
-                            {n.name} ({n.cidr})
+                            {n.vpc_name || 'default-vpc'} / {n.name} ({n.cidr})
                           </option>
                         ))}
                       </Select>

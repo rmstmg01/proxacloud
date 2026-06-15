@@ -143,7 +143,7 @@ function OverviewTab({ id }: { id: number }) {
     ['Kubernetes Version', cluster.kubernetes_version],
     ['Control Planes', String(cluster.control_plane_count)],
     ['Workers', String(cluster.worker_count)],
-    ['Network Profile ID', String(cluster.network_profile_id)],
+    ['Subnet ID', String(cluster.network_profile_id)],
     ['Created', new Date(cluster.created_at).toLocaleString()],
     ['Updated', new Date(cluster.updated_at).toLocaleString()],
   ];

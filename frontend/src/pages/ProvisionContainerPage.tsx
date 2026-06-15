@@ -138,9 +138,9 @@ export function ProvisionContainerPage() {
               <Input label="Disk GB" type="number" min="1" value={form.disk_gb} onChange={(e) => setField('disk_gb', Number(e.target.value))} required />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <Select label="Network" value={form.network_profile_id} onChange={(e) => setField('network_profile_id', Number(e.target.value))} required>
-                <option value={0}>Select network</option>
-                {networks?.map((network) => <option key={network.id} value={network.id}>{network.name} ({network.cidr})</option>)}
+              <Select label="Subnet" value={form.network_profile_id} onChange={(e) => setField('network_profile_id', Number(e.target.value))} required>
+                <option value={0}>Select subnet</option>
+                {networks?.map((network) => <option key={network.id} value={network.id}>{network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr})</option>)}
               </Select>
               <Select label="IP mode" value={form.ip_mode} onChange={(e) => setField('ip_mode', e.target.value as 'dhcp' | 'manual' | 'auto')}>
                 <option value="dhcp">DHCP</option>

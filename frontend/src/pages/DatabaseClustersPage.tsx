@@ -547,11 +547,11 @@ function DeployDatabaseForm({
         <form onSubmit={onSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input label="Cluster name" value={form.name} onChange={(e) => onChange('name', e.target.value)} placeholder="pscs-prod-db" required />
-            <Select label="Network" value={form.network_profile_id} onChange={(e) => onChange('network_profile_id', e.target.value)} required>
-              <option value="">Select network</option>
+            <Select label="Subnet" value={form.network_profile_id} onChange={(e) => onChange('network_profile_id', e.target.value)} required>
+              <option value="">Select subnet</option>
               {networks.map((network) => (
                 <option key={network.id} value={network.id}>
-                  {network.name} ({network.cidr})
+                  {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr})
                 </option>
               ))}
             </Select>

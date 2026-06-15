@@ -279,15 +279,15 @@ export function ProvisionVPSPage() {
           </CardHeader>
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Select
-              label="Network profile"
+              label="Subnet"
               value={form.network_profile_id}
               onChange={(event) => setField('network_profile_id', Number(event.target.value))}
               required
             >
-              <option value={0}>-- Select network --</option>
+              <option value={0}>-- Select subnet --</option>
               {networks?.map((network) => (
                 <option key={network.id} value={network.id}>
-                  {network.name} ({network.cidr}) {network.is_default ? '(default)' : ''}
+                  {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr}) {network.is_default ? '(default)' : ''}
                 </option>
               ))}
             </Select>
