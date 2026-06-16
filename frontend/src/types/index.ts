@@ -95,6 +95,58 @@ export interface ProxmoxNode {
   last_discovered_at: string;
 }
 
+export interface NodeStorage {
+  credential_id: number;
+  credential_name?: string;
+  node_name: string;
+  storage_id: string;
+  type: string;
+  content: string;
+  enabled: boolean;
+  shared: boolean;
+  active: boolean;
+  total_bytes: number;
+  used_bytes: number;
+  available_bytes: number;
+  usage_percent: number;
+  last_discovered_at?: string;
+}
+
+export interface StorageInventoryError {
+  credential_id: number;
+  node_name: string;
+  error: string;
+}
+
+export interface StorageInventory {
+  items: NodeStorage[];
+  errors: StorageInventoryError[];
+}
+
+export type BackupTargetType = 'proxmox_storage' | 'pbs' | 's3' | 'hetzner_storagebox';
+
+export interface BackupTarget {
+  id: number;
+  name: string;
+  type: BackupTargetType;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  has_access_key: boolean;
+  has_secret_key: boolean;
+  has_password: boolean;
+  has_ssh_private_key: boolean;
+  has_restic_password: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BackupSummary {
+  targets: BackupTarget[];
+  target_count: number;
+  enabled_count: number;
+  external_count: number;
+}
+
 export interface SSHKeyPair {
   id: number;
   name: string;

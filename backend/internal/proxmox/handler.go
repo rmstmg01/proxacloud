@@ -143,6 +143,15 @@ func (h *Handler) ListNodes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.ListNodes())
 }
 
+func (h *Handler) ListStorageInventory(w http.ResponseWriter, _ *http.Request) {
+	inventory, err := h.service.ListStorageInventory()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, inventory)
+}
+
 func (h *Handler) SetNodeEnabled(w http.ResponseWriter, r *http.Request) {
 	nodeID, err := parseIDParam(r, "id")
 	if err != nil {

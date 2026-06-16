@@ -54,6 +54,34 @@ type StorageContent struct {
 	Size    int64  `json:"size"`
 }
 
+type NodeStorage struct {
+	CredentialID     int64  `json:"credential_id"`
+	CredentialName   string `json:"credential_name,omitempty"`
+	NodeName         string `json:"node_name"`
+	StorageID        string `json:"storage_id"`
+	Type             string `json:"type"`
+	Content          string `json:"content"`
+	Enabled          bool   `json:"enabled"`
+	Shared           bool   `json:"shared"`
+	Active           bool   `json:"active"`
+	TotalBytes       int64  `json:"total_bytes"`
+	UsedBytes        int64  `json:"used_bytes"`
+	AvailableBytes   int64  `json:"available_bytes"`
+	UsagePercent     int    `json:"usage_percent"`
+	LastDiscoveredAt string `json:"last_discovered_at,omitempty"`
+}
+
+type StorageInventoryError struct {
+	CredentialID int64  `json:"credential_id"`
+	NodeName     string `json:"node_name"`
+	Error        string `json:"error"`
+}
+
+type StorageInventory struct {
+	Items  []NodeStorage           `json:"items"`
+	Errors []StorageInventoryError `json:"errors"`
+}
+
 type VMConsole struct {
 	VMID     int    `json:"vmid"`
 	NodeName string `json:"node_name"`
@@ -283,6 +311,59 @@ func (s *Service) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, 
 
 func (s *Service) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {
 	return s.client.ListStorageContent(cred, proxmoxNodeName, storageID, content)
+}
+
+func (s *Service) ListNodeStorage(cred Credential, node Node) ([]NodeStorage, error) {
+	items, err := s.client.ListNodeStorage(cred, node.NodeName)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].CredentialID = node.CredentialID
+		items[i].CredentialName = node.CredentialName
+		items[i].NodeName = node.NodeName
+		items[i].LastDiscoveredAt = node.LastDiscoveredAt.Format(time.RFC3339)
+	}
+	return items, nil
+}
+
+func (s *Service) ListStorageInventory() (StorageInventory, error) {
+	nodes, err := s.ListEnabledNodes()
+	if err != nil {
+		return StorageInventory{}, err
+	}
+
+	out := StorageInventory{
+		Items:  make([]NodeStorage, 0),
+		Errors: make([]StorageInventoryError, 0),
+	}
+	credentials := map[int64]Credential{}
+	for _, node := range nodes {
+		cred, ok := credentials[node.CredentialID]
+		if !ok {
+			cred, err = s.GetCredentialWithSecrets(node.CredentialID)
+			if err != nil {
+				out.Errors = append(out.Errors, StorageInventoryError{
+					CredentialID: node.CredentialID,
+					NodeName:     node.NodeName,
+					Error:        err.Error(),
+				})
+				continue
+			}
+			credentials[node.CredentialID] = cred
+		}
+		items, err := s.ListNodeStorage(cred, node)
+		if err != nil {
+			out.Errors = append(out.Errors, StorageInventoryError{
+				CredentialID: node.CredentialID,
+				NodeName:     node.NodeName,
+				Error:        err.Error(),
+			})
+			continue
+		}
+		out.Items = append(out.Items, items...)
+	}
+	return out, nil
 }
 
 func (s *Service) ControlContainerByName(cred Credential, proxmoxNodeName string, containerName string, action string) (string, error) {

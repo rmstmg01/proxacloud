@@ -153,6 +153,78 @@ func (c *Client) ListStorageContent(cred Credential, proxmoxNodeName string, sto
 	return payload.Data, nil
 }
 
+func (c *Client) ListNodeStorage(cred Credential, proxmoxNodeName string) ([]NodeStorage, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	if proxmoxNodeName == "" {
+		return nil, errors.New("proxmox node name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return nil, fmt.Errorf("parse endpoint: %w", err)
+	}
+
+	httpClient := c.httpClient(cred)
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "storage")
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create node storage request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return nil, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request proxmox node storage: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("proxmox node storage api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data []struct {
+			Storage string `json:"storage"`
+			Type    string `json:"type"`
+			Content string `json:"content"`
+			Enabled int    `json:"enabled"`
+			Shared  int    `json:"shared"`
+			Active  int    `json:"active"`
+			Total   int64  `json:"total"`
+			Used    int64  `json:"used"`
+			Avail   int64  `json:"avail"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode proxmox node storage response: %w", err)
+	}
+
+	out := make([]NodeStorage, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		usage := 0
+		if item.Total > 0 {
+			usage = int(float64(item.Used) / float64(item.Total) * 100)
+		}
+		out = append(out, NodeStorage{
+			StorageID:      item.Storage,
+			Type:           item.Type,
+			Content:        item.Content,
+			Enabled:        item.Enabled != 0,
+			Shared:         item.Shared != 0,
+			Active:         item.Active != 0,
+			TotalBytes:     item.Total,
+			UsedBytes:      item.Used,
+			AvailableBytes: item.Avail,
+			UsagePercent:   usage,
+		})
+	}
+	return out, nil
+}
+
 func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)

@@ -7,6 +7,7 @@ import {
   Monitor,
   Users,
   KeyRound,
+  Archive,
   ShieldCheck,
   FileText,
   FileCode,
@@ -18,6 +19,7 @@ import {
   SquareTerminal,
   Box,
   Shield,
+  HardDrive,
 } from 'lucide-react';
 
 const navGroups = [
@@ -54,11 +56,11 @@ const navGroups = [
     ],
   },
   {
-    label: 'Platform Settings',
+    label: 'Infrastructure',
     items: [
       { to: '/nodes', icon: Cpu, label: 'Nodes' },
-      { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
-      { to: '/users', icon: Users, label: 'Users' },
+      { to: '/storage', icon: HardDrive, label: 'Storage' },
+      { to: '/backups', icon: Archive, label: 'Backups' },
     ],
   },
   {
@@ -68,6 +70,8 @@ const navGroups = [
       { to: '/commands', icon: SquareTerminal, label: 'Commands' },
       { to: '/topology', icon: GitBranch, label: 'Topology' },
       { to: '/documents', icon: BookOpen, label: 'Documents' },
+      { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
+      { to: '/users', icon: Users, label: 'Users' },
     ],
   },
 ];

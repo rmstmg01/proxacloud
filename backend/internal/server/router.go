@@ -12,6 +12,7 @@ import (
 
 	"proxacloud/backend/internal/ansible"
 	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/backups"
 	"proxacloud/backend/internal/cloudflaretunnels"
 	"proxacloud/backend/internal/clusters"
 	"proxacloud/backend/internal/config"
@@ -119,6 +120,7 @@ func NewApp() (*App, error) {
 		cfg.TerraformAutoApply,
 	)
 	firewallService := firewalls.NewService(database, proxmoxService)
+	backupService := backups.NewService(database, secretStore)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
@@ -150,6 +152,7 @@ func NewApp() (*App, error) {
 	vpsHandler := vps.NewHandler(vpsService)
 	containerHandler := containers.NewHandler(containerService)
 	firewallHandler := firewalls.NewHandler(firewallService)
+	backupHandler := backups.NewHandler(backupService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
@@ -221,6 +224,11 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/proxmox/credentials/{id}/discover-nodes", proxmoxHandler.DiscoverNodes)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxmox/nodes", proxmoxHandler.ListNodes)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Patch("/proxmox/nodes/{id}", proxmoxHandler.SetNodeEnabled)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/storage", proxmoxHandler.ListStorageInventory)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/summary", backupHandler.Summary)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/targets", backupHandler.ListTargets)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/backups/targets", backupHandler.CreateTarget)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/backups/targets/{id}", backupHandler.DeleteTarget)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/ssh-keys", sshKeyHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/ssh-keys", sshKeyHandler.Create)

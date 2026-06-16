@@ -29,6 +29,8 @@ import { VPSConsolePage } from './pages/VPSConsolePage';
 import { ContainersPage } from './pages/ContainersPage';
 import { ProvisionContainerPage } from './pages/ProvisionContainerPage';
 import { ContainerDetailPage } from './pages/ContainerDetailPage';
+import { StoragePage } from './pages/StoragePage';
+import { BackupsPage } from './pages/BackupsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -188,6 +190,22 @@ export function App() {
               element={
                 <ProtectedRoute>
                   <ProxmoxPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/storage"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <StoragePage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/backups"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <BackupsPage />
                 </ProtectedRoute>
               }
             />
