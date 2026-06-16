@@ -26,3 +26,6 @@ export const updateUser = (
 
 export const setUserStatus = (id: number, status: UserStatus, reason = '') =>
   client.post<User>(`/users/${id}/status`, { status, reason }).then((r) => r.data);
+
+export const deleteUser = (id: number, confirmationUsername: string) =>
+  client.delete<{ id: number; deleted: boolean }>(`/users/${id}`, { data: { confirmation_username: confirmationUsername } }).then((r) => r.data);

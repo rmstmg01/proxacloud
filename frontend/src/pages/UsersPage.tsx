@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Pencil, Plus, XCircle } from 'lucide-react';
-import { getUsers, createUser, updateUser, setUserStatus } from '../api/users';
+import { CheckCircle2, Pencil, Plus, Trash2, XCircle } from 'lucide-react';
+import { getUsers, createUser, updateUser, setUserStatus, deleteUser } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
@@ -31,6 +31,8 @@ export function UsersPage() {
   const [form, setForm] = useState(emptyForm);
   const [editing, setEditing] = useState<User | null>(null);
   const [editForm, setEditForm] = useState({ full_name: '', email: '', contact_number: '', role: 'normal_user' });
+  const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
+  const [deleteConfirmationUsername, setDeleteConfirmationUsername] = useState('');
 
   const createMut = useMutation({
     mutationFn: createUser,
@@ -53,6 +55,15 @@ export function UsersPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });
 
+  const deleteMut = useMutation({
+    mutationFn: ({ id, confirmationUsername }: { id: number; confirmationUsername: string }) => deleteUser(id, confirmationUsername),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+      setDeleteTarget(null);
+      setDeleteConfirmationUsername('');
+    },
+  });
+
   const handleCreate = (e: FormEvent) => {
     e.preventDefault();
     createMut.mutate(form);
@@ -72,6 +83,12 @@ export function UsersPage() {
     e.preventDefault();
     if (!editing) return;
     updateMut.mutate({ id: editing.id, body: editForm });
+  };
+
+  const confirmDelete = (event: FormEvent) => {
+    event.preventDefault();
+    if (!deleteTarget || deleteConfirmationUsername !== deleteTarget.username) return;
+    deleteMut.mutate({ id: deleteTarget.id, confirmationUsername: deleteConfirmationUsername });
   };
 
   const isAdmin = me?.role === 'super_admin';
@@ -153,6 +170,18 @@ export function UsersPage() {
                             <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
                               <Pencil className="h-4 w-4" /> Edit
                             </Button>
+                            {u.id !== me?.id && (
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => {
+                                  setDeleteTarget(u);
+                                  setDeleteConfirmationUsername('');
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" /> Delete
+                              </Button>
+                            )}
                           </div>
                         )}
                       </td>
@@ -203,6 +232,66 @@ export function UsersPage() {
           </div>
         </form>
       </Modal>
+
+      <DeleteUserModal
+        user={deleteTarget}
+        confirmationUsername={deleteConfirmationUsername}
+        loading={deleteMut.isPending}
+        error={deleteMut.error}
+        onChange={setDeleteConfirmationUsername}
+        onClose={() => {
+          if (!deleteMut.isPending) {
+            setDeleteTarget(null);
+            setDeleteConfirmationUsername('');
+          }
+        }}
+        onSubmit={confirmDelete}
+      />
     </Layout>
+  );
+}
+
+function DeleteUserModal({
+  user,
+  confirmationUsername,
+  loading,
+  error,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  user: User | null;
+  confirmationUsername: string;
+  loading: boolean;
+  error: unknown;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canDelete = !!user && confirmationUsername === user.username;
+  return (
+    <Modal open={!!user} onClose={onClose} title="Delete User" maxWidth="lg">
+      {user && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <ErrorMessage error={error} />
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            This permanently removes the user account and any customer account metadata owned by that user.
+          </div>
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+            Type <span className="font-semibold text-slate-900">{user.username}</span> to confirm deletion.
+          </div>
+          <Input label="Username confirmation" value={confirmationUsername} onChange={(event) => onChange(event.target.value)} autoFocus autoComplete="off" />
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>
+              <Trash2 className="h-4 w-4" />
+              Delete User
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

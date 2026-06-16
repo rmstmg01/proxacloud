@@ -214,6 +214,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/users", userHandler.ListUsers)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users", userHandler.CreateUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}", userHandler.UpdateUser)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Delete("/users/{id}", userHandler.DeleteUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users/{id}/status", userHandler.SetUserStatus)
 
 			protected.Get("/vpcs", networkHandler.ListVPCs)

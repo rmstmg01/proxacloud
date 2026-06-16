@@ -22,6 +22,9 @@ var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrInvalidRole        = errors.New("invalid role")
 	ErrAccountInactive    = errors.New("customer account is not active")
+	ErrDeleteConfirmation = errors.New("user delete confirmation does not match")
+	ErrDeleteSelf         = errors.New("you cannot delete your own user")
+	ErrLastSuperAdmin     = errors.New("cannot delete the last super admin")
 )
 
 type Status string
@@ -332,6 +335,50 @@ func (s *Service) SetStatus(id int64, status Status, actorUsername string, reaso
 		return User{}, ErrUserNotFound
 	}
 	return user, nil
+}
+
+func (s *Service) DeleteUser(id int64, confirmationUsername string, actorUsername string) error {
+	if id <= 0 {
+		return ErrUserNotFound
+	}
+	target, ok := s.GetByID(id)
+	if !ok {
+		return ErrUserNotFound
+	}
+	if strings.TrimSpace(confirmationUsername) != target.Username {
+		return ErrDeleteConfirmation
+	}
+	if strings.EqualFold(strings.TrimSpace(actorUsername), target.Username) {
+		return ErrDeleteSelf
+	}
+	if target.Role == rbac.RoleSuperAdmin {
+		var count int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM users u JOIN roles r ON r.id = u.role_id WHERE r.name = $1`, string(rbac.RoleSuperAdmin)).Scan(&count); err != nil {
+			return fmt.Errorf("count super admins: %w", err)
+		}
+		if count <= 1 {
+			return ErrLastSuperAdmin
+		}
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`UPDATE customer_accounts SET approved_by = NULL WHERE approved_by = $1`, id); err != nil {
+		return fmt.Errorf("clear approval references: %w", err)
+	}
+	res, err := tx.Exec(`DELETE FROM users WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrUserNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *Service) Authenticate(username, password string) (User, error) {
