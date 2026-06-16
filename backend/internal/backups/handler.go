@@ -34,6 +34,15 @@ func (h *Handler) ListTargets(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, targets)
 }
 
+func (h *Handler) ListJobs(w http.ResponseWriter, _ *http.Request) {
+	jobs, err := h.service.ListJobs()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, jobs)
+}
+
 func (h *Handler) CreateTarget(w http.ResponseWriter, r *http.Request) {
 	var req TargetInput
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -60,6 +69,20 @@ func (h *Handler) DeleteTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+}
+
+func (h *Handler) StartJob(w http.ResponseWriter, r *http.Request) {
+	var req JobInput
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	job, err := h.service.StartJob(req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {

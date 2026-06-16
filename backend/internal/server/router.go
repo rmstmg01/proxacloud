@@ -122,7 +122,7 @@ func NewApp() (*App, error) {
 		cfg.TerraformAutoApply,
 	)
 	firewallService := firewalls.NewService(database, proxmoxService)
-	backupService := backups.NewService(database, secretStore)
+	backupService := backups.NewService(database, secretStore, proxmoxService)
 	billingService := billing.NewService(database, billing.Config{
 		PublicAppURL:        cfg.PublicAppURL,
 		StripeSecretKey:     cfg.StripeSecretKey,
@@ -262,6 +262,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/targets", backupHandler.ListTargets)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/backups/targets", backupHandler.CreateTarget)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/backups/targets/{id}", backupHandler.DeleteTarget)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/jobs", backupHandler.ListJobs)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/backups/jobs", backupHandler.StartJob)
 
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/ssh-keys", sshKeyHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/ssh-keys", sshKeyHandler.Create)

@@ -1,5 +1,5 @@
 import client from './client';
-import type { BackupSummary, BackupTarget, BackupTargetType } from '../types';
+import type { BackupJob, BackupSourceType, BackupSummary, BackupTarget, BackupTargetType } from '../types';
 
 export interface BackupTargetInput {
   name: string;
@@ -22,3 +22,12 @@ export const createBackupTarget = (body: BackupTargetInput) =>
 
 export const deleteBackupTarget = (id: number) =>
   client.delete<{ id: number; deleted: boolean }>(`/backups/targets/${id}`).then((r) => r.data);
+
+export const getBackupJobs = () => client.get<BackupJob[]>('/backups/jobs').then((r) => r.data);
+
+export const startBackupJob = (body: {
+  target_id: number;
+  source_type: BackupSourceType;
+  source_id: number;
+  mode: string;
+}) => client.post<BackupJob>('/backups/jobs', body).then((r) => r.data);

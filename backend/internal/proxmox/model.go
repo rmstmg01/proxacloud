@@ -390,6 +390,14 @@ func (s *Service) ClearContainerFirewallByName(cred Credential, proxmoxNodeName 
 	return s.client.ClearContainerFirewallByName(cred, proxmoxNodeName, containerName, managedPrefix)
 }
 
+func (s *Service) BackupVMByName(cred Credential, proxmoxNodeName string, vmName string, storageID string, mode string) (string, error) {
+	return s.client.BackupVMByName(cred, proxmoxNodeName, vmName, storageID, mode)
+}
+
+func (s *Service) BackupContainerByName(cred Credential, proxmoxNodeName string, containerName string, storageID string, mode string) (string, error) {
+	return s.client.BackupContainerByName(cred, proxmoxNodeName, containerName, storageID, mode)
+}
+
 func (s *Service) ListCredentials() []Credential {
 	rows, err := s.db.Query(
 		`SELECT id, name, endpoint, COALESCE(username, ''), COALESCE(api_token_id, ''), insecure_tls, created_at

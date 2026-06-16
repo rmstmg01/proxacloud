@@ -1,7 +1,9 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Archive, Cloud, Plus, Server, Trash2 } from 'lucide-react';
-import { createBackupTarget, deleteBackupTarget, getBackupSummary } from '../api/backups';
+import { createBackupTarget, deleteBackupTarget, getBackupSummary, startBackupJob } from '../api/backups';
+import { getContainerInstances } from '../api/containers';
+import { getVPSInstances } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -10,7 +12,7 @@ import { Badge } from '../components/ui/Badge';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { useAuth } from '../context/AuthContext';
-import type { BackupTargetType } from '../types';
+import type { BackupSourceType, BackupTargetType } from '../types';
 
 const targetLabels: Record<BackupTargetType, string> = {
   proxmox_storage: 'Proxmox Storage',
@@ -41,6 +43,13 @@ const initialForm = {
   password: '',
   ssh_private_key: '',
   restic_password: '',
+};
+
+const initialJobForm = {
+  source_type: 'vps' as BackupSourceType,
+  source_id: '',
+  target_id: '',
+  mode: 'snapshot',
 };
 
 function targetConfig(form: typeof initialForm): Record<string, unknown> {
@@ -79,10 +88,22 @@ export function BackupsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const [showForm, setShowForm] = useState(false);
+  const [showJobForm, setShowJobForm] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [jobForm, setJobForm] = useState(initialJobForm);
   const { data, isLoading, error } = useQuery({ queryKey: ['backup-summary'], queryFn: getBackupSummary, enabled: isAdmin });
+  const vpsQuery = useQuery({ queryKey: ['vps'], queryFn: getVPSInstances, enabled: isAdmin });
+  const containersQuery = useQuery({ queryKey: ['containers'], queryFn: getContainerInstances, enabled: isAdmin });
   const targets = data?.targets ?? [];
+  const jobs = data?.jobs ?? [];
   const externalTargets = targets.filter((target) => target.type === 's3' || target.type === 'hetzner_storagebox');
+  const runnableTargets = targets.filter((target) => target.enabled && target.type === 'proxmox_storage');
+  const sourceOptions = useMemo(() => {
+    if (jobForm.source_type === 'container') {
+      return (containersQuery.data ?? []).map((item) => ({ value: item.id, label: item.name }));
+    }
+    return (vpsQuery.data ?? []).map((item) => ({ value: item.id, label: item.name }));
+  }, [containersQuery.data, jobForm.source_type, vpsQuery.data]);
 
   const createMut = useMutation({
     mutationFn: createBackupTarget,
@@ -95,6 +116,14 @@ export function BackupsPage() {
   const deleteMut = useMutation({
     mutationFn: deleteBackupTarget,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-summary'] }),
+  });
+  const startJobMut = useMutation({
+    mutationFn: startBackupJob,
+    onSuccess: () => {
+      setJobForm(initialJobForm);
+      setShowJobForm(false);
+      qc.invalidateQueries({ queryKey: ['backup-summary'] });
+    },
   });
 
   const providerHint = useMemo(() => {
@@ -120,6 +149,16 @@ export function BackupsPage() {
       password: form.password,
       ssh_private_key: form.ssh_private_key,
       restic_password: form.restic_password,
+    });
+  };
+
+  const handleBackupNow = (event: FormEvent) => {
+    event.preventDefault();
+    startJobMut.mutate({
+      source_type: jobForm.source_type,
+      source_id: Number(jobForm.source_id),
+      target_id: Number(jobForm.target_id),
+      mode: jobForm.mode,
     });
   };
 
@@ -170,9 +209,14 @@ export function BackupsPage() {
         title="Backups"
         description="Register backup targets for Proxmox, S3-compatible storage, and Hetzner Storage Box."
         actions={
-          <Button onClick={() => setShowForm((open) => !open)}>
-            <Plus className="h-4 w-4" /> Add Target
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => setShowJobForm((open) => !open)}>
+              <Archive className="h-4 w-4" /> Backup Now
+            </Button>
+            <Button onClick={() => setShowForm((open) => !open)}>
+              <Plus className="h-4 w-4" /> Add Target
+            </Button>
+          </div>
         }
       />
 
@@ -207,8 +251,68 @@ export function BackupsPage() {
           </div>
 
           <Alert variant="info" title="Backup execution foundation">
-            Targets created here are stored with encrypted secrets and are ready for the backup job runner layer: Proxmox backup artifact creation, Restic upload, retention, and restore workflows.
+            Backup Now starts a Proxmox vzdump task for VPS and container sources when the selected target is Proxmox storage. External target upload and full cluster bundle backup are still reserved for the next runner phase.
           </Alert>
+
+          {showJobForm && (
+            <Card>
+              <CardHeader><CardTitle>Backup Now</CardTitle></CardHeader>
+              <CardContent>
+                <form onSubmit={handleBackupNow} className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <Select
+                      label="Source type"
+                      value={jobForm.source_type}
+                      onChange={(e) => setJobForm({ ...jobForm, source_type: e.target.value as BackupSourceType, source_id: '' })}
+                    >
+                      <option value="vps">VPS</option>
+                      <option value="container">Container</option>
+                      <option value="cluster" disabled>Cluster full backup coming soon</option>
+                    </Select>
+                    <Select
+                      label="Source"
+                      value={jobForm.source_id}
+                      onChange={(e) => setJobForm({ ...jobForm, source_id: e.target.value })}
+                      required
+                    >
+                      <option value="">Select source</option>
+                      {sourceOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </Select>
+                    <Select
+                      label="Target"
+                      value={jobForm.target_id}
+                      onChange={(e) => setJobForm({ ...jobForm, target_id: e.target.value })}
+                      required
+                    >
+                      <option value="">Select Proxmox storage target</option>
+                      {runnableTargets.map((target) => (
+                        <option key={target.id} value={target.id}>{target.name}</option>
+                      ))}
+                    </Select>
+                    <Select label="Mode" value={jobForm.mode} onChange={(e) => setJobForm({ ...jobForm, mode: e.target.value })}>
+                      <option value="snapshot">Snapshot</option>
+                      <option value="suspend">Suspend</option>
+                      <option value="stop">Stop</option>
+                    </Select>
+                  </div>
+                  {runnableTargets.length === 0 && (
+                    <Alert variant="warning" title="No runnable target">
+                      Create an enabled Proxmox Storage backup target before starting a direct VPS or container backup.
+                    </Alert>
+                  )}
+                  {externalTargets.length > 0 && (
+                    <p className="text-xs text-slate-500">S3, Hetzner Storage Box, and PBS targets are registered but not direct Backup Now destinations yet.</p>
+                  )}
+                  {startJobMut.error && <ErrorMessage error={startJobMut.error} />}
+                  <Button type="submit" loading={startJobMut.isPending} disabled={runnableTargets.length === 0}>
+                    <Archive className="h-4 w-4" /> Start Backup
+                  </Button>
+                </form>
+              </CardContent>
+            </Card>
+          )}
 
           {showForm && (
             <Card>
@@ -345,6 +449,48 @@ export function BackupsPage() {
                   {targets.length === 0 && (
                     <tr>
                       <td colSpan={6} className="px-6 py-8 text-center text-sm text-slate-500">No backup targets configured yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Backup Jobs</CardTitle></CardHeader>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Source</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Target</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Mode</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Task</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Status</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Created</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {jobs.map((job) => (
+                    <tr key={job.id} className="hover:bg-slate-50">
+                      <td className="px-6 py-3">
+                        <p className="font-medium text-slate-900">{job.source_name}</p>
+                        <p className="text-xs text-slate-500">{job.source_type}</p>
+                      </td>
+                      <td className="px-6 py-3 text-slate-600">{job.target_name || `#${job.target_id}`}</td>
+                      <td className="px-6 py-3 text-slate-600">{job.mode}</td>
+                      <td className="max-w-xs truncate px-6 py-3 text-slate-600" title={job.proxmox_task_id || job.error}>
+                        {job.proxmox_task_id || job.error || '-'}
+                      </td>
+                      <td className="px-6 py-3">
+                        <Badge variant={job.status === 'running' ? 'warning' : job.status === 'failed' ? 'danger' : 'success'}>{job.status}</Badge>
+                      </td>
+                      <td className="px-6 py-3 text-slate-500">{new Date(job.created_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                  {jobs.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-8 text-center text-sm text-slate-500">No backup jobs started yet.</td>
                     </tr>
                   )}
                 </tbody>

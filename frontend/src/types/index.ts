@@ -145,9 +145,29 @@ export interface BackupTarget {
 
 export interface BackupSummary {
   targets: BackupTarget[];
+  jobs: BackupJob[];
   target_count: number;
   enabled_count: number;
   external_count: number;
+}
+
+export type BackupSourceType = 'vps' | 'container' | 'cluster';
+
+export interface BackupJob {
+  id: number;
+  target_id: number;
+  target_name?: string;
+  source_type: BackupSourceType;
+  source_id: number;
+  source_name: string;
+  mode: string;
+  status: string;
+  proxmox_node_name: string;
+  proxmox_task_id: string;
+  output: string;
+  error: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SSHKeyPair {

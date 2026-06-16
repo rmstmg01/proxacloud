@@ -648,6 +648,103 @@ func (c *Client) ClearContainerFirewallByName(cred Credential, proxmoxNodeName s
 	return fmt.Sprintf("removed managed firewall rule(s) from container %s (%d)", containerName, container.VMID), nil
 }
 
+func (c *Client) BackupVMByName(cred Credential, proxmoxNodeName string, vmName string, storageID string, mode string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return "", errors.New("vm name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return "", err
+	}
+	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, vm.VMID, storageID, mode)
+}
+
+func (c *Client) BackupContainerByName(cred Credential, proxmoxNodeName string, containerName string, storageID string, mode string) (string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	containerName = strings.TrimSpace(containerName)
+	if proxmoxNodeName == "" {
+		return "", errors.New("proxmox node name is required")
+	}
+	if containerName == "" {
+		return "", errors.New("container name is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+	container, err := c.findLXCContainer(httpClient, base, cred, proxmoxNodeName, containerName)
+	if err != nil {
+		return "", err
+	}
+	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, container.VMID, storageID, mode)
+}
+
+func (c *Client) startVZDump(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, storageID string, mode string) (string, error) {
+	storageID = strings.TrimSpace(storageID)
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if storageID == "" {
+		return "", errors.New("backup storage id is required")
+	}
+	if mode == "" {
+		mode = "snapshot"
+	}
+	if mode != "snapshot" && mode != "suspend" && mode != "stop" {
+		return "", fmt.Errorf("unsupported backup mode %q", mode)
+	}
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "vzdump")
+
+	form := url.Values{}
+	form.Set("vmid", strconv.Itoa(vmid))
+	form.Set("storage", storageID)
+	form.Set("mode", mode)
+	form.Set("compress", "zstd")
+
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("create proxmox backup request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request proxmox backup: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("proxmox backup api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode proxmox backup response: %w", err)
+	}
+	if strings.TrimSpace(payload.Data) == "" {
+		return "", errors.New("proxmox did not return a backup task id")
+	}
+	return strings.TrimSpace(payload.Data), nil
+}
+
 func (c *Client) vmReachedDesiredState(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, vmName string, action string, maxWait time.Duration) bool {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
