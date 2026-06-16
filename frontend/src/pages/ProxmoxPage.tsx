@@ -159,7 +159,7 @@ function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
         <span className="text-sm text-slate-700">Skip TLS verification</span>
       </label>
       {mutation.error && <ErrorMessage error={mutation.error} />}
-      <Button type="submit" loading={mutation.isPending}>Add Credential</Button>
+      <Button type="submit" loading={mutation.isPending}>Add Nodes</Button>
     </form>
   );
 }
@@ -258,7 +258,7 @@ export function ProxmoxPage() {
 
   return (
     <Layout>
-      <PageHeader title="Proxmox" description="Manage Proxmox credentials and node inventory" />
+      <PageHeader title="Nodes" description="Manage Proxmox node inventory and connection details" />
 
       {/* Credentials (super_admin only) */}
       {isAdmin && (
@@ -266,7 +266,7 @@ export function ProxmoxPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-slate-800">Credentials</h2>
             <Button onClick={() => setAddCredOpen(true)} size="sm">
-              <Plus className="h-4 w-4" /> Add Credential
+              <Plus className="h-4 w-4" /> Add Nodes
             </Button>
           </div>
           {loadingCreds ? (
@@ -449,7 +449,7 @@ export function ProxmoxPage() {
         )}
       </section>
 
-      <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Proxmox Credential">
+      <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Nodes">
         <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); }} />
       </Modal>
 

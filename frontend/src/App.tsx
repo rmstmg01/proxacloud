@@ -184,13 +184,14 @@ export function App() {
               }
             />
             <Route
-              path="/proxmox"
+              path="/nodes"
               element={
                 <ProtectedRoute>
                   <ProxmoxPage />
                 </ProtectedRoute>
               }
             />
+            <Route path="/proxmox" element={<Navigate to="/nodes" replace />} />
             <Route
               path="/users"
               element={

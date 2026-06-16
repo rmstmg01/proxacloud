@@ -376,7 +376,7 @@ export function DashboardPage() {
       type: 'Proxmox node',
       status: node.enabled ? node.status : 'disabled',
       detail: `${node.cpu_count} CPU / ${formatBytes(node.memory_total_bytes)}`,
-      to: '/proxmox',
+      to: '/nodes',
     })),
   ];
   const alertCount = attentionItems.length;
@@ -414,7 +414,7 @@ export function DashboardPage() {
       type: 'Node',
       detail: `${node.cpu_count} CPU / ${formatBytes(node.memory_total_bytes)} memory`,
       status: node.enabled ? node.status : 'disabled',
-      to: '/proxmox',
+      to: '/nodes',
     })),
     ...networkList.map((network) => ({
       key: `network-${network.id}`,
@@ -496,7 +496,7 @@ export function DashboardPage() {
           <ResourceDashboardCard
             title="Nodes"
             description="Host capacity, enabled nodes, and infrastructure inventory."
-            to="/proxmox"
+            to="/nodes"
             icon={Cpu}
             tone="slate"
             primary={String(nodeList.length)}

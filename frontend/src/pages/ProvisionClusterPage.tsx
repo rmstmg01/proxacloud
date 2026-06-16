@@ -294,7 +294,7 @@ export function ProvisionClusterPage() {
                   Note: "apply" runs in background. For multi-credential topologies, Terraform is applied per credential group.
                 </p>
                 {enabledNodesByName.length === 0 ? (
-                  <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>
+                  <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first on the Nodes page.</p>
                 ) : (
                   <div className="space-y-2">
                     {enabledNodesByName.map((node) => (
@@ -338,7 +338,7 @@ export function ProvisionClusterPage() {
                 Assign CIDR source per Proxmox node. If not set, the selected cluster subnet is used.
               </p>
               {enabledNodesByName.length === 0 ? (
-                <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first in the Proxmox page.</p>
+                <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first on the Nodes page.</p>
               ) : (
                 <div className="space-y-2">
                   {enabledNodesByName.map((node) => (
