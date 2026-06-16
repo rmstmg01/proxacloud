@@ -30,4 +30,5 @@ export const startBackupJob = (body: {
   source_type: BackupSourceType;
   source_id: number;
   mode: string;
+  staging_storage_id?: string;
 }) => client.post<BackupJob>('/backups/jobs', body).then((r) => r.data);

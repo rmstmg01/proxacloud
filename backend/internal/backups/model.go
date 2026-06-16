@@ -78,8 +78,9 @@ type Job struct {
 }
 
 type JobInput struct {
-	TargetID   int64      `json:"target_id"`
-	SourceType SourceType `json:"source_type"`
-	SourceID   int64      `json:"source_id"`
-	Mode       string     `json:"mode"`
+	TargetID         int64      `json:"target_id"`
+	SourceType       SourceType `json:"source_type"`
+	SourceID         int64      `json:"source_id"`
+	Mode             string     `json:"mode"`
+	StagingStorageID string     `json:"staging_storage_id"`
 }

@@ -50,6 +50,7 @@ const initialJobForm = {
   source_id: '',
   target_id: '',
   mode: 'snapshot',
+  staging_storage_id: '',
 };
 
 function targetConfig(form: typeof initialForm): Record<string, unknown> {
@@ -97,7 +98,9 @@ export function BackupsPage() {
   const targets = data?.targets ?? [];
   const jobs = data?.jobs ?? [];
   const externalTargets = targets.filter((target) => target.type === 's3' || target.type === 'hetzner_storagebox');
-  const runnableTargets = targets.filter((target) => target.enabled && target.type === 'proxmox_storage');
+  const runnableTargets = targets.filter((target) => target.enabled);
+  const selectedJobTarget = runnableTargets.find((target) => target.id === Number(jobForm.target_id));
+  const requiresStagingStorage = Boolean(selectedJobTarget && selectedJobTarget.type !== 'proxmox_storage');
   const sourceOptions = useMemo(() => {
     if (jobForm.source_type === 'container') {
       return (containersQuery.data ?? []).map((item) => ({ value: item.id, label: item.name }));
@@ -159,6 +162,7 @@ export function BackupsPage() {
       source_id: Number(jobForm.source_id),
       target_id: Number(jobForm.target_id),
       mode: jobForm.mode,
+      staging_storage_id: jobForm.staging_storage_id,
     });
   };
 
@@ -251,7 +255,7 @@ export function BackupsPage() {
           </div>
 
           <Alert variant="info" title="Backup execution foundation">
-            Backup Now starts a Proxmox vzdump task for VPS and container sources when the selected target is Proxmox storage. External target upload and full cluster bundle backup are still reserved for the next runner phase.
+            Backup Now starts a Proxmox vzdump task for VPS and container sources. External targets use a Proxmox staging storage ID first; upload to the external provider is recorded as pending until the upload runner is connected.
           </Alert>
 
           {showJobForm && (
@@ -286,7 +290,7 @@ export function BackupsPage() {
                       onChange={(e) => setJobForm({ ...jobForm, target_id: e.target.value })}
                       required
                     >
-                      <option value="">Select Proxmox storage target</option>
+                      <option value="">Select target</option>
                       {runnableTargets.map((target) => (
                         <option key={target.id} value={target.id}>{target.name}</option>
                       ))}
@@ -296,14 +300,26 @@ export function BackupsPage() {
                       <option value="suspend">Suspend</option>
                       <option value="stop">Stop</option>
                     </Select>
+                    {requiresStagingStorage && (
+                      <Input
+                        label="Staging Proxmox storage ID"
+                        value={jobForm.staging_storage_id}
+                        onChange={(e) => setJobForm({ ...jobForm, staging_storage_id: e.target.value })}
+                        required
+                        placeholder="local"
+                        helperText="Proxmox writes the backup here before the external upload runner moves it."
+                      />
+                    )}
                   </div>
                   {runnableTargets.length === 0 && (
                     <Alert variant="warning" title="No runnable target">
-                      Create an enabled Proxmox Storage backup target before starting a direct VPS or container backup.
+                      Create an enabled backup target before starting a VPS or container backup.
                     </Alert>
                   )}
-                  {externalTargets.length > 0 && (
-                    <p className="text-xs text-slate-500">S3, Hetzner Storage Box, and PBS targets are registered but not direct Backup Now destinations yet.</p>
+                  {requiresStagingStorage && (
+                    <Alert variant="warning" title="External upload pending">
+                      This starts the Proxmox backup to staging storage and records the selected external target. The artifact upload phase still needs the upload runner.
+                    </Alert>
                   )}
                   {startJobMut.error && <ErrorMessage error={startJobMut.error} />}
                   <Button type="submit" loading={startJobMut.isPending} disabled={runnableTargets.length === 0}>

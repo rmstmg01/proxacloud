@@ -161,13 +161,12 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 	if !target.Enabled {
 		return Job{}, errors.New("backup target is disabled")
 	}
-	if target.Type != TargetProxmoxStorage {
-		return Job{}, errors.New("backup now currently supports Proxmox storage targets only; external target upload runner is not implemented yet")
-	}
-	storageID, _ := target.Config["storage_id"].(string)
-	storageID = strings.TrimSpace(storageID)
+	storageID := backupStorageID(target, in.StagingStorageID)
 	if storageID == "" {
-		return Job{}, errors.New("target storage_id is required")
+		if target.Type == TargetProxmoxStorage {
+			return Job{}, errors.New("target storage_id is required")
+		}
+		return Job{}, errors.New("staging_storage_id is required for external backup targets")
 	}
 
 	source, err := s.resolveBackupSource(in.SourceType, in.SourceID)
@@ -200,7 +199,10 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 		_ = s.finishJob(job.ID, "failed", "", "", err.Error())
 		return s.getJob(job.ID)
 	}
-	output := fmt.Sprintf("Proxmox vzdump started for %s %s on node %s", in.SourceType, source.name, source.nodeName)
+	output := fmt.Sprintf("Proxmox vzdump started for %s %s on node %s using storage %s", in.SourceType, source.name, source.nodeName, storageID)
+	if target.Type != TargetProxmoxStorage {
+		output += fmt.Sprintf("; external upload to %s target %q is pending the upload runner phase", target.Type, target.Name)
+	}
 	if err := s.finishJob(job.ID, "running", taskID, output, ""); err != nil {
 		return Job{}, err
 	}
@@ -340,6 +342,14 @@ func (s *Service) getTarget(id int64) (Target, error) {
 		}
 	}
 	return Target{}, errors.New("backup target not found")
+}
+
+func backupStorageID(target Target, stagingStorageID string) string {
+	if target.Type != TargetProxmoxStorage {
+		return strings.TrimSpace(stagingStorageID)
+	}
+	storageID, _ := target.Config["storage_id"].(string)
+	return strings.TrimSpace(storageID)
 }
 
 type backupSource struct {
