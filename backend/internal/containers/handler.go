@@ -8,22 +8,35 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+
+	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/tenant"
 )
 
 type Handler struct {
-	service *Service
+	service  *Service
+	resolver interface {
+		TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+	}
 }
 
 type DeleteRequest struct {
 	ConfirmationName string `json:"confirmation_name"`
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, resolver interface {
+	TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+}) *Handler {
+	return &Handler{service: service, resolver: resolver}
 }
 
-func (h *Handler) List(w http.ResponseWriter, _ *http.Request) {
-	resp, err := h.service.List()
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.List(scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -36,7 +49,11 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	resp, err := h.service.Get(id)
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.Get(id, scope)
 	if err != nil {
 		if errors.Is(err, ErrContainerNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -53,6 +70,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
+	}
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.IsCustomer() {
+		req.CustomerAccountID = scope.CustomerAccountID
 	}
 	resp, err := h.service.Create(req)
 	if err != nil {
@@ -71,6 +95,9 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
 	resp, err := h.service.Deploy(id)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -82,6 +109,9 @@ func (h *Handler) Deploy(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Redeploy(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
 		return
 	}
 	resp, err := h.service.Redeploy(id)
@@ -109,6 +139,9 @@ func (h *Handler) RefreshStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
 	resp, err := h.service.RefreshStatus(id)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -120,6 +153,9 @@ func (h *Handler) RefreshStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action string) {
 	id, ok := parseID(w, r)
 	if !ok {
+		return
+	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
 		return
 	}
 	resp, err := h.service.PowerAction(id, action)
@@ -140,6 +176,9 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
 	if err := h.service.Delete(id, req.ConfirmationName); err != nil {
 		if errors.Is(err, ErrContainerNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -156,12 +195,31 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
 	resp, err := h.service.ListEvents(id)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) authorizeInstance(w http.ResponseWriter, r *http.Request, id int64) (tenant.Scope, bool) {
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return tenant.Scope{}, false
+	}
+	if _, err := h.service.Get(id, scope); err != nil {
+		if errors.Is(err, ErrContainerNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return tenant.Scope{}, false
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return tenant.Scope{}, false
+	}
+	return scope, true
 }
 
 func (h *Handler) ListTemplates(w http.ResponseWriter, _ *http.Request) {
@@ -200,4 +258,18 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *Handler) scope(w http.ResponseWriter, r *http.Request) (tenant.Scope, bool) {
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return tenant.Scope{}, false
+	}
+	scope, err := h.resolver.TenantScope(ctxUser.Username, ctxUser.Role)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return tenant.Scope{}, false
+	}
+	return scope, true
 }

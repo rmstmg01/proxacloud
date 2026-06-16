@@ -33,6 +33,7 @@ import { ProvisionContainerPage } from './pages/ProvisionContainerPage';
 import { ContainerDetailPage } from './pages/ContainerDetailPage';
 import { StoragePage } from './pages/StoragePage';
 import { BackupsPage } from './pages/BackupsPage';
+import { BillingPage } from './pages/BillingPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -72,7 +73,7 @@ export function App() {
             <Route
               path="/clusters/new"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <ProvisionClusterPage />
                 </ProtectedRoute>
               }
@@ -88,7 +89,7 @@ export function App() {
             <Route
               path="/database-clusters"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <DatabaseClustersPage />
                 </ProtectedRoute>
               }
@@ -96,7 +97,7 @@ export function App() {
             <Route
               path="/vps"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <VPSPage />
                 </ProtectedRoute>
               }
@@ -104,7 +105,7 @@ export function App() {
             <Route
               path="/vps/new"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <ProvisionVPSPage />
                 </ProtectedRoute>
               }
@@ -112,7 +113,7 @@ export function App() {
             <Route
               path="/vps/:id"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <VPSDetailPage />
                 </ProtectedRoute>
               }
@@ -120,7 +121,7 @@ export function App() {
             <Route
               path="/vps/:id/console"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <VPSConsolePage />
                 </ProtectedRoute>
               }
@@ -128,7 +129,7 @@ export function App() {
             <Route
               path="/containers"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <ContainersPage />
                 </ProtectedRoute>
               }
@@ -136,7 +137,7 @@ export function App() {
             <Route
               path="/containers/new"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <ProvisionContainerPage />
                 </ProtectedRoute>
               }
@@ -144,8 +145,16 @@ export function App() {
             <Route
               path="/containers/:id"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <ContainerDetailPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  <BillingPage />
                 </ProtectedRoute>
               }
             />
@@ -208,7 +217,7 @@ export function App() {
             <Route
               path="/backups"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <BackupsPage />
                 </ProtectedRoute>
               }
@@ -265,7 +274,7 @@ export function App() {
             <Route
               path="/documents"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <DocumentsPage />
                 </ProtectedRoute>
               }
@@ -273,7 +282,7 @@ export function App() {
             <Route
               path="/documents/quick-commands"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <DocumentsPage category="quick-commands" />
                 </ProtectedRoute>
               }
@@ -281,7 +290,7 @@ export function App() {
             <Route
               path="/documents/database-cluster"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <DocumentsPage category="database-cluster" />
                 </ProtectedRoute>
               }
@@ -289,7 +298,7 @@ export function App() {
             <Route
               path="/documents/kubernetes-cluster"
               element={
-                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                <ProtectedRoute>
                   <DocumentsPage category="kubernetes-cluster" />
                 </ProtectedRoute>
               }

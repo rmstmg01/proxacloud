@@ -15,6 +15,7 @@ import (
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/secrets"
 	"proxacloud/backend/internal/sshkeys"
+	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
 )
 
@@ -67,6 +68,7 @@ type Template struct {
 
 type Instance struct {
 	ID                  int64     `json:"id"`
+	CustomerAccountID   int64     `json:"customer_account_id,omitempty"`
 	Name                string    `json:"name"`
 	Description         string    `json:"description"`
 	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
@@ -126,6 +128,7 @@ type CreateRequest struct {
 	Unprivileged        bool   `json:"unprivileged"`
 	Nesting             bool   `json:"nesting"`
 	Apply               bool   `json:"apply"`
+	CustomerAccountID   int64  `json:"-"`
 }
 
 type CreateResponse struct {
@@ -148,8 +151,15 @@ func NewService(db *sql.DB, networkStore NetworkStore, proxmoxCredentials Proxmo
 	return &Service{db: db, networks: networkStore, proxmoxCredentials: proxmoxCredentials, sshKeys: sshKeys, secrets: secretStore, terraformRunner: terraformRunner, autoApply: autoApply}
 }
 
-func (s *Service) List() ([]Instance, error) {
-	rows, err := s.db.Query(`SELECT c.id, c.name, c.description, c.proxmox_credential_id, c.proxmox_node_name, c.network_profile_id, COALESCE(n.name, ''), COALESCE(c.template_id, 0), c.template_path, COALESCE(c.ssh_key_pair_id, 0), c.container_name, c.ip_mode, c.ip_address, c.cpu, c.memory_mb, c.disk_gb, c.unprivileged, c.nesting, c.terraform_work_dir, c.status, c.created_at, c.updated_at FROM container_instances c LEFT JOIN network_profiles n ON n.id = c.network_profile_id ORDER BY c.created_at DESC`)
+func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
+	query := `SELECT c.id, COALESCE(c.customer_account_id, 0), c.name, c.description, c.proxmox_credential_id, c.proxmox_node_name, c.network_profile_id, COALESCE(n.name, ''), COALESCE(c.template_id, 0), c.template_path, COALESCE(c.ssh_key_pair_id, 0), c.container_name, c.ip_mode, c.ip_address, c.cpu, c.memory_mb, c.disk_gb, c.unprivileged, c.nesting, c.terraform_work_dir, c.status, c.created_at, c.updated_at FROM container_instances c LEFT JOIN network_profiles n ON n.id = c.network_profile_id`
+	args := []any{}
+	if scope.IsCustomer() {
+		query += ` WHERE c.customer_account_id = $1`
+		args = append(args, scope.CustomerAccountID)
+	}
+	query += ` ORDER BY c.created_at DESC`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list containers: %w", err)
 	}
@@ -165,10 +175,20 @@ func (s *Service) List() ([]Instance, error) {
 	return out, nil
 }
 
-func (s *Service) Get(id int64) (Instance, error) {
+func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
+	scope := tenant.Scope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	var rec Instance
-	err := s.db.QueryRow(`SELECT c.id, c.name, c.description, c.proxmox_credential_id, c.proxmox_node_name, c.network_profile_id, COALESCE(n.name, ''), COALESCE(c.template_id, 0), c.template_path, COALESCE(c.ssh_key_pair_id, 0), c.container_name, c.ip_mode, c.ip_address, c.cpu, c.memory_mb, c.disk_gb, c.unprivileged, c.nesting, c.terraform_work_dir, c.status, c.created_at, c.updated_at FROM container_instances c LEFT JOIN network_profiles n ON n.id = c.network_profile_id WHERE c.id = $1`, id).Scan(
-		&rec.ID, &rec.Name, &rec.Description, &rec.ProxmoxCredentialID, &rec.ProxmoxNodeName, &rec.NetworkProfileID, &rec.NetworkName, &rec.TemplateID, &rec.TemplatePath, &rec.SSHKeyPairID, &rec.ContainerName, &rec.IPMode, &rec.IPAddress, &rec.CPU, &rec.MemoryMB, &rec.DiskGB, &rec.Unprivileged, &rec.Nesting, &rec.TerraformWorkDir, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt,
+	query := `SELECT c.id, COALESCE(c.customer_account_id, 0), c.name, c.description, c.proxmox_credential_id, c.proxmox_node_name, c.network_profile_id, COALESCE(n.name, ''), COALESCE(c.template_id, 0), c.template_path, COALESCE(c.ssh_key_pair_id, 0), c.container_name, c.ip_mode, c.ip_address, c.cpu, c.memory_mb, c.disk_gb, c.unprivileged, c.nesting, c.terraform_work_dir, c.status, c.created_at, c.updated_at FROM container_instances c LEFT JOIN network_profiles n ON n.id = c.network_profile_id WHERE c.id = $1`
+	args := []any{id}
+	if scope.IsCustomer() {
+		query += ` AND c.customer_account_id = $2`
+		args = append(args, scope.CustomerAccountID)
+	}
+	err := s.db.QueryRow(query, args...).Scan(
+		&rec.ID, &rec.CustomerAccountID, &rec.Name, &rec.Description, &rec.ProxmoxCredentialID, &rec.ProxmoxNodeName, &rec.NetworkProfileID, &rec.NetworkName, &rec.TemplateID, &rec.TemplatePath, &rec.SSHKeyPairID, &rec.ContainerName, &rec.IPMode, &rec.IPAddress, &rec.CPU, &rec.MemoryMB, &rec.DiskGB, &rec.Unprivileged, &rec.Nesting, &rec.TerraformWorkDir, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Instance{}, ErrContainerNotFound
@@ -262,10 +282,10 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	workDir := s.terraformRunner.WorkspaceDirForKey("container-" + req.Name)
 	var id int64
 	err = s.db.QueryRow(
-		`INSERT INTO container_instances (name, description, proxmox_credential_id, proxmox_node_name, network_profile_id, template_id, template_path, ssh_key_pair_id, container_name, ip_mode, ip_address, cpu, memory_mb, disk_gb, unprivileged, nesting, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1,$2,$3,$4,$5,NULLIF($6,0),$7,NULLIF($8,0),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'created')
+		`INSERT INTO container_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, network_profile_id, template_id, template_path, ssh_key_pair_id, container_name, ip_mode, ip_address, cpu, memory_mb, disk_gb, unprivileged, nesting, root_password_secret_ref, terraform_work_dir, status)
+		 VALUES ($1,NULLIF($2,0),$3,$4,$5,$6,NULLIF($7,0),$8,NULLIF($9,0),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,'created')
 		 RETURNING id`,
-		req.Name, strings.TrimSpace(req.Description), req.ProxmoxCredentialID, strings.TrimSpace(req.ProxmoxNodeName), req.NetworkProfileID, req.TemplateID, strings.TrimSpace(req.TemplatePath), req.SSHKeyPairID, req.Name, req.IPMode, strings.TrimSpace(req.IPAddress), req.CPU, req.MemoryMB, req.DiskGB, req.Unprivileged, req.Nesting, rootRef, workDir,
+		req.Name, req.CustomerAccountID, strings.TrimSpace(req.Description), req.ProxmoxCredentialID, strings.TrimSpace(req.ProxmoxNodeName), req.NetworkProfileID, req.TemplateID, strings.TrimSpace(req.TemplatePath), req.SSHKeyPairID, req.Name, req.IPMode, strings.TrimSpace(req.IPAddress), req.CPU, req.MemoryMB, req.DiskGB, req.Unprivileged, req.Nesting, rootRef, workDir,
 	).Scan(&id)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -613,7 +633,7 @@ type rowScanner interface {
 }
 
 func scanInstance(row rowScanner, rec *Instance) error {
-	return row.Scan(&rec.ID, &rec.Name, &rec.Description, &rec.ProxmoxCredentialID, &rec.ProxmoxNodeName, &rec.NetworkProfileID, &rec.NetworkName, &rec.TemplateID, &rec.TemplatePath, &rec.SSHKeyPairID, &rec.ContainerName, &rec.IPMode, &rec.IPAddress, &rec.CPU, &rec.MemoryMB, &rec.DiskGB, &rec.Unprivileged, &rec.Nesting, &rec.TerraformWorkDir, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
+	return row.Scan(&rec.ID, &rec.CustomerAccountID, &rec.Name, &rec.Description, &rec.ProxmoxCredentialID, &rec.ProxmoxNodeName, &rec.NetworkProfileID, &rec.NetworkName, &rec.TemplateID, &rec.TemplatePath, &rec.SSHKeyPairID, &rec.ContainerName, &rec.IPMode, &rec.IPAddress, &rec.CPU, &rec.MemoryMB, &rec.DiskGB, &rec.Unprivileged, &rec.Nesting, &rec.TerraformWorkDir, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
 }
 
 func sanitizeName(name string) string {

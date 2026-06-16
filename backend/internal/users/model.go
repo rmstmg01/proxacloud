@@ -14,6 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/tenant"
 )
 
 var (
@@ -379,6 +380,33 @@ func (s *Service) DeleteUser(id int64, confirmationUsername string, actorUsernam
 		return ErrUserNotFound
 	}
 	return tx.Commit()
+}
+
+func (s *Service) TenantScope(username string, role rbac.Role) (tenant.Scope, error) {
+	scope := tenant.Scope{Username: strings.TrimSpace(strings.ToLower(username)), Role: role}
+	if role == rbac.RoleSuperAdmin || role == rbac.RoleSuperUser {
+		return scope, nil
+	}
+	err := s.db.QueryRow(
+		`SELECT ca.id
+		   FROM customer_accounts ca
+		   JOIN customer_account_users cau ON cau.account_id = ca.id
+		   JOIN users u ON u.id = cau.user_id
+		  WHERE u.username = $1
+		    AND u.status = 'active'
+		    AND u.email_verified_at IS NOT NULL
+		    AND ca.status = 'active'
+		  ORDER BY ca.id ASC
+		  LIMIT 1`,
+		scope.Username,
+	).Scan(&scope.CustomerAccountID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tenant.Scope{}, ErrAccountInactive
+	}
+	if err != nil {
+		return tenant.Scope{}, fmt.Errorf("resolve customer account: %w", err)
+	}
+	return scope, nil
 }
 
 func (s *Service) Authenticate(username, password string) (User, error) {

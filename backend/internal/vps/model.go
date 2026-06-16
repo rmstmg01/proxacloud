@@ -22,6 +22,7 @@ import (
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/secrets"
 	"proxacloud/backend/internal/sshkeys"
+	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
 )
 
@@ -113,6 +114,7 @@ type CreateCloudInitImageRequest struct {
 
 type Instance struct {
 	ID                  int64     `json:"id"`
+	CustomerAccountID   int64     `json:"customer_account_id,omitempty"`
 	Name                string    `json:"name"`
 	Description         string    `json:"description"`
 	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
@@ -162,6 +164,7 @@ type CreateRequest struct {
 	SSHUser             string `json:"ssh_user"`
 	RootPassword        string `json:"root_password"`
 	Apply               bool   `json:"apply"`
+	CustomerAccountID   int64  `json:"-"`
 }
 
 type CreateResponse struct {
@@ -205,8 +208,15 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 	}
 }
 
-func (s *Service) List() ([]Instance, error) {
-	rows, err := s.db.Query(`SELECT v.id, v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id ORDER BY v.created_at DESC`)
+func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
+	args := []any{}
+	if scope.IsCustomer() {
+		query += ` WHERE v.customer_account_id = $1`
+		args = append(args, scope.CustomerAccountID)
+	}
+	query += ` ORDER BY v.created_at DESC`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list vps instances: %w", err)
 	}
@@ -223,10 +233,21 @@ func (s *Service) List() ([]Instance, error) {
 	return out, nil
 }
 
-func (s *Service) Get(id int64) (Instance, error) {
+func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
+	scope := tenant.Scope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 	var rec Instance
-	err := s.db.QueryRow(`SELECT v.id, v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`, id).Scan(
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
+	args := []any{id}
+	if scope.IsCustomer() {
+		query += ` AND v.customer_account_id = $2`
+		args = append(args, scope.CustomerAccountID)
+	}
+	err := s.db.QueryRow(query, args...).Scan(
 		&rec.ID,
+		&rec.CustomerAccountID,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
@@ -320,10 +341,11 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	var vpsID int64
 	err = s.db.QueryRow(
-		`INSERT INTO vps_instances (name, description, proxmox_credential_id, proxmox_node_name, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, $10, $11, $12, $13, $14, $15, $16, $17, 'created')
+		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, NULLIF($7, 0), $8, NULLIF($9, 0), $10, $11, $12, $13, $14, $15, $16, $17, $18, 'created')
 		 RETURNING id`,
 		req.Name,
+		req.CustomerAccountID,
 		req.Description,
 		req.ProxmoxCredentialID,
 		req.ProxmoxNodeName,
@@ -987,6 +1009,7 @@ func scanInstance(rows interface {
 }, rec *Instance) error {
 	return rows.Scan(
 		&rec.ID,
+		&rec.CustomerAccountID,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,

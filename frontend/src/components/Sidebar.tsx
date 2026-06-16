@@ -16,13 +16,30 @@ import {
   Database,
   Cloud,
   BarChart3,
+  CreditCard,
   SquareTerminal,
   Box,
   Shield,
   HardDrive,
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import type { Role } from '../types';
 
-const navGroups = [
+type NavItem = {
+  to: string;
+  icon: typeof LayoutDashboard;
+  label: string;
+  roles?: Role[];
+};
+
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
+
+const adminRoles: Role[] = ['super_user', 'super_admin'];
+
+const navGroups: NavGroup[] = [
   {
     label: 'Main',
     items: [
@@ -41,42 +58,51 @@ const navGroups = [
   {
     label: 'Kubernetes Resources',
     items: [
-      { to: '/configmaps', icon: FileText, label: 'ConfigMaps' },
-      { to: '/secrets', icon: KeyRound, label: 'Secrets' },
-      { to: '/manifests', icon: FileCode, label: 'Manifests' },
+      { to: '/configmaps', icon: FileText, label: 'ConfigMaps', roles: adminRoles },
+      { to: '/secrets', icon: KeyRound, label: 'Secrets', roles: adminRoles },
+      { to: '/manifests', icon: FileCode, label: 'Manifests', roles: adminRoles },
     ],
   },
   {
     label: 'Network & Access',
     items: [
-      { to: '/networks', icon: Network, label: 'VPC Networks' },
-      { to: '/firewalls', icon: Shield, label: 'Firewalls' },
-      { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels' },
-      { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs' },
+      { to: '/networks', icon: Network, label: 'VPC Networks', roles: adminRoles },
+      { to: '/firewalls', icon: Shield, label: 'Firewalls', roles: adminRoles },
+      { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels', roles: adminRoles },
+      { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs', roles: adminRoles },
     ],
   },
   {
     label: 'Infrastructure',
     items: [
-      { to: '/nodes', icon: Cpu, label: 'Nodes' },
-      { to: '/storage', icon: HardDrive, label: 'Storage' },
+      { to: '/nodes', icon: Cpu, label: 'Nodes', roles: adminRoles },
+      { to: '/storage', icon: HardDrive, label: 'Storage', roles: adminRoles },
       { to: '/backups', icon: Archive, label: 'Backups' },
     ],
   },
   {
     label: 'Operations',
     items: [
-      { to: '/monitoring', icon: BarChart3, label: 'Monitoring' },
-      { to: '/commands', icon: SquareTerminal, label: 'Commands' },
-      { to: '/topology', icon: GitBranch, label: 'Topology' },
+      { to: '/billing', icon: CreditCard, label: 'Billing' },
+      { to: '/monitoring', icon: BarChart3, label: 'Monitoring', roles: adminRoles },
+      { to: '/commands', icon: SquareTerminal, label: 'Commands', roles: adminRoles },
+      { to: '/topology', icon: GitBranch, label: 'Topology', roles: adminRoles },
       { to: '/documents', icon: BookOpen, label: 'Documents' },
-      { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys' },
-      { to: '/users', icon: Users, label: 'Users' },
+      { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys', roles: adminRoles },
+      { to: '/users', icon: Users, label: 'Users', roles: adminRoles },
     ],
   },
 ];
 
 export function Sidebar() {
+  const { user } = useAuth();
+  const visibleGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => !item.roles || (user && item.roles.includes(user.role))),
+    }))
+    .filter((group) => group.items.length > 0);
+
   return (
     <aside className="w-60 flex-shrink-0 bg-slate-900 text-slate-100 flex flex-col h-screen sticky top-0">
       {/* Logo */}
@@ -95,7 +121,7 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="scrollbar-hidden flex-1 overflow-y-auto px-3 py-3">
         <div className="space-y-4">
-          {navGroups.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.label}>
               <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 {group.label}

@@ -8,18 +8,27 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+
+	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/tenant"
 )
 
 type Handler struct {
-	service *Service
+	service  *Service
+	resolver interface {
+		TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+	}
 }
 
 type DeleteClusterRequest struct {
 	ConfirmationName string `json:"confirmation_name"`
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+func NewHandler(service *Service, resolver interface {
+	TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+}) *Handler {
+	return &Handler{service: service, resolver: resolver}
 }
 
 func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
@@ -27,6 +36,13 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
+	}
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.IsCustomer() {
+		req.CustomerAccountID = scope.CustomerAccountID
 	}
 
 	resp, err := h.service.Provision(req)
@@ -51,6 +67,13 @@ func (h *Handler) ProvisionAndBootstrap(w http.ResponseWriter, r *http.Request) 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
+	}
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	if scope.IsCustomer() {
+		req.Provision.CustomerAccountID = scope.CustomerAccountID
 	}
 
 	resp, err := h.service.ProvisionAndBootstrap(req)
@@ -92,8 +115,12 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
-func (h *Handler) ListClusters(w http.ResponseWriter, _ *http.Request) {
-	resp, err := h.service.ListClusters()
+func (h *Handler) ListClusters(w http.ResponseWriter, r *http.Request) {
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.ListClusters(scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -122,7 +149,11 @@ func (h *Handler) GetCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.service.GetCluster(clusterID)
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.service.GetCluster(clusterID, scope)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -134,6 +165,9 @@ func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	if _, ok := h.authorizeCluster(w, r, clusterID); !ok {
 		return
 	}
 
@@ -149,6 +183,9 @@ func (h *Handler) GetLatestOperation(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	if _, ok := h.authorizeCluster(w, r, clusterID); !ok {
 		return
 	}
 
@@ -169,6 +206,9 @@ func (h *Handler) ListOperationEvents(w http.ResponseWriter, r *http.Request) {
 	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	if _, ok := h.authorizeCluster(w, r, clusterID); !ok {
 		return
 	}
 
@@ -215,6 +255,9 @@ func (h *Handler) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
 		return
 	}
+	if _, ok := h.authorizeCluster(w, r, clusterID); !ok {
+		return
+	}
 
 	resp, err := h.service.ListClusterNodes(clusterID)
 	if err != nil {
@@ -222,6 +265,22 @@ func (h *Handler) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) authorizeCluster(w http.ResponseWriter, r *http.Request, clusterID int64) (tenant.Scope, bool) {
+	scope, ok := h.scope(w, r)
+	if !ok {
+		return tenant.Scope{}, false
+	}
+	if _, err := h.service.GetCluster(clusterID, scope); err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return tenant.Scope{}, false
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return tenant.Scope{}, false
+	}
+	return scope, true
 }
 
 func (h *Handler) GetBootstrapConfig(w http.ResponseWriter, r *http.Request) {
@@ -1501,4 +1560,18 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func (h *Handler) scope(w http.ResponseWriter, r *http.Request) (tenant.Scope, bool) {
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return tenant.Scope{}, false
+	}
+	scope, err := h.resolver.TenantScope(ctxUser.Username, ctxUser.Role)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return tenant.Scope{}, false
+	}
+	return scope, true
 }

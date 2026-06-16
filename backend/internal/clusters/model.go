@@ -29,6 +29,7 @@ import (
 	"proxacloud/backend/internal/secrets"
 	"proxacloud/backend/internal/sshkeys"
 	"proxacloud/backend/internal/sslcerts"
+	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
 	"proxacloud/backend/internal/topology"
 
@@ -120,6 +121,7 @@ type ProvisionRequest struct {
 	// Key: proxmox node name, Value: first node IP in that node's CIDR.
 	NodeIPPoolStartByNode map[string]string `json:"node_ip_pool_start_by_node"`
 	Apply                 bool              `json:"apply"`
+	CustomerAccountID     int64             `json:"-"`
 }
 
 type ProvisionResponse struct {
@@ -200,6 +202,7 @@ type ClusterNodeRecord struct {
 
 type ClusterSummary struct {
 	ID                int64      `json:"id"`
+	CustomerAccountID int64      `json:"customer_account_id,omitempty"`
 	Name              string     `json:"name"`
 	TopologyType      string     `json:"topology_type"`
 	KubernetesVersion string     `json:"kubernetes_version"`
@@ -1565,12 +1568,20 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 	}, nil
 }
 
-func (s *Service) ListClusters() ([]ClusterSummary, error) {
-	rows, err := s.db.Query(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
-		 FROM clusters
-		 ORDER BY created_at DESC`,
-	)
+func (s *Service) ListClusters(scopes ...tenant.Scope) ([]ClusterSummary, error) {
+	scope := tenant.Scope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	query := `SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
+		 FROM clusters`
+	args := []any{}
+	if scope.IsCustomer() {
+		query += ` WHERE customer_account_id = $1`
+		args = append(args, scope.CustomerAccountID)
+	}
+	query += ` ORDER BY created_at DESC`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list clusters: %w", err)
 	}
@@ -1581,6 +1592,7 @@ func (s *Service) ListClusters() ([]ClusterSummary, error) {
 		var c ClusterSummary
 		if scanErr := rows.Scan(
 			&c.ID,
+			&c.CustomerAccountID,
 			&c.Name,
 			&c.TopologyType,
 			&c.KubernetesVersion,
@@ -1607,8 +1619,15 @@ func (s *Service) ListClusters() ([]ClusterSummary, error) {
 	return out, nil
 }
 
-func (s *Service) GetCluster(clusterID int64) (ClusterSummary, error) {
-	return s.getClusterSummary(clusterID)
+func (s *Service) GetCluster(clusterID int64, scopes ...tenant.Scope) (ClusterSummary, error) {
+	rec, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return ClusterSummary{}, err
+	}
+	if len(scopes) > 0 && scopes[0].IsCustomer() && rec.CustomerAccountID != scopes[0].CustomerAccountID {
+		return ClusterSummary{}, ErrClusterNotFound
+	}
+	return rec, nil
 }
 
 func (s *Service) ListClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {
@@ -6851,10 +6870,11 @@ func validateMetalLBAddress(value string) error {
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
 	var clusterID int64
 	err := s.db.QueryRow(
-		`INSERT INTO clusters (name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'planned')
+		`INSERT INTO clusters (name, customer_account_id, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'planned')
 		 RETURNING id`,
 		req.Name,
+		req.CustomerAccountID,
 		plan.TopologyType,
 		req.KubernetesVersion,
 		req.NetworkProfileID,
@@ -7493,11 +7513,12 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	var c ClusterSummary
 	err := s.db.QueryRow(
-		`SELECT id, name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
+		`SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
 		 FROM clusters WHERE id = $1`,
 		clusterID,
 	).Scan(
 		&c.ID,
+		&c.CustomerAccountID,
 		&c.Name,
 		&c.TopologyType,
 		&c.KubernetesVersion,

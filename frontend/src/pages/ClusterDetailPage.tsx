@@ -69,6 +69,7 @@ import { Input, Textarea, Select } from '../components/ui/Input';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { Modal } from '../components/ui/Modal';
+import { useAuth } from '../context/AuthContext';
 import type { ClusterConfigMapRecord, ClusterImagePullSecretRecord, ClusterOperation, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
 type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'pullsecrets' | 'manifests' | 'applications' | 'observability' | 'etcd';
@@ -1023,6 +1024,11 @@ const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
   { value: 'azure-key-vault', label: 'Azure Key Vault' },
   { value: 'google-secret-manager', label: 'Google Secret Manager' },
   { value: 'bitnami-sealed-secrets', label: 'Bitnami Sealed Secrets' },
+];
+
+const CUSTOMER_TABS: { key: Tab; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'runs', label: 'Run History' },
 ];
 
 function parseSecretData(raw: string): Record<string, string> {
@@ -3056,11 +3062,14 @@ function EtcdTab({ id }: { id: number }) {
 export function ClusterDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
   const clusterId = Number(id);
   const qc = useQueryClient();
   const { data: cluster, isLoading } = useQuery({ queryKey: ['cluster', clusterId], queryFn: () => getCluster(clusterId) });
   const initialTab = (searchParams.get('tab') as Tab | null) ?? 'overview';
-  const [activeTab, setActiveTab] = useState<Tab>(TABS.some((t) => t.key === initialTab) ? initialTab : 'overview');
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
+  const visibleTabs = isAdmin ? TABS : CUSTOMER_TABS;
+  const [activeTab, setActiveTab] = useState<Tab>(visibleTabs.some((t) => t.key === initialTab) ? initialTab : 'overview');
 
   if (isLoading) return <Layout><PageSpinner /></Layout>;
   if (!cluster) return <Layout><p className="text-slate-500">Cluster not found.</p></Layout>;
@@ -3085,7 +3094,7 @@ export function ClusterDetailPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto">
-        {TABS.map(({ key, label }) => (
+        {visibleTabs.map(({ key, label }) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}

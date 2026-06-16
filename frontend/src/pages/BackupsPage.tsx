@@ -9,6 +9,7 @@ import { Input, Select } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
+import { useAuth } from '../context/AuthContext';
 import type { BackupTargetType } from '../types';
 
 const targetLabels: Record<BackupTargetType, string> = {
@@ -75,9 +76,11 @@ function configValue(config: Record<string, unknown>, key: string): string {
 
 export function BackupsPage() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(initialForm);
-  const { data, isLoading, error } = useQuery({ queryKey: ['backup-summary'], queryFn: getBackupSummary });
+  const { data, isLoading, error } = useQuery({ queryKey: ['backup-summary'], queryFn: getBackupSummary, enabled: isAdmin });
   const targets = data?.targets ?? [];
   const externalTargets = targets.filter((target) => target.type === 's3' || target.type === 'hetzner_storagebox');
 
@@ -119,6 +122,47 @@ export function BackupsPage() {
       restic_password: form.restic_password,
     });
   };
+
+  if (!isAdmin) {
+    return (
+      <Layout>
+        <PageHeader
+          title="Backups"
+          description="Customer backups for VPS, containers, clusters, and databases."
+        />
+
+        <div className="space-y-6">
+          <Alert variant="info" title="Own backups">
+            Backup access is enabled for your account. Customer-owned backup jobs and restore points will appear here after the backup runner is connected to tenant resources.
+          </Alert>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <Card>
+              <CardContent className="p-4">
+                <Archive className="mb-3 h-5 w-5 text-indigo-500" />
+                <p className="text-xl font-bold text-slate-900">0</p>
+                <p className="text-xs text-slate-500">restore point(s)</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <Cloud className="mb-3 h-5 w-5 text-sky-500" />
+                <p className="text-xl font-bold text-slate-900">Pending</p>
+                <p className="text-xs text-slate-500">backup provider</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <Server className="mb-3 h-5 w-5 text-emerald-500" />
+                <p className="text-xl font-bold text-slate-900">Monthly</p>
+                <p className="text-xs text-slate-500">backup billing model</p>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout>
