@@ -96,6 +96,9 @@ func (s *Service) CreateTarget(in TargetInput) (Target, error) {
 	if err := validateConfig(in.Type, config); err != nil {
 		return Target{}, err
 	}
+	if err := validateSecrets(in.Type, config, in); err != nil {
+		return Target{}, err
+	}
 	if !in.EnabledSet {
 		in.Enabled = true
 	}
@@ -269,6 +272,26 @@ func validateConfig(t TargetType, config map[string]any) error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", key)
 		}
+	}
+	return nil
+}
+
+func validateSecrets(t TargetType, config map[string]any, in TargetInput) error {
+	if t != TargetHetzner {
+		return nil
+	}
+	authMethod, _ := config["auth_method"].(string)
+	switch strings.TrimSpace(authMethod) {
+	case "ssh_key":
+		if strings.TrimSpace(in.SSHPrivateKey) == "" {
+			return errors.New("ssh_private_key is required when auth_method is ssh_key")
+		}
+	case "", "password":
+		if strings.TrimSpace(in.Password) == "" {
+			return errors.New("password is required when auth_method is password")
+		}
+	default:
+		return fmt.Errorf("unsupported auth_method %q", authMethod)
 	}
 	return nil
 }

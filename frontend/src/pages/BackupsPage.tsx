@@ -5,7 +5,7 @@ import { createBackupTarget, deleteBackupTarget, getBackupSummary } from '../api
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
-import { Input, Select } from '../components/ui/Input';
+import { Input, Select, Textarea } from '../components/ui/Input';
 import { Badge } from '../components/ui/Badge';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
@@ -256,7 +256,19 @@ export function BackupsPage() {
                         <option value="borg">Borg</option>
                         <option value="rsync">Rsync</option>
                       </Select>
-                      <Input label="Password" type="password" value={form.password} onChange={(e) => setField('password', e.target.value)} />
+                      {form.auth_method === 'password' ? (
+                        <Input label="Password" type="password" value={form.password} onChange={(e) => setField('password', e.target.value)} required />
+                      ) : (
+                        <Textarea
+                          label="SSH private key"
+                          value={form.ssh_private_key}
+                          onChange={(e) => setField('ssh_private_key', e.target.value)}
+                          rows={6}
+                          required
+                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                          className="font-mono"
+                        />
+                      )}
                       <Input label="Restic password" type="password" value={form.restic_password} onChange={(e) => setField('restic_password', e.target.value)} />
                     </div>
                   )}
@@ -310,8 +322,9 @@ export function BackupsPage() {
                           {target.has_access_key && <Badge variant="info">access</Badge>}
                           {target.has_secret_key && <Badge variant="info">secret</Badge>}
                           {target.has_password && <Badge variant="info">password</Badge>}
+                          {target.has_ssh_private_key && <Badge variant="info">ssh key</Badge>}
                           {target.has_restic_password && <Badge variant="warning">restic</Badge>}
-                          {!target.has_access_key && !target.has_secret_key && !target.has_password && !target.has_restic_password && <span className="text-xs text-slate-400">none</span>}
+                          {!target.has_access_key && !target.has_secret_key && !target.has_password && !target.has_ssh_private_key && !target.has_restic_password && <span className="text-xs text-slate-400">none</span>}
                         </div>
                       </td>
                       <td className="px-6 py-3"><Badge variant={target.enabled ? 'success' : 'default'}>{target.enabled ? 'enabled' : 'disabled'}</Badge></td>
