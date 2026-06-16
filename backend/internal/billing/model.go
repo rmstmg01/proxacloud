@@ -19,6 +19,7 @@ var (
 	ErrAccountNotFound     = errors.New("billing account not found")
 	ErrInvalidAmount       = errors.New("amount must be greater than zero")
 	ErrInvalidProvider     = errors.New("unsupported payment provider")
+	ErrInsufficientCredit  = errors.New("insufficient credit balance")
 	ErrTransactionNotFound = errors.New("payment transaction not found")
 )
 
@@ -473,6 +474,38 @@ func (s *Service) EstimateMonthlyCharges(accountID int64) ([]ResourceCharge, int
 		return nil, 0, err
 	}
 	return out, total, nil
+}
+
+func (s *Service) EstimateResource(resourceType string, cpu, memoryMB, diskGB int) (int, error) {
+	prices, err := s.priceMap()
+	if err != nil {
+		return 0, err
+	}
+	price, ok := prices[strings.TrimSpace(resourceType)]
+	if !ok || !price.Enabled {
+		return 0, nil
+	}
+	return rate(price, cpu, memoryMB, diskGB), nil
+}
+
+func (s *Service) EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error {
+	balance, err := s.Balance(accountID)
+	if err != nil {
+		return err
+	}
+	_, existingMonthly, err := s.EstimateMonthlyCharges(accountID)
+	if err != nil {
+		return err
+	}
+	nextMonthly, err := s.EstimateResource(resourceType, cpu, memoryMB, diskGB)
+	if err != nil {
+		return err
+	}
+	required := existingMonthly + nextMonthly
+	if balance < required {
+		return fmt.Errorf("%w: balance $%.2f, required $%.2f", ErrInsufficientCredit, float64(balance)/100, float64(required)/100)
+	}
+	return nil
 }
 
 func (s *Service) insertLedger(accountID int64, amountCents int, entryType, description, source, sourceID string, actorID int64, idempotencyKey string) (LedgerEntry, error) {

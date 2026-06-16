@@ -10,12 +10,16 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/rbac"
 	"proxacloud/backend/internal/tenant"
 )
 
 type Handler struct {
-	service  *Service
+	service *Service
+	billing interface {
+		EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
+	}
 	resolver interface {
 		TenantScope(username string, role rbac.Role) (tenant.Scope, error)
 	}
@@ -27,8 +31,10 @@ type DeleteClusterRequest struct {
 
 func NewHandler(service *Service, resolver interface {
 	TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+}, billingGuard interface {
+	EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
 }) *Handler {
-	return &Handler{service: service, resolver: resolver}
+	return &Handler{service: service, resolver: resolver, billing: billingGuard}
 }
 
 func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
@@ -43,6 +49,9 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	}
 	if scope.IsCustomer() {
 		req.CustomerAccountID = scope.CustomerAccountID
+		if !h.canAffordCluster(w, scope.CustomerAccountID, req) {
+			return
+		}
 	}
 
 	resp, err := h.service.Provision(req)
@@ -74,6 +83,9 @@ func (h *Handler) ProvisionAndBootstrap(w http.ResponseWriter, r *http.Request) 
 	}
 	if scope.IsCustomer() {
 		req.Provision.CustomerAccountID = scope.CustomerAccountID
+		if !h.canAffordCluster(w, scope.CustomerAccountID, req.Provision) {
+			return
+		}
 	}
 
 	resp, err := h.service.ProvisionAndBootstrap(req)
@@ -281,6 +293,45 @@ func (h *Handler) authorizeCluster(w http.ResponseWriter, r *http.Request, clust
 		return tenant.Scope{}, false
 	}
 	return scope, true
+}
+
+func (h *Handler) canAffordCluster(w http.ResponseWriter, accountID int64, req ProvisionRequest) bool {
+	if h.billing == nil {
+		return true
+	}
+	controlPlaneCPU, workerCPU := req.ControlPlaneCPU, req.WorkerCPU
+	controlPlaneRAM, workerRAM := req.ControlPlaneRAMMB, req.WorkerRAMMB
+	controlPlaneDisk, workerDisk := req.ControlPlaneDisk, req.WorkerDisk
+	if controlPlaneCPU <= 0 {
+		controlPlaneCPU = 4
+	}
+	if workerCPU <= 0 {
+		workerCPU = 4
+	}
+	if controlPlaneRAM <= 0 {
+		controlPlaneRAM = 8192
+	}
+	if workerRAM <= 0 {
+		workerRAM = 8192
+	}
+	if controlPlaneDisk <= 0 {
+		controlPlaneDisk = 80
+	}
+	if workerDisk <= 0 {
+		workerDisk = 120
+	}
+	cpu := req.ControlPlaneCount*controlPlaneCPU + req.WorkerCount*workerCPU
+	memoryMB := req.ControlPlaneCount*controlPlaneRAM + req.WorkerCount*workerRAM
+	diskGB := req.ControlPlaneCount*controlPlaneDisk + req.WorkerCount*workerDisk
+	if err := h.billing.EnsureCanAfford(accountID, "cluster", cpu, memoryMB, diskGB); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, billing.ErrInsufficientCredit) {
+			status = http.StatusPaymentRequired
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return false
+	}
+	return true
 }
 
 func (h *Handler) GetBootstrapConfig(w http.ResponseWriter, r *http.Request) {

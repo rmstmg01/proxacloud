@@ -10,12 +10,16 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/rbac"
 	"proxacloud/backend/internal/tenant"
 )
 
 type Handler struct {
-	service  *Service
+	service *Service
+	billing interface {
+		EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
+	}
 	resolver interface {
 		TenantScope(username string, role rbac.Role) (tenant.Scope, error)
 	}
@@ -27,8 +31,10 @@ type DeleteRequest struct {
 
 func NewHandler(service *Service, resolver interface {
 	TenantScope(username string, role rbac.Role) (tenant.Scope, error)
+}, billingGuard interface {
+	EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
 }) *Handler {
-	return &Handler{service: service, resolver: resolver}
+	return &Handler{service: service, resolver: resolver, billing: billingGuard}
 }
 
 func (h *Handler) Plan(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +63,26 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	}
 	if scope.IsCustomer() {
 		req.CustomerAccountID = scope.CustomerAccountID
+		if h.billing != nil {
+			cpu, memoryMB, diskGB := req.CPU, req.MemoryMB, req.DiskGB
+			if cpu <= 0 {
+				cpu = 4
+			}
+			if memoryMB <= 0 {
+				memoryMB = 8192
+			}
+			if diskGB <= 0 {
+				diskGB = 100
+			}
+			if err := h.billing.EnsureCanAfford(scope.CustomerAccountID, "database_cluster", cpu*3, memoryMB*3, diskGB*3); err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, billing.ErrInsufficientCredit) {
+					status = http.StatusPaymentRequired
+				}
+				writeJSON(w, status, map[string]string{"error": err.Error()})
+				return
+			}
+		}
 	}
 	resp, err := h.service.Provision(req)
 	if err != nil {
