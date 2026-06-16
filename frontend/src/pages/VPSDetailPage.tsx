@@ -60,7 +60,8 @@ export function VPSDetailPage() {
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployConfirmationName, setRedeployConfirmationName] = useState('');
   const [showEvents, setShowEvents] = useState(false);
-  const [firewallOpen, setFirewallOpen] = useState(false);
+  const [showFirewallRules, setShowFirewallRules] = useState(false);
+  const [firewallRuleOpen, setFirewallRuleOpen] = useState(false);
   const [firewallRuleForm, setFirewallRuleForm] = useState(defaultFirewallRuleForm);
   const [editingFirewallRule, setEditingFirewallRule] = useState<VPSFirewallRule | null>(null);
 
@@ -167,7 +168,7 @@ export function VPSDetailPage() {
       for (const group of vpsFirewallGroups) {
         queryClient.invalidateQueries({ queryKey: ['firewalls', group.id] });
       }
-      setFirewallOpen(false);
+      setFirewallRuleOpen(false);
       setEditingFirewallRule(null);
       setFirewallRuleForm(defaultFirewallRuleForm);
     },
@@ -202,7 +203,7 @@ export function VPSDetailPage() {
       default_outbound_policy: primaryVPSFirewallGroup?.default_outbound_policy ?? defaultFirewallRuleForm.default_outbound_policy,
       priority: String(nextFirewallPriority),
     });
-    setFirewallOpen(true);
+    setFirewallRuleOpen(true);
   };
 
   const openEditFirewallRule = (rule: VPSFirewallRule) => {
@@ -224,7 +225,7 @@ export function VPSDetailPage() {
       rule_description: rule.description,
       enabled: rule.enabled,
     });
-    setFirewallOpen(true);
+    setFirewallRuleOpen(true);
   };
 
   const createVPSFirewallRule = (event: FormEvent) => {
@@ -293,7 +294,7 @@ export function VPSDetailPage() {
               <History className="h-4 w-4" />
               Events
             </Button>
-            <Button variant="secondary" onClick={openFirewallRule}>
+            <Button variant={showFirewallRules ? 'primary' : 'secondary'} onClick={() => setShowFirewallRules((current) => !current)}>
               <Shield className="h-4 w-4" />
               Firewall
             </Button>
@@ -335,93 +336,95 @@ export function VPSDetailPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <CardTitle>Firewall Rules</CardTitle>
-                <p className="mt-1 text-sm text-slate-500">Rules shown here are attached only to this VPS.</p>
-              </div>
-              <Button variant="secondary" onClick={openFirewallRule}>
-                <Plus className="h-4 w-4" />
-                Rule
-              </Button>
-            </CardHeader>
-            {firewallsQuery.isLoading || firewallDetailQueries.some((query) => query.isLoading) ? (
-              <CardContent>
-                <p className="text-sm text-slate-500">Loading firewall rules...</p>
-              </CardContent>
-            ) : vpsFirewallRules.length ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50">
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Priority</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Direction</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Action</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Protocol</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">CIDR</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Ports</th>
-                      <th className="px-5 py-3 text-left font-medium text-slate-600">Description</th>
-                      <th className="px-5 py-3" />
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {vpsFirewallRules.map((rule) => (
-                      <tr key={`${rule.group_id}:${rule.id}`} className="hover:bg-slate-50">
-                        <td className="px-5 py-3 font-medium text-slate-900">{rule.priority}</td>
-                        <td className="px-5 py-3 text-slate-600">{rule.direction}</td>
-                        <td className="px-5 py-3">
-                          <Badge variant={rule.action === 'allow' ? 'success' : 'danger'}>{rule.action}</Badge>
-                        </td>
-                        <td className="px-5 py-3 text-slate-600">{rule.protocol}</td>
-                        <td className="px-5 py-3 text-slate-600">
-                          {rule.direction === 'inbound' ? rule.source_cidr || 'any' : rule.destination_cidr || 'any'}
-                        </td>
-                        <td className="px-5 py-3 text-slate-600">
-                          {rule.port_start ? `${rule.port_start}-${rule.port_end ?? rule.port_start}` : 'any'}
-                        </td>
-                        <td className="max-w-xs truncate px-5 py-3 text-slate-600">{rule.description || '-'}</td>
-                        <td className="px-5 py-3 text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button variant="ghost" size="sm" onClick={() => openEditFirewallRule(rule)} title="Edit firewall rule">
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => deleteFirewallRuleMutation.mutate({ groupID: rule.group_id, ruleID: rule.id })}
-                              loading={
-                                deleteFirewallRuleMutation.isPending &&
-                                deleteFirewallRuleMutation.variables?.ruleID === rule.id
-                              }
-                              title="Delete firewall rule"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </td>
+          {showFirewallRules && (
+            <Card>
+              <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle>Firewall Rules</CardTitle>
+                  <p className="mt-1 text-sm text-slate-500">Rules shown here are attached only to this VPS.</p>
+                </div>
+                <Button variant="secondary" onClick={openFirewallRule}>
+                  <Plus className="h-4 w-4" />
+                  Rule
+                </Button>
+              </CardHeader>
+              {firewallsQuery.isLoading || firewallDetailQueries.some((query) => query.isLoading) ? (
+                <CardContent>
+                  <p className="text-sm text-slate-500">Loading firewall rules...</p>
+                </CardContent>
+              ) : vpsFirewallRules.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50">
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Priority</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Direction</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Action</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Protocol</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">CIDR</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Ports</th>
+                        <th className="px-5 py-3 text-left font-medium text-slate-600">Description</th>
+                        <th className="px-5 py-3" />
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <CardContent>
-                <p className="text-sm text-slate-500">No VPS-only firewall rules yet.</p>
-              </CardContent>
-            )}
-            {(firewallsQuery.error || firewallDetailQueries.find((query) => query.error)?.error || deleteFirewallRuleMutation.error) && (
-              <CardContent>
-                <ErrorMessage
-                  error={
-                    firewallsQuery.error ||
-                    firewallDetailQueries.find((query) => query.error)?.error ||
-                    deleteFirewallRuleMutation.error
-                  }
-                />
-              </CardContent>
-            )}
-          </Card>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {vpsFirewallRules.map((rule) => (
+                        <tr key={`${rule.group_id}:${rule.id}`} className="hover:bg-slate-50">
+                          <td className="px-5 py-3 font-medium text-slate-900">{rule.priority}</td>
+                          <td className="px-5 py-3 text-slate-600">{rule.direction}</td>
+                          <td className="px-5 py-3">
+                            <Badge variant={rule.action === 'allow' ? 'success' : 'danger'}>{rule.action}</Badge>
+                          </td>
+                          <td className="px-5 py-3 text-slate-600">{rule.protocol}</td>
+                          <td className="px-5 py-3 text-slate-600">
+                            {rule.direction === 'inbound' ? rule.source_cidr || 'any' : rule.destination_cidr || 'any'}
+                          </td>
+                          <td className="px-5 py-3 text-slate-600">
+                            {rule.port_start ? `${rule.port_start}-${rule.port_end ?? rule.port_start}` : 'any'}
+                          </td>
+                          <td className="max-w-xs truncate px-5 py-3 text-slate-600">{rule.description || '-'}</td>
+                          <td className="px-5 py-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button variant="ghost" size="sm" onClick={() => openEditFirewallRule(rule)} title="Edit firewall rule">
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => deleteFirewallRuleMutation.mutate({ groupID: rule.group_id, ruleID: rule.id })}
+                                loading={
+                                  deleteFirewallRuleMutation.isPending &&
+                                  deleteFirewallRuleMutation.variables?.ruleID === rule.id
+                                }
+                                title="Delete firewall rule"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <CardContent>
+                  <p className="text-sm text-slate-500">No VPS-only firewall rules yet.</p>
+                </CardContent>
+              )}
+              {(firewallsQuery.error || firewallDetailQueries.find((query) => query.error)?.error || deleteFirewallRuleMutation.error) && (
+                <CardContent>
+                  <ErrorMessage
+                    error={
+                      firewallsQuery.error ||
+                      firewallDetailQueries.find((query) => query.error)?.error ||
+                      deleteFirewallRuleMutation.error
+                    }
+                  />
+                </CardContent>
+              )}
+            </Card>
+          )}
 
           {showEvents && (
             <Card>
@@ -498,10 +501,10 @@ export function VPSDetailPage() {
         )}
       </Modal>
       <Modal
-        open={firewallOpen}
+        open={firewallRuleOpen}
         onClose={() => {
           if (!firewallMutation.isPending) {
-            setFirewallOpen(false);
+            setFirewallRuleOpen(false);
             setEditingFirewallRule(null);
             setFirewallRuleForm(defaultFirewallRuleForm);
           }
@@ -644,7 +647,7 @@ export function VPSDetailPage() {
                 type="button"
                 variant="secondary"
                 onClick={() => {
-                  setFirewallOpen(false);
+                  setFirewallRuleOpen(false);
                   setEditingFirewallRule(null);
                 }}
                 disabled={firewallMutation.isPending}
