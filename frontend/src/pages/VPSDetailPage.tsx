@@ -1,12 +1,15 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, History, Monitor, Play, Power, RefreshCw, RotateCcw, Shield } from 'lucide-react';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
 import {
-  applyFirewall,
   createFirewall,
   createFirewallAttachment,
   createFirewallRule,
+  deleteFirewallRule,
+  getFirewall,
+  getFirewalls,
+  updateFirewallRule,
 } from '../api/firewalls';
 import {
   getVPSEvents,
@@ -19,13 +22,13 @@ import {
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
-import { StatusBadge } from '../components/ui/Badge';
+import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
-import type { FirewallAction, FirewallDirection, FirewallPolicy, FirewallProtocol } from '../types';
+import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule } from '../types';
 
 const defaultFirewallRuleForm = {
   name: '',
@@ -41,6 +44,12 @@ const defaultFirewallRuleForm = {
   port_end: '22',
   priority: '100',
   rule_description: 'SSH access',
+  enabled: true,
+};
+
+type VPSFirewallRule = FirewallRule & {
+  group_id: number;
+  group_name: string;
 };
 
 export function VPSDetailPage() {
@@ -53,6 +62,7 @@ export function VPSDetailPage() {
   const [showEvents, setShowEvents] = useState(false);
   const [firewallOpen, setFirewallOpen] = useState(false);
   const [firewallRuleForm, setFirewallRuleForm] = useState(defaultFirewallRuleForm);
+  const [editingFirewallRule, setEditingFirewallRule] = useState<VPSFirewallRule | null>(null);
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -65,11 +75,43 @@ export function VPSDetailPage() {
     enabled: Number.isFinite(vpsID) && vpsID > 0 && showEvents,
     refetchInterval: showEvents ? 15_000 : false,
   });
+  const firewallsQuery = useQuery({
+    queryKey: ['firewalls'],
+    queryFn: getFirewalls,
+    enabled: Number.isFinite(vpsID) && vpsID > 0,
+  });
+  const firewallDetailQueries = useQueries({
+    queries: (firewallsQuery.data ?? []).map((firewall) => ({
+      queryKey: ['firewalls', firewall.id],
+      queryFn: () => getFirewall(firewall.id),
+      enabled: Number.isFinite(vpsID) && vpsID > 0,
+    })),
+  });
+
+  const vpsFirewallGroups = firewallDetailQueries
+    .map((query) => query.data)
+    .filter((group): group is FirewallGroup => {
+      const attachments = group?.attachments ?? [];
+      return attachments.length === 1 && attachments[0].target_type === 'vps' && attachments[0].target_id === vpsID;
+    })
+    .sort((a, b) => a.id - b.id);
+  const primaryVPSFirewallGroup = vpsFirewallGroups[0];
+  const vpsFirewallRules = vpsFirewallGroups.flatMap((group) =>
+    (group.rules ?? []).map((rule) => ({
+      ...rule,
+      group_id: group.id,
+      group_name: group.name,
+    })),
+  );
+  const nextFirewallPriority = primaryVPSFirewallGroup?.rules?.length
+    ? Math.max(...primaryVPSFirewallGroup.rules.map((rule) => rule.priority)) + 1
+    : 100;
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['vps'] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'events'] });
+    queryClient.invalidateQueries({ queryKey: ['firewalls'] });
   };
 
   const redeployMutation = useMutation({
@@ -88,14 +130,7 @@ export function VPSDetailPage() {
     mutationFn: async () => {
       if (!vps) throw new Error('VPS is not loaded');
       const hasPorts = firewallRuleForm.protocol === 'tcp' || firewallRuleForm.protocol === 'udp';
-      const group = await createFirewall({
-        name: firewallRuleForm.name.trim() || `${vps.name}-firewall`,
-        description: firewallRuleForm.description.trim() || `Firewall rules for ${vps.name}`,
-        default_inbound_policy: firewallRuleForm.default_inbound_policy,
-        default_outbound_policy: firewallRuleForm.default_outbound_policy,
-        enabled: true,
-      });
-      await createFirewallRule(group.id, {
+      const body = {
         direction: firewallRuleForm.direction,
         action: firewallRuleForm.action,
         protocol: firewallRuleForm.protocol,
@@ -105,18 +140,43 @@ export function VPSDetailPage() {
         port_end: hasPorts && firewallRuleForm.port_end ? Number(firewallRuleForm.port_end) : undefined,
         priority: Number(firewallRuleForm.priority),
         description: firewallRuleForm.rule_description.trim(),
-        enabled: true,
-      });
-      await createFirewallAttachment(group.id, {
-        target_type: 'vps',
-        target_id: vps.id,
-      });
-      return applyFirewall(group.id);
+        enabled: firewallRuleForm.enabled,
+      };
+      if (editingFirewallRule) {
+        return updateFirewallRule(editingFirewallRule.group_id, editingFirewallRule.id, body);
+      }
+
+      let group = primaryVPSFirewallGroup;
+      if (!group) {
+        group = await createFirewall({
+          name: firewallRuleForm.name.trim() || `vps-${vps.id}-${vps.name}-firewall`,
+          description: firewallRuleForm.description.trim() || `Firewall rules for ${vps.name}`,
+          default_inbound_policy: firewallRuleForm.default_inbound_policy,
+          default_outbound_policy: firewallRuleForm.default_outbound_policy,
+          enabled: true,
+        });
+        await createFirewallAttachment(group.id, {
+          target_type: 'vps',
+          target_id: vps.id,
+        });
+      }
+      return createFirewallRule(group.id, body);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['firewalls'] });
+      for (const group of vpsFirewallGroups) {
+        queryClient.invalidateQueries({ queryKey: ['firewalls', group.id] });
+      }
       setFirewallOpen(false);
+      setEditingFirewallRule(null);
       setFirewallRuleForm(defaultFirewallRuleForm);
+    },
+  });
+  const deleteFirewallRuleMutation = useMutation({
+    mutationFn: ({ groupID, ruleID }: { groupID: number; ruleID: number }) => deleteFirewallRule(groupID, ruleID),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['firewalls'] });
+      queryClient.invalidateQueries({ queryKey: ['firewalls', variables.groupID] });
     },
   });
 
@@ -133,10 +193,36 @@ export function VPSDetailPage() {
 
   const openFirewallRule = () => {
     if (!vps) return;
+    setEditingFirewallRule(null);
     setFirewallRuleForm({
       ...defaultFirewallRuleForm,
-      name: `${vps.name}-firewall`,
-      description: `Firewall rules for ${vps.name}`,
+      name: primaryVPSFirewallGroup?.name ?? `vps-${vps.id}-${vps.name}-firewall`,
+      description: primaryVPSFirewallGroup?.description ?? `Firewall rules for ${vps.name}`,
+      default_inbound_policy: primaryVPSFirewallGroup?.default_inbound_policy ?? defaultFirewallRuleForm.default_inbound_policy,
+      default_outbound_policy: primaryVPSFirewallGroup?.default_outbound_policy ?? defaultFirewallRuleForm.default_outbound_policy,
+      priority: String(nextFirewallPriority),
+    });
+    setFirewallOpen(true);
+  };
+
+  const openEditFirewallRule = (rule: VPSFirewallRule) => {
+    const group = vpsFirewallGroups.find((item) => item.id === rule.group_id);
+    setEditingFirewallRule(rule);
+    setFirewallRuleForm({
+      name: group?.name ?? rule.group_name,
+      description: group?.description ?? '',
+      default_inbound_policy: group?.default_inbound_policy ?? defaultFirewallRuleForm.default_inbound_policy,
+      default_outbound_policy: group?.default_outbound_policy ?? defaultFirewallRuleForm.default_outbound_policy,
+      direction: rule.direction,
+      action: rule.action,
+      protocol: rule.protocol,
+      source_cidr: rule.source_cidr,
+      destination_cidr: rule.destination_cidr,
+      port_start: rule.port_start ? String(rule.port_start) : '',
+      port_end: rule.port_end ? String(rule.port_end) : '',
+      priority: String(rule.priority),
+      rule_description: rule.description,
+      enabled: rule.enabled,
     });
     setFirewallOpen(true);
   };
@@ -249,6 +335,94 @@ export function VPSDetailPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Firewall Rules</CardTitle>
+                <p className="mt-1 text-sm text-slate-500">Rules shown here are attached only to this VPS.</p>
+              </div>
+              <Button variant="secondary" onClick={openFirewallRule}>
+                <Plus className="h-4 w-4" />
+                Rule
+              </Button>
+            </CardHeader>
+            {firewallsQuery.isLoading || firewallDetailQueries.some((query) => query.isLoading) ? (
+              <CardContent>
+                <p className="text-sm text-slate-500">Loading firewall rules...</p>
+              </CardContent>
+            ) : vpsFirewallRules.length ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50">
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Priority</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Direction</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Action</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Protocol</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">CIDR</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Ports</th>
+                      <th className="px-5 py-3 text-left font-medium text-slate-600">Description</th>
+                      <th className="px-5 py-3" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {vpsFirewallRules.map((rule) => (
+                      <tr key={`${rule.group_id}:${rule.id}`} className="hover:bg-slate-50">
+                        <td className="px-5 py-3 font-medium text-slate-900">{rule.priority}</td>
+                        <td className="px-5 py-3 text-slate-600">{rule.direction}</td>
+                        <td className="px-5 py-3">
+                          <Badge variant={rule.action === 'allow' ? 'success' : 'danger'}>{rule.action}</Badge>
+                        </td>
+                        <td className="px-5 py-3 text-slate-600">{rule.protocol}</td>
+                        <td className="px-5 py-3 text-slate-600">
+                          {rule.direction === 'inbound' ? rule.source_cidr || 'any' : rule.destination_cidr || 'any'}
+                        </td>
+                        <td className="px-5 py-3 text-slate-600">
+                          {rule.port_start ? `${rule.port_start}-${rule.port_end ?? rule.port_start}` : 'any'}
+                        </td>
+                        <td className="max-w-xs truncate px-5 py-3 text-slate-600">{rule.description || '-'}</td>
+                        <td className="px-5 py-3 text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button variant="ghost" size="sm" onClick={() => openEditFirewallRule(rule)} title="Edit firewall rule">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => deleteFirewallRuleMutation.mutate({ groupID: rule.group_id, ruleID: rule.id })}
+                              loading={
+                                deleteFirewallRuleMutation.isPending &&
+                                deleteFirewallRuleMutation.variables?.ruleID === rule.id
+                              }
+                              title="Delete firewall rule"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <CardContent>
+                <p className="text-sm text-slate-500">No VPS-only firewall rules yet.</p>
+              </CardContent>
+            )}
+            {(firewallsQuery.error || firewallDetailQueries.find((query) => query.error)?.error || deleteFirewallRuleMutation.error) && (
+              <CardContent>
+                <ErrorMessage
+                  error={
+                    firewallsQuery.error ||
+                    firewallDetailQueries.find((query) => query.error)?.error ||
+                    deleteFirewallRuleMutation.error
+                  }
+                />
+              </CardContent>
+            )}
+          </Card>
+
           {showEvents && (
             <Card>
               <CardHeader>
@@ -328,52 +502,57 @@ export function VPSDetailPage() {
         onClose={() => {
           if (!firewallMutation.isPending) {
             setFirewallOpen(false);
+            setEditingFirewallRule(null);
             setFirewallRuleForm(defaultFirewallRuleForm);
           }
         }}
-        title="VPS Firewall Rule"
+        title={editingFirewallRule ? 'Edit VPS Firewall Rule' : 'VPS Firewall Rule'}
         maxWidth="lg"
       >
         {vps && (
           <form onSubmit={createVPSFirewallRule} className="space-y-5">
             <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              This creates a firewall group, attaches it to <span className="font-semibold text-slate-900">{vps.name}</span>, and applies the rule.
+              Rules created here are attached only to <span className="font-semibold text-slate-900">{vps.name}</span> and apply immediately.
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Input
-                label="Firewall name"
-                value={firewallRuleForm.name}
-                onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, name: event.target.value })}
-                required
-              />
-              <Input
-                label="Description"
-                value={firewallRuleForm.description}
-                onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, description: event.target.value })}
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Select
-                label="Default inbound"
-                value={firewallRuleForm.default_inbound_policy}
-                onChange={(event) =>
-                  setFirewallRuleForm({ ...firewallRuleForm, default_inbound_policy: event.target.value as FirewallPolicy })
-                }
-              >
-                <option value="deny">Deny</option>
-                <option value="allow">Allow</option>
-              </Select>
-              <Select
-                label="Default outbound"
-                value={firewallRuleForm.default_outbound_policy}
-                onChange={(event) =>
-                  setFirewallRuleForm({ ...firewallRuleForm, default_outbound_policy: event.target.value as FirewallPolicy })
-                }
-              >
-                <option value="allow">Allow</option>
-                <option value="deny">Deny</option>
-              </Select>
-            </div>
+            {!primaryVPSFirewallGroup && !editingFirewallRule && (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Input
+                    label="Firewall name"
+                    value={firewallRuleForm.name}
+                    onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, name: event.target.value })}
+                    required
+                  />
+                  <Input
+                    label="Description"
+                    value={firewallRuleForm.description}
+                    onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, description: event.target.value })}
+                  />
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Select
+                    label="Default inbound"
+                    value={firewallRuleForm.default_inbound_policy}
+                    onChange={(event) =>
+                      setFirewallRuleForm({ ...firewallRuleForm, default_inbound_policy: event.target.value as FirewallPolicy })
+                    }
+                  >
+                    <option value="deny">Deny</option>
+                    <option value="allow">Allow</option>
+                  </Select>
+                  <Select
+                    label="Default outbound"
+                    value={firewallRuleForm.default_outbound_policy}
+                    onChange={(event) =>
+                      setFirewallRuleForm({ ...firewallRuleForm, default_outbound_policy: event.target.value as FirewallPolicy })
+                    }
+                  >
+                    <option value="allow">Allow</option>
+                    <option value="deny">Deny</option>
+                  </Select>
+                </div>
+              </>
+            )}
             <div className="grid gap-4 sm:grid-cols-3">
               <Select
                 label="Direction"
@@ -451,14 +630,30 @@ export function VPSDetailPage() {
               onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, rule_description: event.target.value })}
               placeholder="Allow SSH"
             />
+            <Select
+              label="State"
+              value={firewallRuleForm.enabled ? 'enabled' : 'disabled'}
+              onChange={(event) => setFirewallRuleForm({ ...firewallRuleForm, enabled: event.target.value === 'enabled' })}
+            >
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Disabled</option>
+            </Select>
             {firewallMutation.error && <ErrorMessage error={firewallMutation.error} />}
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setFirewallOpen(false)} disabled={firewallMutation.isPending}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  setFirewallOpen(false);
+                  setEditingFirewallRule(null);
+                }}
+                disabled={firewallMutation.isPending}
+              >
                 Cancel
               </Button>
               <Button type="submit" loading={firewallMutation.isPending}>
                 <Shield className="h-4 w-4" />
-                Create and Apply
+                {editingFirewallRule ? 'Save and Apply' : 'Create and Apply'}
               </Button>
             </div>
           </form>
