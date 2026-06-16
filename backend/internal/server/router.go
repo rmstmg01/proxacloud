@@ -13,6 +13,7 @@ import (
 	"proxacloud/backend/internal/ansible"
 	"proxacloud/backend/internal/auth"
 	"proxacloud/backend/internal/backups"
+	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/cloudflaretunnels"
 	"proxacloud/backend/internal/clusters"
 	"proxacloud/backend/internal/config"
@@ -122,6 +123,14 @@ func NewApp() (*App, error) {
 	)
 	firewallService := firewalls.NewService(database, proxmoxService)
 	backupService := backups.NewService(database, secretStore)
+	billingService := billing.NewService(database, billing.Config{
+		PublicAppURL:        cfg.PublicAppURL,
+		StripeSecretKey:     cfg.StripeSecretKey,
+		StripeWebhookSecret: cfg.StripeWebhookSecret,
+		PayPalClientID:      cfg.PayPalClientID,
+		PayPalClientSecret:  cfg.PayPalClientSecret,
+		PayPalEnvironment:   cfg.PayPalEnvironment,
+	})
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
@@ -161,6 +170,7 @@ func NewApp() (*App, error) {
 	containerHandler := containers.NewHandler(containerService, userService)
 	firewallHandler := firewalls.NewHandler(firewallService)
 	backupHandler := backups.NewHandler(backupService)
+	billingHandler := billing.NewHandler(billingService, userService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
@@ -201,6 +211,7 @@ func NewApp() (*App, error) {
 		api.Post("/auth/register", userHandler.Register)
 		api.Get("/auth/verify-email", userHandler.VerifyEmail)
 		api.Post("/auth/verify-email", userHandler.VerifyEmail)
+		api.Post("/billing/webhooks/stripe", billingHandler.StripeWebhook)
 
 		api.Group(func(console chi.Router) {
 			console.Use(auth.QueryTokenMiddleware(tokens, "token"))
@@ -216,6 +227,15 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}", userHandler.UpdateUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Delete("/users/{id}", userHandler.DeleteUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users/{id}/status", userHandler.SetUserStatus)
+
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/billing/summary", billingHandler.Summary)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/billing/checkout", billingHandler.CreateCheckout)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/billing/paypal/{transactionID}/capture", billingHandler.CapturePayPal)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/billing/accounts", billingHandler.ListAccounts)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/billing/accounts/{accountID}/credits", billingHandler.AddCredit)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/billing/accounts/{accountID}/charge-current-month", billingHandler.ChargeCurrentMonth)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/billing/prices", billingHandler.ListPrices)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/billing/prices/{resourceType}", billingHandler.UpdatePrice)
 
 			protected.Get("/vpcs", networkHandler.ListVPCs)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vpcs", networkHandler.CreateVPC)

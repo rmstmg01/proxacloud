@@ -31,6 +31,11 @@ type Config struct {
 	SMTPUsername        string
 	SMTPPassword        string
 	SMTPFrom            string
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	PayPalClientID      string
+	PayPalClientSecret  string
+	PayPalEnvironment   string
 
 	DefaultNetworkName    string
 	DefaultNetworkCIDR    string
@@ -65,6 +70,11 @@ func Load() Config {
 		SMTPUsername:          getenv("SMTP_USERNAME", ""),
 		SMTPPassword:          getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:              getenv("SMTP_FROM", ""),
+		StripeSecretKey:       getenv("STRIPE_SECRET_KEY", ""),
+		StripeWebhookSecret:   getenv("STRIPE_WEBHOOK_SECRET", ""),
+		PayPalClientID:        getenv("PAYPAL_CLIENT_ID", ""),
+		PayPalClientSecret:    getenv("PAYPAL_CLIENT_SECRET", ""),
+		PayPalEnvironment:     getenv("PAYPAL_ENVIRONMENT", "sandbox"),
 		DefaultNetworkName:    getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
 		DefaultNetworkCIDR:    getenv("DEFAULT_NETWORK_CIDR", "192.168.8.0/24"),
 		DefaultNetworkGateway: getenv("DEFAULT_NETWORK_GATEWAY", "192.168.8.1"),
