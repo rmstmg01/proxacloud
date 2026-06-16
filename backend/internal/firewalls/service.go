@@ -14,6 +14,8 @@ var (
 	ErrGroupNotFound      = errors.New("firewall group not found")
 	ErrRuleNotFound       = errors.New("firewall rule not found")
 	ErrAttachmentNotFound = errors.New("firewall attachment not found")
+	ErrTargetNotFound     = errors.New("firewall target not found")
+	ErrTargetUnsupported  = errors.New("firewall target type is not supported")
 )
 
 type Service struct {
@@ -369,8 +371,13 @@ func (s *Service) DeleteAttachment(groupID, attachmentID int64) error {
 	}
 	output, err := s.clearAttachmentFirewall(group, attachment)
 	if err != nil {
-		_ = s.addEvent(groupID, "attachment.detach", "error", "Failed to remove firewall rules from detached target", err.Error())
-		return err
+		if isCleanupSkippableAttachmentError(err) {
+			output = fmt.Sprintf("%s:%d: target unavailable, skipped Proxmox cleanup", attachment.TargetType, attachment.TargetID)
+			_ = s.addEvent(groupID, "attachment.detach", "warning", "Detached stale firewall target", err.Error())
+		} else {
+			_ = s.addEvent(groupID, "attachment.detach", "error", "Failed to remove firewall rules from detached target", err.Error())
+			return err
+		}
 	}
 
 	res, err := s.db.Exec(`DELETE FROM firewall_attachments WHERE firewall_group_id = $1 AND id = $2`, groupID, attachmentID)
@@ -477,7 +484,7 @@ func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, ru
 		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, vm_name FROM vps_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &vmName)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return "", errors.New("vps target not found")
+				return "", targetNotFoundError(TargetVPS)
 			}
 			return "", fmt.Errorf("load vps target: %w", err)
 		}
@@ -492,7 +499,7 @@ func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, ru
 		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, container_name FROM container_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &containerName)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return "", errors.New("container target not found")
+				return "", targetNotFoundError(TargetContainer)
 			}
 			return "", fmt.Errorf("load container target: %w", err)
 		}
@@ -502,7 +509,7 @@ func (s *Service) applyAttachmentFirewall(group Group, attachment Attachment, ru
 		}
 		return s.proxmox.ApplyContainerFirewallByName(cred, nodeName, containerName, rules, managedPrefix)
 	default:
-		return "", fmt.Errorf("target type %q is not supported for apply", attachment.TargetType)
+		return "", targetUnsupportedError(attachment.TargetType, "apply")
 	}
 }
 
@@ -515,6 +522,10 @@ func (s *Service) clearGroupFirewall(group Group) ([]string, error) {
 	for _, attachment := range group.Attachments {
 		output, err := s.clearAttachmentFirewall(group, attachment)
 		if err != nil {
+			if isCleanupSkippableAttachmentError(err) {
+				outputs = append(outputs, fmt.Sprintf("%s:%d: target unavailable, skipped Proxmox cleanup", attachment.TargetType, attachment.TargetID))
+				continue
+			}
 			failures = append(failures, fmt.Sprintf("%s:%d: %v", attachment.TargetType, attachment.TargetID, err))
 			continue
 		}
@@ -535,7 +546,7 @@ func (s *Service) clearAttachmentFirewall(group Group, attachment Attachment) (s
 		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, vm_name FROM vps_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &vmName)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return "", errors.New("vps target not found")
+				return "", targetNotFoundError(TargetVPS)
 			}
 			return "", fmt.Errorf("load vps target: %w", err)
 		}
@@ -550,7 +561,7 @@ func (s *Service) clearAttachmentFirewall(group Group, attachment Attachment) (s
 		err := s.db.QueryRow(`SELECT proxmox_credential_id, proxmox_node_name, container_name FROM container_instances WHERE id = $1`, attachment.TargetID).Scan(&credentialID, &nodeName, &containerName)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return "", errors.New("container target not found")
+				return "", targetNotFoundError(TargetContainer)
 			}
 			return "", fmt.Errorf("load container target: %w", err)
 		}
@@ -560,8 +571,20 @@ func (s *Service) clearAttachmentFirewall(group Group, attachment Attachment) (s
 		}
 		return s.proxmox.ClearContainerFirewallByName(cred, nodeName, containerName, managedPrefix)
 	default:
-		return "", fmt.Errorf("target type %q is not supported for cleanup", attachment.TargetType)
+		return "", targetUnsupportedError(attachment.TargetType, "cleanup")
 	}
+}
+
+func targetNotFoundError(targetType string) error {
+	return fmt.Errorf("%s target not found: %w", targetType, ErrTargetNotFound)
+}
+
+func targetUnsupportedError(targetType string, operation string) error {
+	return fmt.Errorf("target type %q is not supported for %s: %w", targetType, operation, ErrTargetUnsupported)
+}
+
+func isCleanupSkippableAttachmentError(err error) bool {
+	return errors.Is(err, ErrTargetNotFound) || errors.Is(err, ErrTargetUnsupported)
 }
 
 func findAttachment(attachments []Attachment, attachmentID int64) (Attachment, error) {
