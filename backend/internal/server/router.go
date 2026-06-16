@@ -20,6 +20,7 @@ import (
 	"proxacloud/backend/internal/databaseclusters"
 	"proxacloud/backend/internal/db"
 	"proxacloud/backend/internal/firewalls"
+	"proxacloud/backend/internal/mailer"
 	"proxacloud/backend/internal/monitoring"
 	"proxacloud/backend/internal/networks"
 	"proxacloud/backend/internal/proxmox"
@@ -141,7 +142,14 @@ func NewApp() (*App, error) {
 	}
 
 	tokens := auth.NewTokenService(cfg.JWTSecret, cfg.JWTTTLMinutes)
-	userHandler := users.NewHandler(userService, tokens)
+	mailSender := mailer.NewSMTPMailer(mailer.SMTPConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		From:     cfg.SMTPFrom,
+	})
+	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
 	proxmoxHandler := proxmox.NewHandler(proxmoxService)
 	sshKeyHandler := sshkeys.NewHandler(sshKeyService)
@@ -190,6 +198,9 @@ func NewApp() (*App, error) {
 
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Post("/auth/login", userHandler.Login)
+		api.Post("/auth/register", userHandler.Register)
+		api.Get("/auth/verify-email", userHandler.VerifyEmail)
+		api.Post("/auth/verify-email", userHandler.VerifyEmail)
 
 		api.Group(func(console chi.Router) {
 			console.Use(auth.QueryTokenMiddleware(tokens, "token"))
@@ -203,6 +214,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/users", userHandler.ListUsers)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users", userHandler.CreateUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}", userHandler.UpdateUser)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users/{id}/status", userHandler.SetUserStatus)
 
 			protected.Get("/vpcs", networkHandler.ListVPCs)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vpcs", networkHandler.CreateVPC)
@@ -227,7 +239,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/storage", proxmoxHandler.ListStorageInventory)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/summary", backupHandler.Summary)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/backups/targets", backupHandler.ListTargets)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/backups/targets", backupHandler.CreateTarget)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/backups/targets", backupHandler.CreateTarget)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/backups/targets/{id}", backupHandler.DeleteTarget)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/ssh-keys", sshKeyHandler.List)
@@ -240,7 +252,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/topology/plan", topologyHandler.Plan)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters", databaseClusterHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/plan", databaseClusterHandler.Plan)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/provision", databaseClusterHandler.Provision)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/database-clusters/provision", databaseClusterHandler.Provision)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}", databaseClusterHandler.Get)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/database-clusters/{id}", databaseClusterHandler.Delete)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/runs", databaseClusterHandler.ListRuns)
@@ -249,7 +261,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/bootstrap", databaseClusterHandler.Bootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps", vpsHandler.List)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps", vpsHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/vps", vpsHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/cloud-init-images", vpsHandler.ListImages)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/cloud-init-images", vpsHandler.CreateImage)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/cloud-init-images/discover", vpsHandler.DiscoverImages)
@@ -264,7 +276,7 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/console", vpsHandler.Console)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/refresh-status", vpsHandler.RefreshStatus)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers", containerHandler.List)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers", containerHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/containers", containerHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/templates", containerHandler.ListTemplates)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/containers/templates", containerHandler.CreateTemplate)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/{id}", containerHandler.Get)
@@ -319,8 +331,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/restart", clusterHandler.RestartCluster)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/shutdown", clusterHandler.ShutdownCluster)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/redeploy", clusterHandler.RedeployCluster)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/provision", clusterHandler.Provision)
-			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/provision-and-bootstrap", clusterHandler.ProvisionAndBootstrap)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/clusters/provision", clusterHandler.Provision)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/clusters/provision-and-bootstrap", clusterHandler.ProvisionAndBootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/bootstrap", clusterHandler.Bootstrap)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/scale", clusterHandler.Scale)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/clusters/{id}/upgrade", clusterHandler.Upgrade)

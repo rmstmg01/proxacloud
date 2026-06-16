@@ -25,6 +25,12 @@ type Config struct {
 	JWTTTLMinutes       int
 	SuperAdminUsername  string
 	SuperAdminPassword  string
+	PublicAppURL        string
+	SMTPHost            string
+	SMTPPort            int
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPFrom            string
 
 	DefaultNetworkName    string
 	DefaultNetworkCIDR    string
@@ -53,6 +59,12 @@ func Load() Config {
 		JWTTTLMinutes:         getenvInt("JWT_TTL_MINUTES", 120),
 		SuperAdminUsername:    getenv("SUPER_ADMIN_USERNAME", "k8s-admin"),
 		SuperAdminPassword:    getenv("SUPER_ADMIN_PASSWORD", "ChangeMeNow!"),
+		PublicAppURL:          getenv("PUBLIC_APP_URL", "http://localhost:3000"),
+		SMTPHost:              getenv("SMTP_HOST", ""),
+		SMTPPort:              getenvInt("SMTP_PORT", 587),
+		SMTPUsername:          getenv("SMTP_USERNAME", ""),
+		SMTPPassword:          getenv("SMTP_PASSWORD", ""),
+		SMTPFrom:              getenv("SMTP_FROM", ""),
 		DefaultNetworkName:    getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
 		DefaultNetworkCIDR:    getenv("DEFAULT_NETWORK_CIDR", "192.168.8.0/24"),
 		DefaultNetworkGateway: getenv("DEFAULT_NETWORK_GATEWAY", "192.168.8.1"),

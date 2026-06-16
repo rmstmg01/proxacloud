@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
 import { Cloud } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -66,6 +67,9 @@ export function LoginPage() {
             <Button type="submit" loading={loading} className="w-full" size="lg">
               Sign in
             </Button>
+            <Link className="block text-center text-sm font-medium text-indigo-600 hover:text-indigo-700" to="/register">
+              Create a client account
+            </Link>
           </form>
         </div>
 

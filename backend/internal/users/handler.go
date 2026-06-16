@@ -5,20 +5,24 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/mailer"
 	"proxacloud/backend/internal/rbac"
 )
 
 type Handler struct {
-	users  *Service
-	tokens *auth.TokenService
+	users        *Service
+	tokens       *auth.TokenService
+	mailer       mailer.Sender
+	publicAppURL string
 }
 
-func NewHandler(users *Service, tokens *auth.TokenService) *Handler {
-	return &Handler{users: users, tokens: tokens}
+func NewHandler(users *Service, tokens *auth.TokenService, sender mailer.Sender, publicAppURL string) *Handler {
+	return &Handler{users: users, tokens: tokens, mailer: sender, publicAppURL: publicAppURL}
 }
 
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +50,68 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token": token,
 		"user":  user,
+	})
+}
+
+func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username      string `json:"username"`
+		FullName      string `json:"full_name"`
+		Email         string `json:"email"`
+		ContactNumber string `json:"contact_number"`
+		Password      string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+
+	result, err := h.users.RegisterClient(req.Username, req.Password, ProfileInput{
+		FullName:      req.FullName,
+		Email:         req.Email,
+		ContactNumber: req.ContactNumber,
+	}, h.publicAppURL)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUserExists):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	body := "Welcome to ProxaCloud.\n\nVerify your email address using this link:\n\n" + result.VerificationURL + "\n\nAfter verification, an admin must approve your account before you can create resources."
+	if h.mailer != nil {
+		_ = h.mailer.Send(result.User.Email, "Verify your ProxaCloud account", body)
+	}
+	payload := map[string]any{
+		"user":    result.User,
+		"message": "Registration submitted. Please verify your email, then wait for admin approval.",
+	}
+	if h.mailer == nil || !h.mailer.Enabled() {
+		payload["verification_url"] = result.VerificationURL
+	}
+	writeJSON(w, http.StatusCreated, payload)
+}
+
+func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		var req struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		token = strings.TrimSpace(req.Token)
+	}
+	user, err := h.users.VerifyEmail(token)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":    user,
+		"message": "Email verified. Your account is waiting for admin approval.",
 	})
 }
 
@@ -135,6 +201,29 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (h *Handler) SetUserStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+	var req struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	ctxUser, _ := auth.UserFromContext(r.Context())
+	user, err := h.users.SetStatus(id, Status(req.Status), ctxUser.Username, req.Reason)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, user)
 }
 

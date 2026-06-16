@@ -14,6 +14,17 @@ export function Layout({ children }: LayoutProps) {
   const userEmail = (user as { email?: string } | null)?.email?.trim();
   const roleLabel = user?.role?.replace(/_/g, ' ') ?? '';
   const avatarLetter = user?.username?.[0]?.toUpperCase() ?? '?';
+  const showAccountGate = user?.role === 'normal_user' && user.status !== 'active';
+  const statusMessage =
+    user?.status === 'email_pending'
+      ? 'Verify your email address before an admin can approve your account.'
+      : user?.status === 'pending_approval'
+        ? 'Your account is waiting for admin approval. Resource creation is blocked until approval.'
+        : user?.status === 'suspended'
+          ? 'Your account is suspended. Resource creation is blocked.'
+          : user?.status === 'rejected'
+            ? 'Your account registration was rejected. Contact support for help.'
+            : '';
 
   useEffect(() => {
     if (!accountOpen) return;
@@ -107,6 +118,11 @@ export function Layout({ children }: LayoutProps) {
             </div>
           </div>
         </header>
+        {showAccountGate && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:px-6">
+            {statusMessage}
+          </div>
+        )}
         <div className="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6">{children}</div>
       </main>
     </div>

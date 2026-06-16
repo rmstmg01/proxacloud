@@ -1,6 +1,7 @@
 // ─── Auth / Users ─────────────────────────────────────────────────────────────
 
 export type Role = 'normal_user' | 'super_user' | 'super_admin';
+export type UserStatus = 'email_pending' | 'pending_approval' | 'active' | 'suspended' | 'rejected';
 
 export interface User {
   id: number;
@@ -9,6 +10,8 @@ export interface User {
   email: string;
   contact_number: string;
   role: Role;
+  status: UserStatus;
+  email_verified_at?: string;
   created_at: string;
 }
 

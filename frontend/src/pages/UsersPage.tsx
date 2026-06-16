@@ -1,17 +1,26 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus } from 'lucide-react';
-import { getUsers, createUser, updateUser } from '../api/users';
+import { CheckCircle2, Pencil, Plus, XCircle } from 'lucide-react';
+import { getUsers, createUser, updateUser, setUserStatus } from '../api/users';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Select } from '../components/ui/Input';
-import { RoleBadge } from '../components/ui/Badge';
+import { Badge, RoleBadge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
-import type { User } from '../types';
+import type { User, UserStatus } from '../types';
+
+function UserStatusBadge({ status }: { status: UserStatus }) {
+  const variant =
+    status === 'active' ? 'success' :
+      status === 'pending_approval' ? 'warning' :
+        status === 'email_pending' ? 'info' :
+          status === 'rejected' || status === 'suspended' ? 'danger' : 'default';
+  return <Badge variant={variant}>{status.replace(/_/g, ' ')}</Badge>;
+}
 
 export function UsersPage() {
   const { user: me } = useAuth();
@@ -37,6 +46,11 @@ export function UsersPage() {
       }
       setEditing(null);
     },
+  });
+
+  const statusMut = useMutation({
+    mutationFn: ({ id, status, reason }: { id: number; status: UserStatus; reason?: string }) => setUserStatus(id, status, reason),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });
 
   const handleCreate = (e: FormEvent) => {
@@ -94,6 +108,7 @@ export function UsersPage() {
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Email Address</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Contact Number</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Role</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
                     <th className="px-6 py-3" />
                   </tr>
@@ -110,12 +125,35 @@ export function UsersPage() {
                       <td className="px-6 py-3 text-slate-600">{u.email || '-'}</td>
                       <td className="px-6 py-3 text-slate-600">{u.contact_number || '-'}</td>
                       <td className="px-6 py-3"><RoleBadge role={u.role} /></td>
+                      <td className="px-6 py-3"><UserStatusBadge status={u.status} /></td>
                       <td className="px-6 py-3 text-slate-500">{new Date(u.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-3 text-right">
                         {isAdmin && (
-                          <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
-                            <Pencil className="h-4 w-4" /> Edit
-                          </Button>
+                          <div className="flex justify-end gap-2">
+                            {u.status === 'pending_approval' && (
+                              <>
+                                <Button variant="success" size="sm" onClick={() => statusMut.mutate({ id: u.id, status: 'active' })} loading={statusMut.isPending && statusMut.variables?.id === u.id && statusMut.variables?.status === 'active'}>
+                                  <CheckCircle2 className="h-4 w-4" /> Approve
+                                </Button>
+                                <Button variant="danger" size="sm" onClick={() => statusMut.mutate({ id: u.id, status: 'rejected', reason: 'Rejected by admin' })} loading={statusMut.isPending && statusMut.variables?.id === u.id && statusMut.variables?.status === 'rejected'}>
+                                  <XCircle className="h-4 w-4" /> Reject
+                                </Button>
+                              </>
+                            )}
+                            {u.status === 'active' && u.role === 'normal_user' && (
+                              <Button variant="secondary" size="sm" onClick={() => statusMut.mutate({ id: u.id, status: 'suspended' })} loading={statusMut.isPending && statusMut.variables?.id === u.id && statusMut.variables?.status === 'suspended'}>
+                                Suspend
+                              </Button>
+                            )}
+                            {(u.status === 'suspended' || u.status === 'rejected') && (
+                              <Button variant="success" size="sm" onClick={() => statusMut.mutate({ id: u.id, status: 'active' })} loading={statusMut.isPending && statusMut.variables?.id === u.id && statusMut.variables?.status === 'active'}>
+                                Reactivate
+                              </Button>
+                            )}
+                            <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
+                              <Pencil className="h-4 w-4" /> Edit
+                            </Button>
+                          </div>
                         )}
                       </td>
                     </tr>
