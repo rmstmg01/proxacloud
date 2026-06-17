@@ -34,7 +34,7 @@
 - Bootstrap kubeadm cluster
 - Configure HA API VIP and CNI/Ingress add-ons
 
-## Step 6: Day-2 Operations (done)
+## Step 6: Cluster Maintenance (done)
 
 - Scale node pools
 - Upgrade Kubernetes version

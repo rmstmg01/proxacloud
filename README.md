@@ -175,7 +175,7 @@ Migration coverage currently includes:
 - network profiles
 - Proxmox credentials and inventory
 - Kubernetes cluster provisioning
-- day-2 cluster operations
+- cluster maintenance operations
 - observability and backup state
 - bootstrap configuration and SSH keys
 - MetalLB configuration
@@ -421,7 +421,7 @@ Long-running operations create:
 
 The cluster detail Runs tab polls the latest operation and its events. This is used for provisioning, bootstrap, auto-bootstrap, apply, and other cluster operations.
 
-## Day-2 Cluster Operations
+## Cluster Maintenance
 
 Cluster detail pages expose operational areas for:
 
@@ -445,6 +445,8 @@ Cluster detail pages expose operational areas for:
 - observability deployment/status
 - etcd snapshots and restore planning
 - health and recovery configuration
+
+The Cluster Maintenance tab is the final tab on the cluster detail page, after etcd Backup. It groups controlled lifecycle tasks such as scaling workers, upgrading Kubernetes, replacing unhealthy nodes, and rotating kubeconfig tokens.
 
 Some workflows directly apply manifests using the configured kubeconfig. Others generate manifests, scripts, plans, or helper commands for review before manual execution.
 

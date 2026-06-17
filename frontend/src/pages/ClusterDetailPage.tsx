@@ -78,7 +78,6 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'runs', label: 'Run History' },
   { key: 'bootstrap', label: 'Bootstrap' },
-  { key: 'day2', label: 'Day-2 Ops' },
   { key: 'metallb', label: 'MetalLB' },
   { key: 'storage', label: 'Storage' },
   { key: 'secrets', label: 'Secrets' },
@@ -88,6 +87,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'applications', label: 'Applications' },
   { key: 'observability', label: 'Observability' },
   { key: 'etcd', label: 'etcd Backup' },
+  { key: 'day2', label: 'Cluster Maintenance' },
 ];
 
 function ipv4ToInt(ip: string): number | null {
@@ -505,7 +505,7 @@ function BootstrapTab({ id }: { id: number }) {
   );
 }
 
-function Day2Tab({ id }: { id: number }) {
+function ClusterMaintenanceTab({ id }: { id: number }) {
   const qc = useQueryClient();
   const scaleMut = useMutation({ mutationFn: (n: number) => scaleCluster(id, n), onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster', id] }) });
   const upgradeMut = useMutation({ mutationFn: (v: string) => upgradeCluster(id, v), onSuccess: () => qc.invalidateQueries({ queryKey: ['cluster', id] }) });
@@ -3112,7 +3112,7 @@ export function ClusterDetailPage() {
       {activeTab === 'overview' && <OverviewTab id={clusterId} />}
       {activeTab === 'runs' && <RunsTab id={clusterId} />}
       {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
-      {activeTab === 'day2' && <Day2Tab id={clusterId} />}
+      {activeTab === 'day2' && <ClusterMaintenanceTab id={clusterId} />}
       {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
       {activeTab === 'storage' && <StorageTab id={clusterId} />}
       {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
