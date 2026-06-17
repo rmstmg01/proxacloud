@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Cpu, HardDrive, MemoryStick, Pencil, Plus, RefreshCw, ToggleLeft, ToggleRight } from 'lucide-react';
 import { getCredentials, createCredential, updateCredential, deleteCredential, discoverNodes, getNodes, toggleNode } from '../api/proxmox';
+import { getStorageInventory } from '../api/storage';
 import { useAuth } from '../context/AuthContext';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent } from '../components/ui/Card';
@@ -11,7 +12,7 @@ import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
-import type { ProxmoxNode, ProxmoxCredential } from '../types';
+import type { ProxmoxNode, ProxmoxCredential, NodeStorage } from '../types';
 
 type AuthMethod = 'token' | 'password';
 
@@ -36,6 +37,38 @@ function progressColor(p: number): string {
   return 'bg-emerald-500';
 }
 
+type NodeDiskUsage = {
+  total: number;
+  used: number;
+  available: number;
+  records: number;
+  fromStorageInventory: boolean;
+};
+
+function aggregateStorageByNode(items: NodeStorage[]): Record<string, NodeDiskUsage> {
+  return items.reduce<Record<string, NodeDiskUsage>>((acc, item) => {
+    const current = acc[item.node_name] ?? { total: 0, used: 0, available: 0, records: 0, fromStorageInventory: true };
+    current.total += item.total_bytes;
+    current.used += item.used_bytes;
+    current.available += item.available_bytes;
+    current.records += 1;
+    acc[item.node_name] = current;
+    return acc;
+  }, {});
+}
+
+function nodeDiskUsage(node: ProxmoxNode, storageByNode: Record<string, NodeDiskUsage>): NodeDiskUsage {
+  const fromInventory = storageByNode[node.node_name];
+  if (fromInventory && fromInventory.records > 0) return fromInventory;
+  return {
+    total: node.disk_total_bytes,
+    used: node.disk_used_bytes,
+    available: Math.max(0, node.disk_total_bytes - node.disk_used_bytes),
+    records: 0,
+    fromStorageInventory: false,
+  };
+}
+
 function UsageBar({ value, max, label }: { value: number; max: number; label?: string }) {
   const p = pct(value, max);
   return (
@@ -51,7 +84,7 @@ function UsageBar({ value, max, label }: { value: number; max: number; label?: s
   );
 }
 
-function SummaryCards({ nodes }: { nodes: ProxmoxNode[] }) {
+function SummaryCards({ nodes, storageByNode }: { nodes: ProxmoxNode[]; storageByNode: Record<string, NodeDiskUsage> }) {
   const onlineNodes = nodes.filter((n) => n.status === 'online');
 
   const totalCPU = onlineNodes.reduce((s, n) => s + n.cpu_count, 0);
@@ -60,8 +93,8 @@ function SummaryCards({ nodes }: { nodes: ProxmoxNode[] }) {
   const totalMem = onlineNodes.reduce((s, n) => s + n.memory_total_bytes, 0);
   const usedMem = onlineNodes.reduce((s, n) => s + n.memory_used_bytes, 0);
 
-  const totalDisk = onlineNodes.reduce((s, n) => s + n.disk_total_bytes, 0);
-  const usedDisk = onlineNodes.reduce((s, n) => s + n.disk_used_bytes, 0);
+  const totalDisk = onlineNodes.reduce((s, n) => s + nodeDiskUsage(n, storageByNode).total, 0);
+  const usedDisk = onlineNodes.reduce((s, n) => s + nodeDiskUsage(n, storageByNode).used, 0);
 
   const cards = [
     {
@@ -238,9 +271,20 @@ export function ProxmoxPage() {
     refetchIntervalInBackground: true,
   });
 
+  const { data: storageInventory, isLoading: loadingStorage, error: storageError } = useQuery({
+    queryKey: ['storage-inventory'],
+    queryFn: getStorageInventory,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
+  });
+  const storageByNode = aggregateStorageByNode(storageInventory?.items ?? []);
+
   const discoverMut = useMutation({
     mutationFn: discoverNodes,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+      qc.invalidateQueries({ queryKey: ['storage-inventory'] });
+    },
   });
 
   const deleteCredMut = useMutation({
@@ -248,13 +292,22 @@ export function ProxmoxPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['proxmox-credentials'] });
       qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+      qc.invalidateQueries({ queryKey: ['storage-inventory'] });
     },
   });
 
   const toggleMut = useMutation({
     mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => toggleNode(id, enabled),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+      qc.invalidateQueries({ queryKey: ['storage-inventory'] });
+    },
   });
+
+  const refreshInventory = () => {
+    qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+    qc.invalidateQueries({ queryKey: ['storage-inventory'] });
+  };
 
   return (
     <Layout>
@@ -359,11 +412,11 @@ export function ProxmoxPage() {
       <section>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-slate-800">Nodes</h2>
-          <Button variant="secondary" size="sm" onClick={() => qc.invalidateQueries({ queryKey: ['proxmox-nodes'] })}>
+          <Button variant="secondary" size="sm" onClick={refreshInventory}>
             <RefreshCw className="h-4 w-4" /> Refresh
           </Button>
         </div>
-        {loadingNodes ? (
+        {loadingNodes || loadingStorage ? (
           <PageSpinner />
         ) : !nodes || nodes.length === 0 ? (
           <Card>
@@ -376,7 +429,13 @@ export function ProxmoxPage() {
           </Card>
         ) : (
           <>
-            <SummaryCards nodes={nodes} />
+            {storageError && <ErrorMessage error={storageError} />}
+            {storageInventory?.errors?.length ? (
+              <Alert variant="warning" title="Some storage inventory could not be queried">
+                {storageInventory.errors.map((item) => `${item.node_name}: ${item.error}`).join(' | ')}
+              </Alert>
+            ) : null}
+            <SummaryCards nodes={nodes} storageByNode={storageByNode} />
             <Card>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -395,6 +454,7 @@ export function ProxmoxPage() {
                   <tbody className="divide-y divide-slate-100">
                     {nodes.map((n) => {
                       const cpuPct = Math.round(n.cpu_usage * 100);
+                      const disk = nodeDiskUsage(n, storageByNode);
                       return (
                         <tr key={n.id} className="hover:bg-slate-50">
                           <td className="px-6 py-3 font-medium text-slate-900">{n.node_name}</td>
@@ -409,10 +469,13 @@ export function ProxmoxPage() {
                             <UsageBar value={n.memory_used_bytes} max={n.memory_total_bytes} />
                           </td>
                           <td className="px-6 py-3">
-                            {n.disk_total_bytes > 0 ? (
+                            {disk.total > 0 ? (
                               <>
-                                <div className="text-slate-700 text-xs mb-1">{fmtBytes(n.disk_used_bytes)} / {fmtBytes(n.disk_total_bytes)}</div>
-                                <UsageBar value={n.disk_used_bytes} max={n.disk_total_bytes} />
+                                <div className="text-slate-700 text-xs mb-1">{fmtBytes(disk.used)} / {fmtBytes(disk.total)}</div>
+                                <UsageBar value={disk.used} max={disk.total} />
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                  {disk.fromStorageInventory ? `${disk.records} storage record${disk.records !== 1 ? 's' : ''}` : 'node disk fallback'}
+                                </p>
                               </>
                             ) : (
                               <span className="text-slate-400 text-xs">—</span>
@@ -450,7 +513,7 @@ export function ProxmoxPage() {
       </section>
 
       <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Nodes">
-        <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); }} />
+        <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); qc.invalidateQueries({ queryKey: ['storage-inventory'] }); }} />
       </Modal>
 
       <Modal open={!!editCred} onClose={() => setEditCred(null)} title="Edit Proxmox Credential">
@@ -461,6 +524,7 @@ export function ProxmoxPage() {
               setEditCred(null);
               qc.invalidateQueries({ queryKey: ['proxmox-credentials'] });
               qc.invalidateQueries({ queryKey: ['proxmox-nodes'] });
+              qc.invalidateQueries({ queryKey: ['storage-inventory'] });
             }}
           />
         )}
