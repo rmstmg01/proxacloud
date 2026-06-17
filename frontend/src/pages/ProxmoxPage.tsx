@@ -37,6 +37,18 @@ function progressColor(p: number): string {
   return 'bg-emerald-500';
 }
 
+function capacityLabel(stats: ConnectionStats): string {
+  return `CPU ${pct(stats.cpuUsed, stats.cpuTotal)}% · MEM ${pct(stats.memoryUsed, stats.memoryTotal)}% · DISK ${pct(stats.diskUsed, stats.diskTotal)}%`;
+}
+
+function capacityTitle(stats: ConnectionStats): string {
+  return [
+    `CPU: ${stats.cpuUsed.toFixed(1)} / ${stats.cpuTotal} cores`,
+    `Memory: ${fmtBytes(stats.memoryUsed)} / ${fmtBytes(stats.memoryTotal)}`,
+    `Storage: ${fmtBytes(stats.diskUsed)} / ${fmtBytes(stats.diskTotal)}`,
+  ].join('\n');
+}
+
 type NodeDiskUsage = {
   total: number;
   used: number;
@@ -389,7 +401,7 @@ export function ProxmoxPage() {
                         <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
                         <th className="text-left px-6 py-3 font-medium text-slate-600">Nodes</th>
                         <th className="text-left px-6 py-3 font-medium text-slate-600">Enabled</th>
-                        <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[260px]">Capacity</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Capacity</th>
                         <th className="text-left px-6 py-3 font-medium text-slate-600">Last Sync</th>
                         <th className="px-6 py-3 text-right font-medium text-slate-600">Actions</th>
                       </tr>
@@ -412,12 +424,8 @@ export function ProxmoxPage() {
                               <span className="font-medium text-slate-900">{stats.enabledNodes}</span>
                               <span className="text-xs text-slate-400"> / {stats.totalNodes}</span>
                             </td>
-                            <td className="px-6 py-3">
-                              <div className="grid grid-cols-1 gap-1.5">
-                                <UsageBar value={stats.cpuUsed} max={stats.cpuTotal} label={`${stats.cpuTotal} CPU cores`} />
-                                <UsageBar value={stats.memoryUsed} max={stats.memoryTotal} label={`${fmtBytes(stats.memoryUsed)} / ${fmtBytes(stats.memoryTotal)} memory`} />
-                                <UsageBar value={stats.diskUsed} max={stats.diskTotal} label={`${fmtBytes(stats.diskUsed)} / ${fmtBytes(stats.diskTotal)} storage`} />
-                              </div>
+                            <td className="px-6 py-3 text-slate-700 text-xs font-medium whitespace-nowrap" title={capacityTitle(stats)}>
+                              {capacityLabel(stats)}
                             </td>
                             <td className="px-6 py-3 text-slate-500 text-xs whitespace-nowrap">{stats.lastSync}</td>
                             <td className="px-6 py-3">
