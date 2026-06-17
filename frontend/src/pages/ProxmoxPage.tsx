@@ -69,6 +69,51 @@ function nodeDiskUsage(node: ProxmoxNode, storageByNode: Record<string, NodeDisk
   };
 }
 
+type ConnectionStats = {
+  nodes: ProxmoxNode[];
+  totalNodes: number;
+  onlineNodes: number;
+  enabledNodes: number;
+  status: string;
+  lastSync: string;
+  cpuUsed: number;
+  cpuTotal: number;
+  memoryUsed: number;
+  memoryTotal: number;
+  diskUsed: number;
+  diskTotal: number;
+};
+
+function connectionStats(credential: ProxmoxCredential, nodes: ProxmoxNode[], storageByNode: Record<string, NodeDiskUsage>): ConnectionStats {
+  const connectionNodes = nodes.filter((node) => node.credential_id === credential.id);
+  const onlineNodes = connectionNodes.filter((node) => node.status === 'online');
+  const enabledNodes = connectionNodes.filter((node) => node.enabled);
+  const latestSync = connectionNodes
+    .map((node) => new Date(node.last_discovered_at).getTime())
+    .filter((time) => Number.isFinite(time))
+    .sort((a, b) => b - a)[0];
+
+  let status = 'Needs discovery';
+  if (connectionNodes.length > 0 && onlineNodes.length === connectionNodes.length) status = 'Connected';
+  else if (onlineNodes.length > 0) status = 'Degraded';
+  else if (connectionNodes.length > 0) status = 'Unavailable';
+
+  return {
+    nodes: connectionNodes,
+    totalNodes: connectionNodes.length,
+    onlineNodes: onlineNodes.length,
+    enabledNodes: enabledNodes.length,
+    status,
+    lastSync: latestSync ? new Date(latestSync).toLocaleString() : 'Never',
+    cpuUsed: onlineNodes.reduce((sum, node) => sum + node.cpu_usage * node.cpu_count, 0),
+    cpuTotal: onlineNodes.reduce((sum, node) => sum + node.cpu_count, 0),
+    memoryUsed: onlineNodes.reduce((sum, node) => sum + node.memory_used_bytes, 0),
+    memoryTotal: onlineNodes.reduce((sum, node) => sum + node.memory_total_bytes, 0),
+    diskUsed: onlineNodes.reduce((sum, node) => sum + nodeDiskUsage(node, storageByNode).used, 0),
+    diskTotal: onlineNodes.reduce((sum, node) => sum + nodeDiskUsage(node, storageByNode).total, 0),
+  };
+}
+
 function UsageBar({ value, max, label }: { value: number; max: number; label?: string }) {
   const p = pct(value, max);
   return (
@@ -82,6 +127,13 @@ function UsageBar({ value, max, label }: { value: number; max: number; label?: s
       </div>
     </div>
   );
+}
+
+function ConnectionStatusBadge({ status }: { status: string }) {
+  if (status === 'Connected') return <Badge variant="success">Connected</Badge>;
+  if (status === 'Degraded') return <Badge variant="warning">Degraded</Badge>;
+  if (status === 'Unavailable') return <Badge variant="danger">Unavailable</Badge>;
+  return <Badge variant="info">Needs discovery</Badge>;
 }
 
 function SummaryCards({ nodes, storageByNode }: { nodes: ProxmoxNode[]; storageByNode: Record<string, NodeDiskUsage> }) {
@@ -192,7 +244,7 @@ function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
         <span className="text-sm text-slate-700">Skip TLS verification</span>
       </label>
       {mutation.error && <ErrorMessage error={mutation.error} />}
-      <Button type="submit" loading={mutation.isPending}>Add Nodes</Button>
+      <Button type="submit" loading={mutation.isPending}>Add Connection</Button>
     </form>
   );
 }
@@ -244,7 +296,7 @@ function EditCredentialForm({ credential, onSuccess }: { credential: ProxmoxCred
         <input type="checkbox" checked={form.insecure_tls} onChange={(e) => set('insecure_tls', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
         <span className="text-sm text-slate-700">Skip TLS verification</span>
       </label>
-      <p className="text-xs text-slate-500">For security, enter password/token secret again when editing credentials.</p>
+      <p className="text-xs text-slate-500">For security, enter password/token secret again when editing this connection.</p>
       {mutation.error && <ErrorMessage error={mutation.error} />}
       <Button type="submit" loading={mutation.isPending}>Save Changes</Button>
     </form>
@@ -313,13 +365,13 @@ export function ProxmoxPage() {
     <Layout>
       <PageHeader title="Nodes" description="Manage Proxmox node inventory and connection details" />
 
-      {/* Credentials (super_admin only) */}
+      {/* Connections (super_admin only) */}
       {isAdmin && (
         <section className="mb-8">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-slate-800">Credentials</h2>
+            <h2 className="text-lg font-semibold text-slate-800">Connections</h2>
             <Button onClick={() => setAddCredOpen(true)} size="sm">
-              <Plus className="h-4 w-4" /> Add Nodes
+              <Plus className="h-4 w-4" /> Add Connection
             </Button>
           </div>
           {loadingCreds ? (
@@ -327,71 +379,81 @@ export function ProxmoxPage() {
           ) : (
             <Card>
               {!credentials || credentials.length === 0 ? (
-                <CardContent><p className="text-sm text-slate-400">No credentials added yet.</p></CardContent>
+                <CardContent><p className="text-sm text-slate-400">No connections added yet.</p></CardContent>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-200 bg-slate-50">
                         <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
-                        <th className="text-left px-6 py-3 font-medium text-slate-600">Endpoint</th>
-                        <th className="text-left px-6 py-3 font-medium text-slate-600">Auth</th>
-                        <th className="text-left px-6 py-3 font-medium text-slate-600">TLS</th>
-                        <th className="px-6 py-3" />
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Nodes</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Enabled</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[260px]">Capacity</th>
+                        <th className="text-left px-6 py-3 font-medium text-slate-600">Last Sync</th>
+                        <th className="px-6 py-3 text-right font-medium text-slate-600">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {credentials.map((c) => (
-                        <tr key={c.id} className="hover:bg-slate-50">
-                          <td className="px-6 py-3 font-medium text-slate-900">{c.name}</td>
-                          <td className="px-6 py-3 text-slate-600 font-mono text-xs">{c.endpoint}</td>
-                          <td className="px-6 py-3">
-                            {c.api_token_id ? (
-                              <Badge variant="info">API Token</Badge>
-                            ) : (
-                              <Badge variant="default">Password</Badge>
-                            )}
-                          </td>
-                          <td className="px-6 py-3">
-                            {c.insecure_tls ? (
-                              <Badge variant="warning">insecure</Badge>
-                            ) : (
-                              <Badge variant="success">verified</Badge>
-                            )}
-                          </td>
-                          <td className="px-6 py-3">
-                            <div className="flex items-center gap-2 justify-end">
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => setEditCred(c)}
-                              >
-                                <Pencil className="h-3.5 w-3.5" /> Edit
-                              </Button>
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={() => discoverMut.mutate(c.id)}
-                                loading={discoverMut.isPending && discoverMut.variables === c.id}
-                              >
-                                <RefreshCw className="h-3.5 w-3.5" /> Discover Nodes
-                              </Button>
-                              <Button
-                                variant="danger"
-                                size="sm"
-                                onClick={() => {
-                                  if (window.confirm(`Delete credential \"${c.name}\"? This also removes its discovered nodes.`)) {
-                                    deleteCredMut.mutate(c.id);
-                                  }
-                                }}
-                                loading={deleteCredMut.isPending && deleteCredMut.variables === c.id}
-                              >
-                                Delete
-                              </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                      {credentials.map((c) => {
+                        const stats = connectionStats(c, nodes ?? [], storageByNode);
+                        return (
+                          <tr key={c.id} className="hover:bg-slate-50">
+                            <td className="px-6 py-3 font-medium text-slate-900">{c.name}</td>
+                            <td className="px-6 py-3"><ConnectionStatusBadge status={stats.status} /></td>
+                            <td className="px-6 py-3 text-slate-600">
+                              <span className="font-medium text-slate-900">{stats.totalNodes}</span>
+                              <span className="text-xs text-slate-400"> total</span>
+                              {stats.totalNodes > 0 && (
+                                <span className="block text-xs text-slate-500">{stats.onlineNodes} online</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-3 text-slate-600">
+                              <span className="font-medium text-slate-900">{stats.enabledNodes}</span>
+                              <span className="text-xs text-slate-400"> / {stats.totalNodes}</span>
+                            </td>
+                            <td className="px-6 py-3">
+                              <div className="grid grid-cols-1 gap-1.5">
+                                <UsageBar value={stats.cpuUsed} max={stats.cpuTotal} label={`${stats.cpuTotal} CPU cores`} />
+                                <UsageBar value={stats.memoryUsed} max={stats.memoryTotal} label={`${fmtBytes(stats.memoryUsed)} / ${fmtBytes(stats.memoryTotal)} memory`} />
+                                <UsageBar value={stats.diskUsed} max={stats.diskTotal} label={`${fmtBytes(stats.diskUsed)} / ${fmtBytes(stats.diskTotal)} storage`} />
+                              </div>
+                            </td>
+                            <td className="px-6 py-3 text-slate-500 text-xs whitespace-nowrap">{stats.lastSync}</td>
+                            <td className="px-6 py-3">
+                              <div className="flex items-center gap-2 justify-end">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => setEditCred(c)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" /> Edit
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => discoverMut.mutate(c.id)}
+                                  loading={discoverMut.isPending && discoverMut.variables === c.id}
+                                >
+                                  <RefreshCw className="h-3.5 w-3.5" /> Discover Nodes
+                                </Button>
+                                <Button
+                                  variant="danger"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (window.confirm(`Delete connection \"${c.name}\"? This also removes its discovered nodes.`)) {
+                                      deleteCredMut.mutate(c.id);
+                                    }
+                                  }}
+                                  loading={deleteCredMut.isPending && deleteCredMut.variables === c.id}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -423,7 +485,7 @@ export function ProxmoxPage() {
             <CardContent>
               <p className="text-sm text-slate-400">
                 No nodes discovered yet.
-                {isAdmin ? ' Add credentials and click "Discover Nodes".' : ' Ask an admin to discover nodes.'}
+                {isAdmin ? ' Add a connection and click "Discover Nodes".' : ' Ask an admin to discover nodes.'}
               </p>
             </CardContent>
           </Card>
@@ -442,7 +504,7 @@ export function ProxmoxPage() {
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50">
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Node</th>
-                      <th className="text-left px-6 py-3 font-medium text-slate-600">Credential</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Connection</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[160px]">CPU</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600 min-w-[180px]">Memory</th>
@@ -512,11 +574,11 @@ export function ProxmoxPage() {
         )}
       </section>
 
-      <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Nodes">
+      <Modal open={addCredOpen} onClose={() => setAddCredOpen(false)} title="Add Connection">
         <AddCredentialForm onSuccess={() => { setAddCredOpen(false); qc.invalidateQueries({ queryKey: ['proxmox-credentials'] }); qc.invalidateQueries({ queryKey: ['storage-inventory'] }); }} />
       </Modal>
 
-      <Modal open={!!editCred} onClose={() => setEditCred(null)} title="Edit Proxmox Credential">
+      <Modal open={!!editCred} onClose={() => setEditCred(null)} title="Edit Connection">
         {editCred && (
           <EditCredentialForm
             credential={editCred}
