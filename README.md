@@ -4,6 +4,8 @@ ProxaCloud is a private-cloud control plane for Proxmox-based infrastructure. It
 
 The project is designed for private-cloud operators, small service providers, platform teams, labs, and homelab environments that own Proxmox capacity and want a higher-level self-service and operations layer.
 
+![ProxaCloud dashboard](docs/assets/screenshots/dashboard.jpg)
+
 ## What ProxaCloud Does
 
 ProxaCloud connects these layers:
