@@ -102,31 +102,6 @@ Core capabilities:
 `-- README.md
 ```
 
-## Documentation Screenshots
-
-Use real screenshots in the README by storing images in a versioned documentation assets folder, for example:
-
-```text
-docs/assets/screenshots/dashboard.png
-docs/assets/screenshots/cluster-detail.png
-docs/assets/screenshots/backups.png
-```
-
-Then reference them with relative Markdown links:
-
-```md
-![ProxaCloud dashboard](docs/assets/screenshots/dashboard.png)
-```
-
-Recommended screenshot guidelines:
-
-- Capture the real deployed UI, not mockups.
-- Use a clean demo environment with non-sensitive data.
-- Hide or redact customer names, tokens, IPs, emails, credentials, and billing identifiers.
-- Prefer PNG for UI screenshots.
-- Use consistent browser width, such as 1440px desktop.
-- Keep screenshots updated when navigation, labels, or workflows change.
-
 ## Architecture
 
 ### Runtime Diagram
