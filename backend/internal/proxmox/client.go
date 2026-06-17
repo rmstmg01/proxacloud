@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -153,6 +154,106 @@ func (c *Client) ListStorageContent(cred Credential, proxmoxNodeName string, sto
 	return payload.Data, nil
 }
 
+func (c *Client) GetTaskStatus(cred Credential, proxmoxNodeName string, upid string) (TaskStatus, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	upid = strings.TrimSpace(upid)
+	if proxmoxNodeName == "" {
+		return TaskStatus{}, errors.New("proxmox node name is required")
+	}
+	if upid == "" {
+		return TaskStatus{}, errors.New("proxmox task id is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return TaskStatus{}, fmt.Errorf("parse endpoint: %w", err)
+	}
+
+	httpClient := c.httpClient(cred)
+	req, err := http.NewRequest(http.MethodGet, proxmoxAPIURL(base, "nodes", proxmoxNodeName, "tasks", upid, "status"), nil)
+	if err != nil {
+		return TaskStatus{}, fmt.Errorf("create task status request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return TaskStatus{}, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return TaskStatus{}, fmt.Errorf("request proxmox task status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return TaskStatus{}, fmt.Errorf("proxmox task status api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data TaskStatus `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return TaskStatus{}, fmt.Errorf("decode proxmox task status response: %w", err)
+	}
+	if payload.Data.UPID == "" {
+		payload.Data.UPID = upid
+	}
+	return payload.Data, nil
+}
+
+func (c *Client) DownloadStorageContent(cred Credential, proxmoxNodeName string, storageID string, volID string, destinationPath string) error {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	storageID = strings.TrimSpace(storageID)
+	volID = strings.TrimSpace(volID)
+	destinationPath = strings.TrimSpace(destinationPath)
+	if proxmoxNodeName == "" {
+		return errors.New("proxmox node name is required")
+	}
+	if storageID == "" {
+		return errors.New("storage id is required")
+	}
+	if volID == "" {
+		return errors.New("storage volume id is required")
+	}
+	if destinationPath == "" {
+		return errors.New("destination path is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse endpoint: %w", err)
+	}
+
+	httpClient := c.httpClient(cred)
+	req, err := http.NewRequest(http.MethodGet, proxmoxAPIURL(base, "nodes", proxmoxNodeName, "storage", storageID, "content", volID), nil)
+	if err != nil {
+		return fmt.Errorf("create storage download request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox storage download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox storage download api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	out, err := os.Create(destinationPath)
+	if err != nil {
+		return fmt.Errorf("create downloaded backup artifact: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("write downloaded backup artifact: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) ListNodeStorage(cred Credential, proxmoxNodeName string) ([]NodeStorage, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	if proxmoxNodeName == "" {
@@ -223,6 +324,20 @@ func (c *Client) ListNodeStorage(cred Credential, proxmoxNodeName string) ([]Nod
 		})
 	}
 	return out, nil
+}
+
+func proxmoxAPIURL(base *url.URL, segments ...string) string {
+	reqURL := *base
+	prefix := strings.TrimRight(reqURL.EscapedPath(), "/")
+	escaped := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		escaped = append(escaped, url.PathEscape(segment))
+	}
+	reqURL.Path = ""
+	reqURL.RawPath = ""
+	reqURL.RawQuery = ""
+	reqURL.Fragment = ""
+	return reqURL.String() + prefix + "/api2/json/" + strings.Join(escaped, "/")
 }
 
 func (c *Client) ControlVMByName(cred Credential, proxmoxNodeName string, vmName string, action string) (string, error) {

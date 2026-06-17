@@ -54,6 +54,12 @@ type StorageContent struct {
 	Size    int64  `json:"size"`
 }
 
+type TaskStatus struct {
+	UPID       string `json:"upid"`
+	Status     string `json:"status"`
+	ExitStatus string `json:"exitstatus"`
+}
+
 type NodeStorage struct {
 	CredentialID     int64  `json:"credential_id"`
 	CredentialName   string `json:"credential_name,omitempty"`
@@ -311,6 +317,14 @@ func (s *Service) ProxyVMConsoleByName(cred Credential, proxmoxNodeName string, 
 
 func (s *Service) ListStorageContent(cred Credential, proxmoxNodeName string, storageID string, content string) ([]StorageContent, error) {
 	return s.client.ListStorageContent(cred, proxmoxNodeName, storageID, content)
+}
+
+func (s *Service) GetTaskStatus(cred Credential, proxmoxNodeName string, upid string) (TaskStatus, error) {
+	return s.client.GetTaskStatus(cred, proxmoxNodeName, upid)
+}
+
+func (s *Service) DownloadStorageContent(cred Credential, proxmoxNodeName string, storageID string, volID string, destinationPath string) error {
+	return s.client.DownloadStorageContent(cred, proxmoxNodeName, storageID, volID, destinationPath)
 }
 
 func (s *Service) ListNodeStorage(cred Credential, node Node) ([]NodeStorage, error) {

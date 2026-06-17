@@ -164,6 +164,14 @@ export interface BackupJob {
   status: string;
   proxmox_node_name: string;
   proxmox_task_id: string;
+  staging_storage_id: string;
+  artifact_volid: string;
+  artifact_path: string;
+  upload_method: string;
+  upload_status: string;
+  remote_path: string;
+  upload_output: string;
+  upload_error: string;
   output: string;
   error: string;
   created_at: string;

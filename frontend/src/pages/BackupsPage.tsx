@@ -255,7 +255,7 @@ export function BackupsPage() {
           </div>
 
           <Alert variant="info" title="Backup execution foundation">
-            Backup Now starts a Proxmox vzdump task for VPS and container sources. External targets use a Proxmox staging storage ID first; upload to the external provider is recorded as pending until the upload runner is connected.
+            Backup Now starts a Proxmox vzdump task for VPS and container sources. Hetzner Storage Box targets use a Proxmox staging storage ID first, then upload the finished artifact with Restic by default.
           </Alert>
 
           {showJobForm && (
@@ -307,7 +307,7 @@ export function BackupsPage() {
                         onChange={(e) => setJobForm({ ...jobForm, staging_storage_id: e.target.value })}
                         required
                         placeholder="local"
-                        helperText="Proxmox writes the backup here before the external upload runner moves it."
+                        helperText="Proxmox writes the backup here before Restic or rsync uploads it."
                       />
                     )}
                   </div>
@@ -318,7 +318,7 @@ export function BackupsPage() {
                   )}
                   {requiresStagingStorage && (
                     <Alert variant="warning" title="External upload pending">
-                      This starts the Proxmox backup to staging storage and records the selected external target. The artifact upload phase still needs the upload runner.
+                      This starts the Proxmox backup to staging storage. Hetzner targets upload automatically after vzdump completes.
                     </Alert>
                   )}
                   {startJobMut.error && <ErrorMessage error={startJobMut.error} />}
@@ -353,7 +353,13 @@ export function BackupsPage() {
                       <Input label="Prefix" value={form.prefix} onChange={(e) => setField('prefix', e.target.value)} placeholder="proxacloud/" />
                       <Input label="Access key" value={form.access_key} onChange={(e) => setField('access_key', e.target.value)} />
                       <Input label="Secret key" type="password" value={form.secret_key} onChange={(e) => setField('secret_key', e.target.value)} />
-                      <Input label="Restic password" type="password" value={form.restic_password} onChange={(e) => setField('restic_password', e.target.value)} />
+                      <Input
+                        label="Restic password"
+                        type="password"
+                        value={form.restic_password}
+                        onChange={(e) => setField('restic_password', e.target.value)}
+                        required={form.backup_mode === 'restic'}
+                      />
                       <label className="mt-7 flex items-center gap-3 text-sm text-slate-700">
                         <input type="checkbox" checked={form.path_style} onChange={(e) => setField('path_style', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
                         Path-style endpoint
@@ -373,7 +379,6 @@ export function BackupsPage() {
                       </Select>
                       <Select label="Backup mode" value={form.backup_mode} onChange={(e) => setField('backup_mode', e.target.value)}>
                         <option value="restic">Restic</option>
-                        <option value="borg">Borg</option>
                         <option value="rsync">Rsync</option>
                       </Select>
                       {form.auth_method === 'password' ? (
@@ -482,6 +487,7 @@ export function BackupsPage() {
                     <th className="px-6 py-3 text-left font-medium text-slate-600">Target</th>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">Mode</th>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">Task</th>
+                    <th className="px-6 py-3 text-left font-medium text-slate-600">Upload</th>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">Status</th>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">Created</th>
                   </tr>
@@ -498,15 +504,27 @@ export function BackupsPage() {
                       <td className="max-w-xs truncate px-6 py-3 text-slate-600" title={job.proxmox_task_id || job.error}>
                         {job.proxmox_task_id || job.error || '-'}
                       </td>
+                      <td className="max-w-xs px-6 py-3 text-slate-600" title={job.upload_error || job.remote_path || job.artifact_volid}>
+                        {job.upload_method ? (
+                          <div className="space-y-1">
+                            <Badge variant={job.upload_status === 'completed' ? 'success' : job.upload_status === 'failed' ? 'danger' : 'warning'}>
+                              {job.upload_method} {job.upload_status}
+                            </Badge>
+                            <p className="truncate text-xs text-slate-500">{job.artifact_volid || job.remote_path || '-'}</p>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">-</span>
+                        )}
+                      </td>
                       <td className="px-6 py-3">
-                        <Badge variant={job.status === 'running' ? 'warning' : job.status === 'failed' ? 'danger' : 'success'}>{job.status}</Badge>
+                        <Badge variant={job.status === 'running' || job.status === 'uploading' ? 'warning' : job.status === 'failed' ? 'danger' : 'success'}>{job.status}</Badge>
                       </td>
                       <td className="px-6 py-3 text-slate-500">{new Date(job.created_at).toLocaleString()}</td>
                     </tr>
                   ))}
                   {jobs.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-sm text-slate-500">No backup jobs started yet.</td>
+                      <td colSpan={7} className="px-6 py-8 text-center text-sm text-slate-500">No backup jobs started yet.</td>
                     </tr>
                   )}
                 </tbody>
@@ -516,7 +534,7 @@ export function BackupsPage() {
 
           {externalTargets.length > 0 && (
             <Alert variant="success">
-              External targets are ready for the next backup runner step: Proxmox artifact creation, Restic repository upload, retention pruning, and restore validation.
+              Hetzner targets now upload finished Proxmox artifacts with Restic by default. Rsync remains available for direct file sync targets.
             </Alert>
           )}
         </div>

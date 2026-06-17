@@ -61,20 +61,28 @@ const (
 )
 
 type Job struct {
-	ID              int64      `json:"id"`
-	TargetID        int64      `json:"target_id"`
-	TargetName      string     `json:"target_name,omitempty"`
-	SourceType      SourceType `json:"source_type"`
-	SourceID        int64      `json:"source_id"`
-	SourceName      string     `json:"source_name"`
-	Mode            string     `json:"mode"`
-	Status          string     `json:"status"`
-	ProxmoxNodeName string     `json:"proxmox_node_name"`
-	ProxmoxTaskID   string     `json:"proxmox_task_id"`
-	Output          string     `json:"output"`
-	Error           string     `json:"error"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	TargetID         int64      `json:"target_id"`
+	TargetName       string     `json:"target_name,omitempty"`
+	SourceType       SourceType `json:"source_type"`
+	SourceID         int64      `json:"source_id"`
+	SourceName       string     `json:"source_name"`
+	Mode             string     `json:"mode"`
+	Status           string     `json:"status"`
+	ProxmoxNodeName  string     `json:"proxmox_node_name"`
+	ProxmoxTaskID    string     `json:"proxmox_task_id"`
+	StagingStorageID string     `json:"staging_storage_id"`
+	ArtifactVolID    string     `json:"artifact_volid"`
+	ArtifactPath     string     `json:"artifact_path"`
+	UploadMethod     string     `json:"upload_method"`
+	UploadStatus     string     `json:"upload_status"`
+	RemotePath       string     `json:"remote_path"`
+	UploadOutput     string     `json:"upload_output"`
+	UploadError      string     `json:"upload_error"`
+	Output           string     `json:"output"`
+	Error            string     `json:"error"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type JobInput struct {

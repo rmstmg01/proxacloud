@@ -6,7 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/secrets"
@@ -22,6 +28,9 @@ type ProxmoxBackupper interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	BackupVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, storageID string, mode string) (string, error)
 	BackupContainerByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, storageID string, mode string) (string, error)
+	GetTaskStatus(cred proxmox.Credential, proxmoxNodeName string, upid string) (proxmox.TaskStatus, error)
+	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
+	DownloadStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, volID string, destinationPath string) error
 }
 
 func NewService(db *sql.DB, secretStore secrets.Store, proxmoxBackupper ProxmoxBackupper) *Service {
@@ -99,7 +108,9 @@ func (s *Service) Summary() (Summary, error) {
 func (s *Service) ListJobs() ([]Job, error) {
 	rows, err := s.db.Query(
 		`SELECT j.id, j.target_id, COALESCE(t.name, ''), j.source_type, j.source_id, j.source_name,
-		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.output, j.error, j.created_at, j.updated_at
+		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.staging_storage_id,
+		        j.artifact_volid, j.artifact_path, j.upload_method, j.upload_status, j.remote_path,
+		        j.upload_output, j.upload_error, j.output, j.error, j.created_at, j.updated_at
 		   FROM backup_jobs j
 		   LEFT JOIN backup_targets t ON t.id = j.target_id
 		  ORDER BY j.created_at DESC
@@ -124,6 +135,14 @@ func (s *Service) ListJobs() ([]Job, error) {
 			&job.Status,
 			&job.ProxmoxNodeName,
 			&job.ProxmoxTaskID,
+			&job.StagingStorageID,
+			&job.ArtifactVolID,
+			&job.ArtifactPath,
+			&job.UploadMethod,
+			&job.UploadStatus,
+			&job.RemotePath,
+			&job.UploadOutput,
+			&job.UploadError,
 			&job.Output,
 			&job.Error,
 			&job.CreatedAt,
@@ -173,7 +192,8 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 	if err != nil {
 		return Job{}, err
 	}
-	job, err := s.insertJob(target.ID, in.SourceType, in.SourceID, source.name, mode, source.nodeName)
+	uploadMethod := backupUploadMethod(target)
+	job, err := s.insertJob(target.ID, in.SourceType, in.SourceID, source.name, mode, source.nodeName, storageID, uploadMethod)
 	if err != nil {
 		return Job{}, err
 	}
@@ -200,11 +220,16 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 		return s.getJob(job.ID)
 	}
 	output := fmt.Sprintf("Proxmox vzdump started for %s %s on node %s using storage %s", in.SourceType, source.name, source.nodeName, storageID)
-	if target.Type != TargetProxmoxStorage {
-		output += fmt.Sprintf("; external upload to %s target %q is pending the upload runner phase", target.Type, target.Name)
+	if target.Type == TargetHetzner {
+		output += fmt.Sprintf("; %s upload to %s target %q will start after vzdump completes", uploadMethod, target.Type, target.Name)
+	} else if target.Type != TargetProxmoxStorage {
+		output += fmt.Sprintf("; external upload to %s target %q is pending an upload runner", target.Type, target.Name)
 	}
 	if err := s.finishJob(job.ID, "running", taskID, output, ""); err != nil {
 		return Job{}, err
+	}
+	if target.Type == TargetHetzner {
+		go s.runExternalUpload(job.ID, target.ID, source.credentialID)
 	}
 	return s.getJob(job.ID)
 }
@@ -411,19 +436,29 @@ func (s *Service) resolveBackupSource(sourceType SourceType, sourceID int64) (ba
 	}
 }
 
-func (s *Service) insertJob(targetID int64, sourceType SourceType, sourceID int64, sourceName string, mode string, nodeName string) (Job, error) {
+func (s *Service) insertJob(targetID int64, sourceType SourceType, sourceID int64, sourceName string, mode string, nodeName string, stagingStorageID string, uploadMethod string) (Job, error) {
 	var job Job
+	uploadStatus := "not_required"
+	if strings.TrimSpace(uploadMethod) != "" {
+		uploadStatus = "pending"
+	}
 	err := s.db.QueryRow(
-		`INSERT INTO backup_jobs (target_id, source_type, source_id, source_name, mode, status, proxmox_node_name)
-		 VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-		 RETURNING id, target_id, source_type, source_id, source_name, mode, status, proxmox_node_name, proxmox_task_id, output, error, created_at, updated_at`,
+		`INSERT INTO backup_jobs
+		 (target_id, source_type, source_id, source_name, mode, status, proxmox_node_name, staging_storage_id, upload_method, upload_status)
+		 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+		 RETURNING id, target_id, source_type, source_id, source_name, mode, status, proxmox_node_name,
+		           proxmox_task_id, staging_storage_id, artifact_volid, artifact_path, upload_method,
+		           upload_status, remote_path, upload_output, upload_error, output, error, created_at, updated_at`,
 		targetID,
 		string(sourceType),
 		sourceID,
 		strings.TrimSpace(sourceName),
 		mode,
 		strings.TrimSpace(nodeName),
-	).Scan(&job.ID, &job.TargetID, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+		strings.TrimSpace(stagingStorageID),
+		strings.TrimSpace(uploadMethod),
+		uploadStatus,
+	).Scan(&job.ID, &job.TargetID, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
 		return Job{}, fmt.Errorf("insert backup job: %w", err)
 	}
@@ -448,12 +483,14 @@ func (s *Service) getJob(id int64) (Job, error) {
 	var job Job
 	err := s.db.QueryRow(
 		`SELECT j.id, j.target_id, COALESCE(t.name, ''), j.source_type, j.source_id, j.source_name,
-		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.output, j.error, j.created_at, j.updated_at
+		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.staging_storage_id,
+		        j.artifact_volid, j.artifact_path, j.upload_method, j.upload_status, j.remote_path,
+		        j.upload_output, j.upload_error, j.output, j.error, j.created_at, j.updated_at
 		   FROM backup_jobs j
 		   LEFT JOIN backup_targets t ON t.id = j.target_id
 		  WHERE j.id = $1`,
 		id,
-	).Scan(&job.ID, &job.TargetID, &job.TargetName, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	).Scan(&job.ID, &job.TargetID, &job.TargetName, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, errors.New("backup job not found")
 	}
@@ -461,6 +498,414 @@ func (s *Service) getJob(id int64) (Job, error) {
 		return Job{}, fmt.Errorf("query backup job: %w", err)
 	}
 	return job, nil
+}
+
+func (s *Service) runExternalUpload(jobID int64, targetID int64, credentialID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Hour)
+	defer cancel()
+
+	job, err := s.getJob(jobID)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "load backup job", err)
+		return
+	}
+	target, err := s.getTarget(targetID)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "load backup target", err)
+		return
+	}
+	cred, err := s.proxmox.GetCredentialWithSecrets(credentialID)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "load proxmox credential", err)
+		return
+	}
+
+	taskStatus, err := s.waitForBackupTask(ctx, cred, job)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "wait for proxmox backup task", err)
+		return
+	}
+	if strings.TrimSpace(taskStatus.ExitStatus) != "OK" {
+		_ = s.finishJob(jobID, "failed", job.ProxmoxTaskID, job.Output, "proxmox backup task finished with exit status "+taskStatus.ExitStatus)
+		_ = s.updateUpload(jobID, "failed", "", "", "proxmox backup task failed: "+taskStatus.ExitStatus, "")
+		return
+	}
+
+	vmid, err := vmIDFromUPID(job.ProxmoxTaskID)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "parse proxmox task id", err)
+		return
+	}
+	artifact, err := s.findBackupArtifact(cred, job, vmid)
+	if err != nil {
+		_ = s.markUploadFailed(jobID, "find proxmox backup artifact", err)
+		return
+	}
+
+	workDir := filepath.Join("backups", "runs", fmt.Sprintf("job-%d", jobID))
+	if err := os.MkdirAll(workDir, 0700); err != nil {
+		_ = s.markUploadFailed(jobID, "prepare backup work directory", err)
+		return
+	}
+	localPath := filepath.Join(workDir, storageFilename(artifact.VolID))
+	if err := s.proxmox.DownloadStorageContent(cred, job.ProxmoxNodeName, job.StagingStorageID, artifact.VolID, localPath); err != nil {
+		_ = s.markUploadFailed(jobID, "download proxmox backup artifact", err)
+		return
+	}
+	_ = s.updateArtifact(jobID, artifact.VolID, localPath)
+
+	method := backupUploadMethod(target)
+	_ = s.updateUpload(jobID, "running", "", "", "", "")
+	var remotePath, output string
+	switch method {
+	case "rsync":
+		remotePath, output, err = s.uploadWithRsync(ctx, target, localPath)
+	default:
+		remotePath, output, err = s.uploadWithRestic(ctx, target, localPath, job)
+	}
+	if err != nil {
+		_ = s.updateUpload(jobID, "failed", remotePath, output, err.Error(), method)
+		_ = s.finishJob(jobID, "failed", job.ProxmoxTaskID, job.Output, err.Error())
+		return
+	}
+	output = truncateOutput(output)
+	_ = s.updateUpload(jobID, "completed", remotePath, output, "", method)
+	_ = s.finishJob(jobID, "completed", job.ProxmoxTaskID, job.Output+"; external upload completed", "")
+}
+
+func (s *Service) waitForBackupTask(ctx context.Context, cred proxmox.Credential, job Job) (proxmox.TaskStatus, error) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		status, err := s.proxmox.GetTaskStatus(cred, job.ProxmoxNodeName, job.ProxmoxTaskID)
+		if err != nil {
+			return proxmox.TaskStatus{}, err
+		}
+		if strings.EqualFold(status.Status, "stopped") {
+			return status, nil
+		}
+		select {
+		case <-ctx.Done():
+			return proxmox.TaskStatus{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) findBackupArtifact(cred proxmox.Credential, job Job, vmid string) (proxmox.StorageContent, error) {
+	items, err := s.proxmox.ListStorageContent(cred, job.ProxmoxNodeName, job.StagingStorageID, "backup")
+	if err != nil {
+		return proxmox.StorageContent{}, err
+	}
+	prefix := "vzdump-qemu-" + vmid + "-"
+	if job.SourceType == SourceContainer {
+		prefix = "vzdump-lxc-" + vmid + "-"
+	}
+	matches := make([]proxmox.StorageContent, 0)
+	for _, item := range items {
+		name := storageFilename(item.VolID)
+		if strings.HasPrefix(name, prefix) {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return proxmox.StorageContent{}, fmt.Errorf("no backup artifact matching %s found in storage %s", prefix, job.StagingStorageID)
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return storageFilename(matches[i].VolID) > storageFilename(matches[j].VolID)
+	})
+	return matches[0], nil
+}
+
+func (s *Service) uploadWithRestic(ctx context.Context, target Target, localPath string, job Job) (string, string, error) {
+	if _, err := exec.LookPath("restic"); err != nil {
+		return "", "", errors.New("restic binary is not installed in the backend runtime")
+	}
+	auth, err := s.hetznerAuth(ctx, target)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(auth.resticPassword) == "" {
+		return "", "", errors.New("restic_password is required for restic backup targets")
+	}
+	cleanup, err := auth.prepareSSHCommand()
+	if err != nil {
+		return "", "", err
+	}
+	defer cleanup()
+
+	repo := fmt.Sprintf("sftp:%s@%s:%s", auth.username, auth.host, auth.basePath)
+	env := append(os.Environ(), "RESTIC_REPOSITORY="+repo, "RESTIC_PASSWORD="+auth.resticPassword)
+	if auth.password != "" {
+		env = append(env, "SSHPASS="+auth.password)
+	}
+	args := []string{}
+	if auth.sftpCommand != "" {
+		args = append(args, "-o", "sftp.command="+auth.sftpCommand)
+	}
+
+	var combined strings.Builder
+	if out, err := runCommand(ctx, env, "restic", append(args, "snapshots")...); err != nil {
+		initOut, initErr := runCommand(ctx, env, "restic", append(args, "init")...)
+		combined.WriteString(initOut)
+		if initErr != nil {
+			return repo, combined.String(), fmt.Errorf("initialize restic repository: %w", initErr)
+		}
+	} else {
+		combined.WriteString(out)
+	}
+
+	backupArgs := append(args,
+		"backup", localPath,
+		"--host", strings.TrimSpace(job.ProxmoxNodeName),
+		"--tag", "proxacloud",
+		"--tag", string(job.SourceType),
+		"--tag", fmt.Sprintf("source-%d", job.SourceID),
+	)
+	out, err := runCommand(ctx, env, "restic", backupArgs...)
+	combined.WriteString(out)
+	if err != nil {
+		return repo, combined.String(), fmt.Errorf("run restic backup: %w", err)
+	}
+	return repo, combined.String(), nil
+}
+
+func (s *Service) uploadWithRsync(ctx context.Context, target Target, localPath string) (string, string, error) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		return "", "", errors.New("rsync binary is not installed in the backend runtime")
+	}
+	auth, err := s.hetznerAuth(ctx, target)
+	if err != nil {
+		return "", "", err
+	}
+	cleanup, err := auth.prepareSSHCommand()
+	if err != nil {
+		return "", "", err
+	}
+	defer cleanup()
+
+	remote := fmt.Sprintf("%s@%s:%s/", auth.username, auth.host, strings.TrimRight(auth.basePath, "/"))
+	env := os.Environ()
+	if auth.password != "" {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return remote, "", errors.New("sshpass binary is required for rsync password authentication")
+		}
+		env = append(env, "SSHPASS="+auth.password)
+		out, err := runCommand(ctx, env, "sshpass", "-e", "rsync", "-av", "--partial", "-e", auth.rsyncSSHCommand(), localPath, remote)
+		if err != nil {
+			return remote, out, fmt.Errorf("run rsync upload: %w", err)
+		}
+		return remote, out, nil
+	}
+	out, err := runCommand(ctx, env, "rsync", "-av", "--partial", "-e", auth.rsyncSSHCommand(), localPath, remote)
+	if err != nil {
+		return remote, out, fmt.Errorf("run rsync upload: %w", err)
+	}
+	return remote, out, nil
+}
+
+type hetznerAuth struct {
+	host           string
+	port           string
+	username       string
+	basePath       string
+	password       string
+	sshPrivateKey  string
+	resticPassword string
+	sftpCommand    string
+	keyPath        string
+}
+
+func (s *Service) hetznerAuth(ctx context.Context, target Target) (hetznerAuth, error) {
+	value := func(key string) string {
+		switch raw := target.Config[key].(type) {
+		case string:
+			return strings.TrimSpace(raw)
+		case float64:
+			return strings.TrimSpace(fmt.Sprintf("%.0f", raw))
+		case int:
+			return strings.TrimSpace(fmt.Sprintf("%d", raw))
+		default:
+			return ""
+		}
+	}
+	auth := hetznerAuth{
+		host:     value("host"),
+		port:     value("port"),
+		username: value("username"),
+		basePath: value("base_path"),
+	}
+	if auth.port == "" {
+		auth.port = "23"
+	}
+	if auth.host == "" || auth.username == "" || auth.basePath == "" {
+		return hetznerAuth{}, errors.New("hetzner target host, username, and base_path are required")
+	}
+	if target.PasswordSecretRef != "" {
+		secret, err := s.secrets.Get(ctx, target.PasswordSecretRef)
+		if err != nil {
+			return hetznerAuth{}, fmt.Errorf("load hetzner password: %w", err)
+		}
+		auth.password = strings.TrimSpace(string(secret))
+	}
+	if target.SSHPrivateKeySecretRef != "" {
+		secret, err := s.secrets.Get(ctx, target.SSHPrivateKeySecretRef)
+		if err != nil {
+			return hetznerAuth{}, fmt.Errorf("load hetzner ssh private key: %w", err)
+		}
+		auth.sshPrivateKey = strings.TrimSpace(string(secret))
+	}
+	if target.ResticPasswordRef != "" {
+		secret, err := s.secrets.Get(ctx, target.ResticPasswordRef)
+		if err != nil {
+			return hetznerAuth{}, fmt.Errorf("load restic password: %w", err)
+		}
+		auth.resticPassword = strings.TrimSpace(string(secret))
+	}
+	return auth, nil
+}
+
+func (a *hetznerAuth) prepareSSHCommand() (func(), error) {
+	cleanup := func() {}
+	common := "-p " + a.port + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+	if a.sshPrivateKey != "" {
+		dir, err := os.MkdirTemp("", "proxacloud-backup-key-*")
+		if err != nil {
+			return cleanup, fmt.Errorf("create temporary ssh key directory: %w", err)
+		}
+		cleanup = func() { _ = os.RemoveAll(dir) }
+		a.keyPath = filepath.Join(dir, "id")
+		if err := os.WriteFile(a.keyPath, []byte(a.sshPrivateKey+"\n"), 0600); err != nil {
+			cleanup()
+			return func() {}, fmt.Errorf("write temporary ssh key: %w", err)
+		}
+		a.sftpCommand = "ssh -i " + a.keyPath + " " + common
+		return cleanup, nil
+	}
+	if a.password != "" {
+		if _, err := exec.LookPath("sshpass"); err != nil {
+			return cleanup, errors.New("sshpass binary is required for password authentication")
+		}
+		a.sftpCommand = "sshpass -e ssh " + common
+		return cleanup, nil
+	}
+	return cleanup, errors.New("hetzner target requires password or ssh private key authentication")
+}
+
+func (a hetznerAuth) rsyncSSHCommand() string {
+	base := "ssh -p " + a.port + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+	if a.keyPath != "" {
+		base += " -i " + a.keyPath
+	}
+	return base
+}
+
+func runCommand(ctx context.Context, env []string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return truncateOutput(string(out)), err
+}
+
+func (s *Service) updateArtifact(jobID int64, volID string, path string) error {
+	_, err := s.db.Exec(
+		`UPDATE backup_jobs
+		    SET artifact_volid = $2, artifact_path = $3, updated_at = NOW()
+		  WHERE id = $1`,
+		jobID,
+		strings.TrimSpace(volID),
+		strings.TrimSpace(path),
+	)
+	return err
+}
+
+func (s *Service) updateUpload(jobID int64, status string, remotePath string, output string, errText string, method string) error {
+	if method == "" {
+		_, err := s.db.Exec(
+			`UPDATE backup_jobs
+			    SET upload_status = $2, remote_path = $3, upload_output = $4, upload_error = $5, updated_at = NOW()
+			  WHERE id = $1`,
+			jobID,
+			strings.TrimSpace(status),
+			strings.TrimSpace(remotePath),
+			truncateOutput(output),
+			strings.TrimSpace(errText),
+		)
+		return err
+	}
+	_, err := s.db.Exec(
+		`UPDATE backup_jobs
+		    SET upload_status = $2, remote_path = $3, upload_output = $4, upload_error = $5, upload_method = $6, updated_at = NOW()
+		  WHERE id = $1`,
+		jobID,
+		strings.TrimSpace(status),
+		strings.TrimSpace(remotePath),
+		truncateOutput(output),
+		strings.TrimSpace(errText),
+		strings.TrimSpace(method),
+	)
+	return err
+}
+
+func (s *Service) markUploadFailed(jobID int64, phase string, err error) error {
+	message := strings.TrimSpace(phase + ": " + err.Error())
+	_ = s.updateUpload(jobID, "failed", "", "", message, "")
+	job, getErr := s.getJob(jobID)
+	if getErr != nil {
+		return getErr
+	}
+	return s.finishJob(jobID, "failed", job.ProxmoxTaskID, job.Output, message)
+}
+
+func backupUploadMethod(target Target) string {
+	if target.Type != TargetHetzner {
+		return ""
+	}
+	mode, _ := target.Config["backup_mode"].(string)
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		return "restic"
+	}
+	if mode == "rsync" {
+		return "rsync"
+	}
+	return "restic"
+}
+
+func vmIDFromUPID(upid string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(upid), ":")
+	if len(parts) < 7 {
+		return "", fmt.Errorf("invalid proxmox task id %q", upid)
+	}
+	id := strings.TrimSpace(parts[6])
+	if id == "" {
+		return "", fmt.Errorf("proxmox task id %q does not include a vmid", upid)
+	}
+	return id, nil
+}
+
+func storageFilename(volID string) string {
+	name := strings.TrimSpace(volID)
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if idx := strings.LastIndex(name, ":"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	name = regexp.MustCompile(`[^A-Za-z0-9._-]+`).ReplaceAllString(name, "_")
+	if name == "" {
+		return "backup-artifact"
+	}
+	return name
+}
+
+func truncateOutput(out string) string {
+	out = strings.TrimSpace(out)
+	const limit = 12000
+	if len(out) <= limit {
+		return out
+	}
+	return out[len(out)-limit:]
 }
 
 func validateTargetType(t TargetType) error {
@@ -517,12 +962,25 @@ func validateConfig(t TargetType, config map[string]any) error {
 			return fmt.Errorf("%s is required", key)
 		}
 	}
+	if t == TargetHetzner {
+		mode, _ := config["backup_mode"].(string)
+		mode = strings.TrimSpace(strings.ToLower(mode))
+		if mode != "" && mode != "restic" && mode != "rsync" {
+			return fmt.Errorf("unsupported backup_mode %q", mode)
+		}
+	}
 	return nil
 }
 
 func validateSecrets(t TargetType, config map[string]any, in TargetInput) error {
 	if t != TargetHetzner {
 		return nil
+	}
+	mode, _ := config["backup_mode"].(string)
+	if strings.TrimSpace(mode) == "" || strings.EqualFold(strings.TrimSpace(mode), "restic") {
+		if strings.TrimSpace(in.ResticPassword) == "" {
+			return errors.New("restic_password is required when backup_mode is restic")
+		}
 	}
 	authMethod, _ := config["auth_method"].(string)
 	switch strings.TrimSpace(authMethod) {
