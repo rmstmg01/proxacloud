@@ -102,6 +102,31 @@ Core capabilities:
 `-- README.md
 ```
 
+## Documentation Screenshots
+
+Use real screenshots in the README by storing images in a versioned documentation assets folder, for example:
+
+```text
+docs/assets/screenshots/dashboard.png
+docs/assets/screenshots/cluster-detail.png
+docs/assets/screenshots/backups.png
+```
+
+Then reference them with relative Markdown links:
+
+```md
+![ProxaCloud dashboard](docs/assets/screenshots/dashboard.png)
+```
+
+Recommended screenshot guidelines:
+
+- Capture the real deployed UI, not mockups.
+- Use a clean demo environment with non-sensitive data.
+- Hide or redact customer names, tokens, IPs, emails, credentials, and billing identifiers.
+- Prefer PNG for UI screenshots.
+- Use consistent browser width, such as 1440px desktop.
+- Keep screenshots updated when navigation, labels, or workflows change.
+
 ## Architecture
 
 ### Runtime Diagram
@@ -668,9 +693,9 @@ VPS/container
 Hetzner Restic target fields:
 
 ```text
-Host: u123456.your-storagebox.de
+Host: storagebox.example.com
 Port: 23
-Username: u123456
+Username: storage-user
 Base path: /backups/proxacloud
 Auth method: password or ssh key
 Backup mode: restic
@@ -939,7 +964,7 @@ Check:
 
 - Backend was rebuilt after Restic support was added.
 - Storage Box SSH/SFTP is enabled.
-- Host is like `u123456.your-storagebox.de`.
+- Host is the Storage Box SFTP hostname, for example `storagebox.example.com`.
 - Port is usually `23`.
 - Username/password or SSH key is valid.
 - Restic password is set for Restic mode.
