@@ -280,6 +280,49 @@ func (s *Service) AttachToCluster(id int64, req AttachTunnelRequest) (DeployTunn
 	return DeployTunnelResponse{TunnelID: id, Status: "attached", Warnings: []string{}}, nil
 }
 
+func (s *Service) UpdateToken(id int64, req UpdateTunnelTokenRequest) (DeployTunnelResponse, error) {
+	rec, err := s.getInternal(id)
+	if err != nil {
+		return DeployTunnelResponse{}, err
+	}
+	if s.secrets == nil {
+		return DeployTunnelResponse{}, errors.New("secret store is not configured")
+	}
+	token := strings.TrimSpace(req.TunnelToken)
+	if token == "" {
+		return DeployTunnelResponse{}, errors.New("tunnel_token is required")
+	}
+
+	ctx := context.Background()
+	newRef, err := s.secrets.Put(ctx, "cloudflare-tunnels", rec.Name+"-tunnel-token", []byte(token))
+	if err != nil {
+		return DeployTunnelResponse{}, fmt.Errorf("store cloudflare tunnel token: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE cloudflare_tunnels
+		    SET token_secret_ref = $2,
+		        status = CASE WHEN status = 'deployed' THEN 'token_updated' ELSE status END,
+		        updated_at = NOW()
+		  WHERE id = $1`,
+		id,
+		newRef,
+	)
+	if err != nil {
+		_ = s.secrets.Delete(ctx, newRef)
+		return DeployTunnelResponse{}, fmt.Errorf("update cloudflare tunnel token ref: %w", err)
+	}
+	if strings.TrimSpace(rec.TokenSecretRef) != "" {
+		_ = s.secrets.Delete(ctx, rec.TokenSecretRef)
+	}
+	_ = s.appendEvent(id, "update-token", "success", "Cloudflare tunnel token updated", "")
+
+	if req.Apply {
+		return s.Deploy(id)
+	}
+	return DeployTunnelResponse{TunnelID: id, Status: "token_updated", Warnings: []string{}}, nil
+}
+
 func (s *Service) Manifest(id int64) (map[string]string, error) {
 	rec, err := s.getInternal(id)
 	if err != nil {

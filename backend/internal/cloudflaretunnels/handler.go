@@ -97,6 +97,28 @@ func (h *Handler) AttachToCluster(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) UpdateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseTunnelID(w, r)
+	if !ok {
+		return
+	}
+	var req UpdateTunnelTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateToken(id, req)
+	if err != nil {
+		if errors.Is(err, ErrTunnelNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) Manifest(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseTunnelID(w, r)
 	if !ok {

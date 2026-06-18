@@ -9,6 +9,7 @@ import {
   getCloudflareTunnelEvents,
   getCloudflareTunnelManifest,
   getCloudflareTunnels,
+  updateCloudflareTunnelToken,
   type CloudflareTunnel,
   type CloudflareTunnelEvent,
   type CloudflareTunnelProvisioningMode,
@@ -99,6 +100,9 @@ export function CloudflareTunnelsPage() {
   const [attachTarget, setAttachTarget] = useState<CloudflareTunnel | null>(null);
   const [attachClusterID, setAttachClusterID] = useState('');
   const [attachApply, setAttachApply] = useState(true);
+  const [tokenTarget, setTokenTarget] = useState<CloudflareTunnel | null>(null);
+  const [replacementToken, setReplacementToken] = useState('');
+  const [tokenApply, setTokenApply] = useState(true);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   const {
@@ -164,6 +168,22 @@ export function CloudflareTunnelsPage() {
       setAttachClusterID('');
       setAttachApply(true);
       setLastResult(resp.status === 'deployed' ? 'Cloudflare tunnel attached and deployed.' : 'Cloudflare tunnel attached to cluster.');
+    },
+  });
+
+  const tokenMutation = useMutation({
+    mutationFn: ({ id, token, apply }: { id: number; token: string; apply: boolean }) =>
+      updateCloudflareTunnelToken(id, { tunnel_token: token, apply }),
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnels'] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnel-events', resp.tunnel_id] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnel-manifest', resp.tunnel_id] });
+      setSelectedID(resp.tunnel_id);
+      setManifestID(resp.tunnel_id);
+      setTokenTarget(null);
+      setReplacementToken('');
+      setTokenApply(true);
+      setLastResult(resp.status === 'deployed' ? 'Cloudflare tunnel token updated and redeployed.' : 'Cloudflare tunnel token updated.');
     },
   });
 
@@ -267,6 +287,18 @@ export function CloudflareTunnelsPage() {
     attachMutation.mutate({ id: attachTarget.id, clusterID: Number(attachClusterID), apply: attachApply });
   };
 
+  const requestTokenUpdate = (tunnel: CloudflareTunnel) => {
+    setTokenTarget(tunnel);
+    setReplacementToken('');
+    setTokenApply(!tunnel.is_global);
+  };
+
+  const confirmTokenUpdate = (event: FormEvent) => {
+    event.preventDefault();
+    if (!tokenTarget || replacementToken.trim() === '') return;
+    tokenMutation.mutate({ id: tokenTarget.id, token: replacementToken, apply: tokenApply && !tokenTarget.is_global });
+  };
+
   return (
     <Layout>
       <PageHeader
@@ -294,6 +326,7 @@ export function CloudflareTunnelsPage() {
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
       {attachMutation.error && <ErrorMessage error={attachMutation.error} />}
+      {tokenMutation.error && <ErrorMessage error={tokenMutation.error} />}
       {lastResult && (
         <Alert variant="success" className="mb-6">
           {lastResult}
@@ -370,6 +403,9 @@ export function CloudflareTunnelsPage() {
                               <Rocket className="h-3.5 w-3.5" />
                               Redeploy
                             </Button>
+                            <Button variant="secondary" size="sm" onClick={() => requestTokenUpdate(tunnel)}>
+                              Token
+                            </Button>
                             {tunnel.is_global && (
                               <Button variant="secondary" size="sm" onClick={() => requestAttach(tunnel)} disabled={!clusters?.length}>
                                 Attach
@@ -442,6 +478,22 @@ export function CloudflareTunnelsPage() {
           }
         }}
         onSubmit={confirmAttach}
+      />
+      <UpdateTokenModal
+        tunnel={tokenTarget}
+        token={replacementToken}
+        apply={tokenApply}
+        loading={tokenMutation.isPending}
+        onTokenChange={setReplacementToken}
+        onApplyChange={setTokenApply}
+        onClose={() => {
+          if (!tokenMutation.isPending) {
+            setTokenTarget(null);
+            setReplacementToken('');
+            setTokenApply(true);
+          }
+        }}
+        onSubmit={confirmTokenUpdate}
       />
     </Layout>
   );
@@ -787,6 +839,60 @@ function AttachTunnelModal({
             <Button type="submit" variant="success" loading={loading} disabled={!clusterID}>
               <Rocket className="h-4 w-4" />
               Attach Tunnel
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+function UpdateTokenModal({
+  tunnel,
+  token,
+  apply,
+  loading,
+  onTokenChange,
+  onApplyChange,
+  onClose,
+  onSubmit,
+}: {
+  tunnel: CloudflareTunnel | null;
+  token: string;
+  apply: boolean;
+  loading: boolean;
+  onTokenChange: (value: string) => void;
+  onApplyChange: (value: boolean) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const canApply = !!tunnel && !tunnel.is_global;
+  return (
+    <Modal open={!!tunnel} onClose={onClose} title="Replace Tunnel Token" maxWidth="lg">
+      {tunnel && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="warning" title="Use the token for this exact Cloudflare tunnel">
+            This replaces the encrypted token stored by the portal. When deployment is enabled, the cloudflared Kubernetes Secret is regenerated and applied to the attached cluster.
+          </Alert>
+          <Textarea
+            label="Tunnel token"
+            value={token}
+            onChange={(event) => onTokenChange(event.target.value)}
+            rows={5}
+            required
+            autoFocus
+          />
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={apply && canApply} onChange={(event) => onApplyChange(event.target.checked)} disabled={!canApply} />
+            Deploy updated token to Kubernetes now
+          </label>
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="success" loading={loading} disabled={token.trim() === ''}>
+              <Rocket className="h-4 w-4" />
+              Replace Token
             </Button>
           </div>
         </form>

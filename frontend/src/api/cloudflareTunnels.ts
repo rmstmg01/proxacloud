@@ -107,6 +107,9 @@ export const deployCloudflareTunnel = (id: number) =>
 export const attachCloudflareTunnelToCluster = (id: number, body: { cluster_id: number; apply: boolean }) =>
   client.post<DeployCloudflareTunnelResponse>(`/cloudflare-tunnels/${id}/attach-cluster`, body).then((r) => r.data);
 
+export const updateCloudflareTunnelToken = (id: number, body: { tunnel_token: string; apply: boolean }) =>
+  client.post<DeployCloudflareTunnelResponse>(`/cloudflare-tunnels/${id}/token`, body).then((r) => r.data);
+
 export const getCloudflareTunnelManifest = (id: number) =>
   client.get<{ manifest: string }>(`/cloudflare-tunnels/${id}/manifest`).then((r) => r.data);
 

@@ -123,6 +123,11 @@ type AttachTunnelRequest struct {
 	Apply     bool  `json:"apply"`
 }
 
+type UpdateTunnelTokenRequest struct {
+	TunnelToken string `json:"tunnel_token"`
+	Apply       bool   `json:"apply"`
+}
+
 type DeleteTunnelRequest struct {
 	ConfirmationName string `json:"confirmation_name"`
 }
