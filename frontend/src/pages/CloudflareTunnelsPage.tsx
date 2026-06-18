@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, FileCode, Plus, RefreshCw, Rocket, Trash2 } from 'lucide-react';
 import {
+  attachCloudflareTunnelToCluster,
   createCloudflareTunnel,
   deleteCloudflareTunnel,
   deployCloudflareTunnel,
@@ -95,6 +96,9 @@ export function CloudflareTunnelsPage() {
   const [form, setForm] = useState<TunnelForm>(initialForm);
   const [deleteTarget, setDeleteTarget] = useState<CloudflareTunnel | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [attachTarget, setAttachTarget] = useState<CloudflareTunnel | null>(null);
+  const [attachClusterID, setAttachClusterID] = useState('');
+  const [attachApply, setAttachApply] = useState(true);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
   const {
@@ -144,6 +148,22 @@ export function CloudflareTunnelsPage() {
       setSelectedID(resp.tunnel_id);
       setManifestID(resp.tunnel_id);
       setLastResult(`Cloudflare tunnel ${resp.status}.`);
+    },
+  });
+
+  const attachMutation = useMutation({
+    mutationFn: ({ id, clusterID, apply }: { id: number; clusterID: number; apply: boolean }) =>
+      attachCloudflareTunnelToCluster(id, { cluster_id: clusterID, apply }),
+    onSuccess: (resp) => {
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnels'] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnel-events', resp.tunnel_id] });
+      queryClient.invalidateQueries({ queryKey: ['cloudflare-tunnel-manifest', resp.tunnel_id] });
+      setSelectedID(resp.tunnel_id);
+      setManifestID(resp.tunnel_id);
+      setAttachTarget(null);
+      setAttachClusterID('');
+      setAttachApply(true);
+      setLastResult(resp.status === 'deployed' ? 'Cloudflare tunnel attached and deployed.' : 'Cloudflare tunnel attached to cluster.');
     },
   });
 
@@ -235,6 +255,18 @@ export function CloudflareTunnelsPage() {
     deleteMutation.mutate({ id: deleteTarget.id, confirmationName: deleteConfirmationName });
   };
 
+  const requestAttach = (tunnel: CloudflareTunnel) => {
+    setAttachTarget(tunnel);
+    setAttachClusterID(clusters?.[0] ? String(clusters[0].id) : '');
+    setAttachApply(true);
+  };
+
+  const confirmAttach = (event: FormEvent) => {
+    event.preventDefault();
+    if (!attachTarget || !attachClusterID) return;
+    attachMutation.mutate({ id: attachTarget.id, clusterID: Number(attachClusterID), apply: attachApply });
+  };
+
   return (
     <Layout>
       <PageHeader
@@ -261,6 +293,7 @@ export function CloudflareTunnelsPage() {
       {eventsQuery.error && <ErrorMessage error={eventsQuery.error} />}
       {manifestQuery.error && <ErrorMessage error={manifestQuery.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
+      {attachMutation.error && <ErrorMessage error={attachMutation.error} />}
       {lastResult && (
         <Alert variant="success" className="mb-6">
           {lastResult}
@@ -337,6 +370,11 @@ export function CloudflareTunnelsPage() {
                               <Rocket className="h-3.5 w-3.5" />
                               Redeploy
                             </Button>
+                            {tunnel.is_global && (
+                              <Button variant="secondary" size="sm" onClick={() => requestAttach(tunnel)} disabled={!clusters?.length}>
+                                Attach
+                              </Button>
+                            )}
                             <Button
                               variant="danger"
                               size="sm"
@@ -387,6 +425,23 @@ export function CloudflareTunnelsPage() {
           }
         }}
         onSubmit={confirmDelete}
+      />
+      <AttachTunnelModal
+        tunnel={attachTarget}
+        clusters={clusters ?? []}
+        clusterID={attachClusterID}
+        apply={attachApply}
+        loading={attachMutation.isPending}
+        onClusterChange={setAttachClusterID}
+        onApplyChange={setAttachApply}
+        onClose={() => {
+          if (!attachMutation.isPending) {
+            setAttachTarget(null);
+            setAttachClusterID('');
+            setAttachApply(true);
+          }
+        }}
+        onSubmit={confirmAttach}
       />
     </Layout>
   );
@@ -677,6 +732,61 @@ function DeleteTunnelModal({
             <Button type="submit" variant="danger" loading={loading} disabled={!canDelete}>
               <Trash2 className="h-4 w-4" />
               Delete Tunnel
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  );
+}
+
+function AttachTunnelModal({
+  tunnel,
+  clusters,
+  clusterID,
+  apply,
+  loading,
+  onClusterChange,
+  onApplyChange,
+  onClose,
+  onSubmit,
+}: {
+  tunnel: CloudflareTunnel | null;
+  clusters: ClusterSummary[];
+  clusterID: string;
+  apply: boolean;
+  loading: boolean;
+  onClusterChange: (value: string) => void;
+  onApplyChange: (value: boolean) => void;
+  onClose: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return (
+    <Modal open={!!tunnel} onClose={onClose} title="Attach Tunnel To Cluster" maxWidth="lg">
+      {tunnel && (
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Alert variant="info" title="Reuse saved tunnel configuration">
+            This keeps the stored Cloudflare tunnel token and routes, attaches the portal record to the selected Kubernetes cluster, and can apply the cloudflared manifest immediately.
+          </Alert>
+          <Select label="Cluster" value={clusterID} onChange={(event) => onClusterChange(event.target.value)} required>
+            <option value="">Select cluster</option>
+            {clusters.map((cluster) => (
+              <option key={cluster.id} value={cluster.id}>
+                {cluster.name} ({cluster.status})
+              </option>
+            ))}
+          </Select>
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={apply} onChange={(event) => onApplyChange(event.target.checked)} />
+            Deploy to Kubernetes now
+          </label>
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="success" loading={loading} disabled={!clusterID}>
+              <Rocket className="h-4 w-4" />
+              Attach Tunnel
             </Button>
           </div>
         </form>

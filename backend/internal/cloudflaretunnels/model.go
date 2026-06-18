@@ -118,6 +118,11 @@ type DeployTunnelResponse struct {
 	Warnings []string `json:"warnings"`
 }
 
+type AttachTunnelRequest struct {
+	ClusterID int64 `json:"cluster_id"`
+	Apply     bool  `json:"apply"`
+}
+
 type DeleteTunnelRequest struct {
 	ConfirmationName string `json:"confirmation_name"`
 }

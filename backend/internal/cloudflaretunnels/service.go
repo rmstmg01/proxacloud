@@ -245,6 +245,41 @@ func (s *Service) Deploy(id int64) (DeployTunnelResponse, error) {
 	return DeployTunnelResponse{TunnelID: id, Status: status, Output: output}, nil
 }
 
+func (s *Service) AttachToCluster(id int64, req AttachTunnelRequest) (DeployTunnelResponse, error) {
+	rec, err := s.getInternal(id)
+	if err != nil {
+		return DeployTunnelResponse{}, err
+	}
+	if req.ClusterID <= 0 {
+		return DeployTunnelResponse{}, errors.New("cluster_id is required")
+	}
+	if err := s.ensureClusterExists(req.ClusterID); err != nil {
+		return DeployTunnelResponse{}, err
+	}
+	if err := s.ensureDeploymentSlotAvailableForTunnel(id, req.ClusterID, rec.Namespace, rec.DeploymentName); err != nil {
+		return DeployTunnelResponse{}, err
+	}
+
+	_, err = s.db.Exec(
+		`UPDATE cloudflare_tunnels
+		    SET cluster_id = $2,
+		        status = CASE WHEN status = 'deployed' THEN 'attached' ELSE status END,
+		        updated_at = NOW()
+		  WHERE id = $1`,
+		id,
+		req.ClusterID,
+	)
+	if err != nil {
+		return DeployTunnelResponse{}, fmt.Errorf("attach cloudflare tunnel to cluster: %w", err)
+	}
+	_ = s.appendEvent(id, "attach-cluster", "success", "Cloudflare tunnel attached to Kubernetes cluster", fmt.Sprintf("cluster_id=%d", req.ClusterID))
+
+	if req.Apply {
+		return s.Deploy(id)
+	}
+	return DeployTunnelResponse{TunnelID: id, Status: "attached", Warnings: []string{}}, nil
+}
+
 func (s *Service) Manifest(id int64) (map[string]string, error) {
 	rec, err := s.getInternal(id)
 	if err != nil {
@@ -384,6 +419,10 @@ func (s *Service) insertTunnel(req CreateTunnelRequest, tokenRef, apiTokenRef, r
 }
 
 func (s *Service) ensureDeploymentSlotAvailable(clusterID int64, namespace, deploymentName string) error {
+	return s.ensureDeploymentSlotAvailableForTunnel(0, clusterID, namespace, deploymentName)
+}
+
+func (s *Service) ensureDeploymentSlotAvailableForTunnel(tunnelID int64, clusterID int64, namespace, deploymentName string) error {
 	var exists bool
 	var err error
 	if clusterID > 0 {
@@ -394,10 +433,12 @@ func (s *Service) ensureDeploymentSlotAvailable(clusterID int64, namespace, depl
 			      WHERE cluster_id = $1
 			        AND namespace = $2
 			        AND deployment_name = $3
+			        AND id <> $4
 			 )`,
 			clusterID,
 			namespace,
 			deploymentName,
+			tunnelID,
 		).Scan(&exists)
 	} else {
 		err = s.db.QueryRow(
@@ -407,9 +448,11 @@ func (s *Service) ensureDeploymentSlotAvailable(clusterID int64, namespace, depl
 			      WHERE cluster_id IS NULL
 			        AND namespace = $1
 			        AND deployment_name = $2
+			        AND id <> $3
 			 )`,
 			namespace,
 			deploymentName,
+			tunnelID,
 		).Scan(&exists)
 	}
 	if err != nil {
@@ -417,6 +460,17 @@ func (s *Service) ensureDeploymentSlotAvailable(clusterID int64, namespace, depl
 	}
 	if exists {
 		return errors.New("cloudflare tunnel deployment already exists for this cluster and namespace")
+	}
+	return nil
+}
+
+func (s *Service) ensureClusterExists(clusterID int64) error {
+	var exists bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM clusters WHERE id = $1)`, clusterID).Scan(&exists); err != nil {
+		return fmt.Errorf("check cluster exists: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("cluster %d not found", clusterID)
 	}
 	return nil
 }
