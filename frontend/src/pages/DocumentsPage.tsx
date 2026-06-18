@@ -542,6 +542,91 @@ kubectl rollout restart deployment/backend -n ${dbNamespace}`,
     ],
   },
   {
+    title: 'Backend CrashLoop From Database Connection',
+    icon: AlertTriangle,
+    badge: 'Backend DB',
+    description:
+      'Use this when backend pods start and immediately enter CrashLoopBackOff. The most common cause is failed database startup checks, migrations, or authentication.',
+    commands: [
+      {
+        label: 'Confirm backend pods are crashing and capture logs',
+        command: `kubectl get pods -n ${dbNamespace} -l app=backend -o wide
+kubectl describe pod BACKEND_POD_NAME -n ${dbNamespace}
+kubectl logs BACKEND_POD_NAME -n ${dbNamespace}
+kubectl logs BACKEND_POD_NAME -n ${dbNamespace} --previous
+kubectl logs deployment/backend -n ${dbNamespace} --tail=100`,
+      },
+      {
+        label: 'Confirm backend DB environment sources',
+        command: `kubectl describe deployment backend -n ${dbNamespace}
+kubectl get configmap pscs-config -n ${dbNamespace} -o yaml
+kubectl get secret pscs-secrets -n ${dbNamespace} -o yaml`,
+      },
+      {
+        label: 'Decode backend DB credentials with kubectl go-template',
+        command: `kubectl get secret pscs-secrets -n ${dbNamespace} -o go-template='{{index .data "DB_USER" | base64decode}}{{"\\n"}}'
+kubectl get secret pscs-secrets -n ${dbNamespace} -o go-template='{{index .data "DB_PASSWORD" | base64decode}}{{"\\n"}}'
+kubectl get secret pscs-secrets -n ${dbNamespace} -o go-template='{{index .data "DB_NAME" | base64decode}}{{"\\n"}}'`,
+      },
+      {
+        label: 'Decode backend DB credentials in PowerShell',
+        command: `$secret = kubectl get secret pscs-secrets -n ${dbNamespace} -o json | ConvertFrom-Json
+[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secret.data.DB_USER))
+[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secret.data.DB_PASSWORD))
+[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($secret.data.DB_NAME))`,
+      },
+      {
+        label: 'Verify Service, Endpoints, and TCP reachability',
+        command: `kubectl get svc ${dbService} -n ${dbNamespace}
+kubectl get endpoints ${dbService} -n ${dbNamespace}
+kubectl run mariadb-client -n ${dbNamespace} --rm -it --image=mariadb:11.4 --restart=Never -- mariadb -h ${dbHost} -P 3306 -u DB_USER -p DB_NAME`,
+      },
+      {
+        label: 'Check MariaDB user and grants on a DB node',
+        command: `mariadb -u root -p
+
+SELECT User, Host FROM mysql.user WHERE User='pscs-admin';
+SHOW GRANTS FOR 'pscs-admin'@'%';
+SHOW GRANTS FOR 'pscs-admin'@'192.168.8.%';`,
+      },
+      {
+        label: 'Create or reset missing application DB user',
+        command: `CREATE DATABASE IF NOT EXISTS pscs;
+CREATE USER IF NOT EXISTS 'pscs-admin'@'%' IDENTIFIED BY 'PASTE_DB_PASSWORD_HERE';
+ALTER USER 'pscs-admin'@'%' IDENTIFIED BY 'PASTE_DB_PASSWORD_HERE';
+GRANT ALL PRIVILEGES ON pscs.* TO 'pscs-admin'@'%';
+FLUSH PRIVILEGES;`,
+      },
+      {
+        label: 'Restrict the DB user to the Kubernetes worker subnet',
+        command: `CREATE DATABASE IF NOT EXISTS pscs;
+CREATE USER IF NOT EXISTS 'pscs-admin'@'192.168.8.%' IDENTIFIED BY 'PASTE_DB_PASSWORD_HERE';
+ALTER USER 'pscs-admin'@'192.168.8.%' IDENTIFIED BY 'PASTE_DB_PASSWORD_HERE';
+GRANT ALL PRIVILEGES ON pscs.* TO 'pscs-admin'@'192.168.8.%';
+FLUSH PRIVILEGES;`,
+      },
+      {
+        label: 'Restart backend after fixing DB config, password, or grants',
+        command: `kubectl rollout restart deployment/backend -n ${dbNamespace}
+kubectl rollout status deployment/backend -n ${dbNamespace} --timeout=300s
+kubectl get pods -n ${dbNamespace} -l app=backend
+kubectl logs deployment/backend -n ${dbNamespace} --tail=100`,
+      },
+    ],
+    notes: [
+      'If pod describe shows Exit Code 1 and Started/Finished in the same second, the backend process is exiting during startup. Use --previous logs because CrashLoopBackOff quickly replaces the current container.',
+      'A healthy Service and Endpoints only prove Kubernetes has a DNS name and IP targets. They do not prove MariaDB accepts credentials or that Galera is ready.',
+      'Access denied for user pscs-admin from Kubernetes node IPs means the database was reached, but the user is missing, the password is wrong, or Host grants do not match the worker/pod source address.',
+      'If SELECT User, Host FROM mysql.user WHERE User=... returns empty, create the user and grant it access to the app database using the password from pscs-secrets.',
+      'If SHOW GRANTS fails for % but succeeds for another host, either create a matching host grant such as 192.168.8.% or update the app traffic source/networking model.',
+      'Unknown database means DB_NAME is wrong or the database schema was not created. Create the database or fix pscs-secrets/pscs-config to point at the correct DB name.',
+      'Connection refused means a database endpoint exists but MariaDB is not listening or is blocked on that node. Check systemctl status mariadb, ss -lntup, firewall, and Galera node health.',
+      'Timeout means packets are not completing. Check firewalls, routes, CNI, kube-proxy, NetworkPolicy, Proxmox networking, and DB node availability.',
+      'If credentials and connectivity are correct but backend still exits, check for failed migrations, incompatible schema, missing Secret keys, bad JWT/encryption keys, or an image/config mismatch.',
+      'After changing ConfigMaps or Secrets, restart the backend Deployment. Existing pods do not automatically reload environment variables from updated Kubernetes objects.',
+    ],
+  },
+  {
     title: 'Database Crash And Login Errors',
     icon: AlertTriangle,
     badge: 'Errors',
