@@ -300,6 +300,16 @@ kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=80
 curl -i https://proxacloud.com/
 curl -i https://www.proxacloud.com/`,
       },
+      {
+        label: 'Fix invalid Cloudflare Tunnel token',
+        command: `kubectl logs deployment/cloudflared -n cloudflare-tunnel --tail=50
+# In Cloudflare Zero Trust, refresh/copy the token for the exact tunnel.
+# In ProxaCloud: Cloudflare Tunnels -> Token -> paste token -> Replace Token.
+# Then click Redeploy for that tunnel and restart cloudflared pods:
+kubectl rollout restart deployment/cloudflared -n cloudflare-tunnel
+kubectl rollout status deployment/cloudflared -n cloudflare-tunnel
+kubectl logs deployment/cloudflared -n cloudflare-tunnel --tail=50`,
+      },
     ],
     notes: [
       'Public website traffic routes to the website Service for proxacloud.com and www.proxacloud.com.',
@@ -309,6 +319,7 @@ curl -i https://www.proxacloud.com/`,
       'If Cloudflare routes to Traefik, make sure the public hostname is preserved with the HTTP Host Header setting; otherwise Traefik may receive traefik.traefik.svc.cluster.local and return 404 page not found.',
       'A cluster curl that returns website HTML with Host: www.proxacloud.com proves Kubernetes, Traefik, the Ingress, Service, and website pods are working.',
       'After changing Cloudflare Tunnel public hostnames or HTTP host header settings, restart cloudflared so every connector pulls the latest config.',
+      'For Unauthorized: Invalid tunnel secret or Register tunnel error from server side, refresh the token for the exact tunnel in Cloudflare, update it from Cloudflare Tunnels -> Token, redeploy, then restart the cloudflared Deployment so pods reload the Secret.',
       'Duplicate Ingresses for the same host and path can shadow the correct pscs-web rule, especially if they point to Services that no longer exist.',
       'If container logs are empty, the frontend or website image may not write access logs to stdout or stderr. Check Traefik access logs next.',
       'Traefik may run in kube-system, traefik, or traefik-system depending on how it was installed. Use the discovered namespace in the logs command.',
@@ -343,6 +354,17 @@ kubectl get secret pscs-secrets -n pscs -o yaml`,
         command: `kubectl logs -n cloudflare-tunnel deploy/cloudflared --tail=100`,
       },
       {
+        label: 'Recover from invalid tunnel secret',
+        command: `kubectl logs deployment/cloudflared -n cloudflare-tunnel --tail=50
+# If logs show:
+# Unauthorized: Invalid tunnel secret
+# Register tunnel error from server side
+# Refresh the token in Cloudflare Zero Trust for the same tunnel, update it in the portal, redeploy, then:
+kubectl rollout restart deployment/cloudflared -n cloudflare-tunnel
+kubectl rollout status deployment/cloudflared -n cloudflare-tunnel
+kubectl logs deployment/cloudflared -n cloudflare-tunnel --tail=50`,
+      },
+      {
         label: 'Inspect cloudflared token Secret',
         command: `kubectl get secret -n cloudflare-tunnel
 kubectl describe secret cloudflared-token -n cloudflare-tunnel`,
@@ -357,6 +379,7 @@ kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflared --tail=1
       'pscs-config output shows non-sensitive application configuration such as DB_HOST, DB_PORT, feature flags, and service settings. Take key/value pairs from data when comparing or recreating app config.',
       'pscs-secrets output shows Secret keys under data, but values are base64 encoded. Decode values before using them as passwords, tokens, or portal Secret values.',
       'The go-template token command prints the actual cloudflared tunnel token. Use it only when you need to verify or re-enter the token; handle it like a password.',
+      'When cloudflared reports Unauthorized: Invalid tunnel secret, the Kubernetes Secret may contain an old or mismatched token. Refresh the token in Cloudflare for the same tunnel, paste it into the portal Token action, press Redeploy, and restart the deployment because pods do not automatically reload Secret-backed environment variables.',
       'describe deployment cloudflared summarizes replicas, image, container args, token Secret reference, probes, labels, rollout state, and events. Use it for quick health and configuration checks.',
       'deployment YAML is the detailed Kubernetes source. Take namespace, deployment name, image, replicas, labels, env secret reference, container args, probes, and scheduling rules from this output.',
       'cloudflared logs show tunnelID, connector IDs, protocol, Cloudflare edge registration, pre-check results, and downloaded ingress config. Use this to confirm the tunnel is connected and what hostnames Cloudflare routes through it.',
