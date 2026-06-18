@@ -36,7 +36,7 @@ const (
 var (
 	ErrDatabaseClusterExists           = errors.New("database cluster already exists")
 	ErrDatabaseClusterNotFound         = errors.New("database cluster not found")
-	ErrDatabaseClusterDeleteNotAllowed = errors.New("only failed, provisioned, or ready database clusters can be deleted")
+	ErrDatabaseClusterDeleteNotAllowed = errors.New("only failed, provisioned, ready, or stopped database clusters can be deleted")
 	ErrDatabaseClusterConfirmation     = errors.New("database cluster name confirmation does not match")
 )
 
@@ -50,6 +50,7 @@ type NodeInventory interface {
 
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 }
 
 type SSHKeyPairStore interface {
@@ -182,6 +183,15 @@ type TerraformApplyResponse struct {
 	TerraformWorkDir string   `json:"terraform_work_dir"`
 	TerraformOutput  string   `json:"terraform_output,omitempty"`
 	Warnings         []string `json:"warnings"`
+}
+
+type PowerActionResponse struct {
+	ClusterID int64    `json:"cluster_id"`
+	Action    string   `json:"action"`
+	Status    string   `json:"status"`
+	Nodes     []string `json:"nodes"`
+	Output    string   `json:"output,omitempty"`
+	Warnings  []string `json:"warnings"`
 }
 
 type KubernetesManifestResponse struct {
@@ -613,6 +623,94 @@ func (s *Service) Delete(clusterID int64, confirmationName string, scopes ...ten
 	return nil
 }
 
+func (s *Service) PowerAction(clusterID int64, action string, scopes ...tenant.Scope) (PowerActionResponse, error) {
+	action = strings.TrimSpace(strings.ToLower(action))
+	proxmoxAction := action
+	status := "running"
+	nodeStatus := "running"
+	switch action {
+	case "start":
+	case "restart":
+		proxmoxAction = "reboot"
+	case "stop":
+		proxmoxAction = "shutdown"
+		status = "stopped"
+		nodeStatus = "stopped"
+	default:
+		return PowerActionResponse{}, fmt.Errorf("unsupported database cluster power action %q", action)
+	}
+
+	cluster, err := s.Get(clusterID, scopes...)
+	if err != nil {
+		return PowerActionResponse{}, err
+	}
+	if len(cluster.Nodes) == 0 {
+		return PowerActionResponse{}, errors.New("database cluster has no nodes")
+	}
+
+	credentials := make(map[int64]proxmox.Credential)
+	outputs := make([]string, 0, len(cluster.Nodes))
+	changedNodes := make([]string, 0, len(cluster.Nodes))
+	failures := make([]string, 0)
+
+	_ = s.insertEvent(clusterID, action, "info", fmt.Sprintf("Starting database cluster %s action for %s", action, cluster.Name), "")
+
+	for _, node := range cluster.Nodes {
+		if node.ProxmoxCredentialID <= 0 {
+			failures = append(failures, fmt.Sprintf("%s: missing Proxmox credential metadata", node.VMName))
+			continue
+		}
+		cred, ok := credentials[node.ProxmoxCredentialID]
+		if !ok {
+			cred, err = s.proxmoxCredentials.GetCredentialWithSecrets(node.ProxmoxCredentialID)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: load Proxmox credentials: %v", node.VMName, err))
+				continue
+			}
+			credentials[node.ProxmoxCredentialID] = cred
+		}
+
+		step := action + "-" + node.VMName
+		_ = s.insertEvent(clusterID, step, "info", fmt.Sprintf("Sending %s command to database VM %s on %s", action, node.VMName, node.ProxmoxNodeName), "")
+		actual, err := s.proxmoxCredentials.ControlVMByName(cred, node.ProxmoxNodeName, node.VMName, proxmoxAction)
+		if err != nil {
+			msg := fmt.Sprintf("%s on %s: %v", node.VMName, node.ProxmoxNodeName, err)
+			failures = append(failures, msg)
+			_ = s.insertEvent(clusterID, step, "error", "Proxmox database VM power action failed", msg)
+			continue
+		}
+
+		changedNodes = append(changedNodes, node.VMName)
+		outputs = append(outputs, fmt.Sprintf("%s %s on %s", actual, node.VMName, node.ProxmoxNodeName))
+		_ = s.updateNodeStatus(node.ID, nodeStatus)
+		_ = s.insertEvent(clusterID, step, "success", "Proxmox database VM power action completed", actual)
+	}
+
+	sort.Strings(changedNodes)
+	sort.Strings(outputs)
+	sort.Strings(failures)
+
+	output := strings.Join(outputs, "\n")
+	if len(failures) > 0 {
+		failureOutput := strings.TrimSpace(output + "\n" + strings.Join(failures, "\n"))
+		err := errors.New(strings.Join(failures, "; "))
+		_ = s.insertEvent(clusterID, action, "error", "Database cluster power action completed with errors", failureOutput)
+		return PowerActionResponse{ClusterID: clusterID, Action: action, Status: cluster.Status, Nodes: changedNodes, Output: output, Warnings: failures}, err
+	}
+
+	if err := s.updateStatus(clusterID, status); err != nil {
+		return PowerActionResponse{}, err
+	}
+	_ = s.insertRun(clusterID, action, status, "", output, true)
+	_ = s.insertEvent(clusterID, action, "success", "Database cluster power action completed", output)
+
+	return PowerActionResponse{ClusterID: clusterID, Action: action, Status: status, Nodes: changedNodes, Output: output, Warnings: []string{}}, nil
+}
+
+func (s *Service) Stop(clusterID int64, scopes ...tenant.Scope) (PowerActionResponse, error) {
+	return s.PowerAction(clusterID, "stop", scopes...)
+}
+
 func (s *Service) ListRuns(clusterID int64) ([]RunRecord, error) {
 	rows, err := s.db.Query(`SELECT id, action, status, work_dir, output, created_at, finished_at FROM database_cluster_runs WHERE database_cluster_id = $1 ORDER BY created_at DESC`, clusterID)
 	if err != nil {
@@ -829,7 +927,7 @@ func describeWorkspaces(workspaces map[int64]string) string {
 
 func isDatabaseClusterDeletable(status string) bool {
 	status = strings.TrimSpace(status)
-	return status == "provisioned" || status == "ready" || status == "applied" || strings.HasSuffix(status, "_failed")
+	return status == "provisioned" || status == "ready" || status == "applied" || status == "stopped" || strings.HasSuffix(status, "_failed")
 }
 
 func (s *Service) destroyDatabaseClusterInfrastructure(cluster ClusterRecord) error {
@@ -1192,6 +1290,11 @@ func (s *Service) insertEvent(clusterID int64, step, level, message, output stri
 
 func (s *Service) updateStatus(clusterID int64, status string) error {
 	_, err := s.db.Exec(`UPDATE database_clusters SET status = $2, updated_at = NOW() WHERE id = $1`, clusterID, status)
+	return err
+}
+
+func (s *Service) updateNodeStatus(nodeID int64, status string) error {
+	_, err := s.db.Exec(`UPDATE database_cluster_nodes SET status = $2, updated_at = NOW() WHERE id = $1`, nodeID, status)
 	return err
 }
 

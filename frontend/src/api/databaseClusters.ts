@@ -40,6 +40,15 @@ export type DatabaseClusterEvent = {
   created_at: string;
 };
 
+export type DatabaseClusterPowerActionResponse = {
+  cluster_id: number;
+  action: string;
+  status: string;
+  nodes: string[];
+  output?: string;
+  warnings: string[];
+};
+
 export const getDatabaseClusters = () =>
   client.get<DatabaseCluster[]>('/database-clusters').then((r) => r.data);
 
@@ -121,3 +130,12 @@ export const applyDatabaseClusterTerraform = (id: number) =>
       warnings: string[];
     }>(`/database-clusters/${id}/terraform/apply`)
     .then((r) => r.data);
+
+export const startDatabaseCluster = (id: number) =>
+  client.post<DatabaseClusterPowerActionResponse>(`/database-clusters/${id}/start`).then((r) => r.data);
+
+export const restartDatabaseCluster = (id: number) =>
+  client.post<DatabaseClusterPowerActionResponse>(`/database-clusters/${id}/restart`).then((r) => r.data);
+
+export const stopDatabaseCluster = (id: number) =>
+  client.post<DatabaseClusterPowerActionResponse>(`/database-clusters/${id}/stop`).then((r) => r.data);

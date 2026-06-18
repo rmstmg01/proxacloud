@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, FileCode, Plus, RefreshCw, Rocket, Trash2 } from 'lucide-react';
+import { Database, FileCode, Play, Plus, Power, RefreshCw, Rocket, RotateCcw, Trash2 } from 'lucide-react';
 import {
   bootstrapDatabaseCluster,
   deleteDatabaseCluster,
@@ -9,6 +9,9 @@ import {
   getDatabaseClusterK8sManifest,
   getDatabaseClusters,
   provisionDatabaseCluster,
+  restartDatabaseCluster,
+  startDatabaseCluster,
+  stopDatabaseCluster,
   type DatabaseCluster,
   type DatabaseClusterEvent,
 } from '../api/databaseClusters';
@@ -92,6 +95,13 @@ export function DatabaseClustersPage() {
     refetchInterval: selectedID !== null ? 5_000 : false,
   });
   const availableNodes = proxmoxNodes?.filter((node) => node.enabled) ?? [];
+  const invalidateClusterQueries = (clusterID?: number) => {
+    queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
+    if (clusterID) {
+      queryClient.invalidateQueries({ queryKey: ['database-cluster', clusterID] });
+      queryClient.invalidateQueries({ queryKey: ['database-cluster-events', clusterID] });
+    }
+  };
   const provisionMutation = useMutation({
     mutationFn: provisionDatabaseCluster,
     onSuccess: async (resp) => {
@@ -156,6 +166,30 @@ export function DatabaseClustersPage() {
       setDeleteTarget(null);
       setDeleteConfirmationName('');
       setLastResult({ clusterID: resp.id, message: 'Database cluster deleted.' });
+    },
+  });
+  const startMutation = useMutation({
+    mutationFn: startDatabaseCluster,
+    onSuccess: (resp) => {
+      invalidateClusterQueries(resp.cluster_id);
+      setSelectedID(resp.cluster_id);
+      setLastResult({ clusterID: resp.cluster_id, message: `Database cluster start sent to ${resp.nodes.length} node(s).` });
+    },
+  });
+  const restartMutation = useMutation({
+    mutationFn: restartDatabaseCluster,
+    onSuccess: (resp) => {
+      invalidateClusterQueries(resp.cluster_id);
+      setSelectedID(resp.cluster_id);
+      setLastResult({ clusterID: resp.cluster_id, message: `Database cluster restart sent to ${resp.nodes.length} node(s).` });
+    },
+  });
+  const stopMutation = useMutation({
+    mutationFn: stopDatabaseCluster,
+    onSuccess: (resp) => {
+      invalidateClusterQueries(resp.cluster_id);
+      setSelectedID(resp.cluster_id);
+      setLastResult({ clusterID: resp.cluster_id, message: `Database cluster stop sent to ${resp.nodes.length} node(s).` });
     },
   });
 
@@ -231,6 +265,9 @@ export function DatabaseClustersPage() {
       {bootstrapMutation.error && <ErrorMessage error={bootstrapMutation.error} />}
       {eventsQuery.error && <ErrorMessage error={eventsQuery.error} />}
       {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
+      {startMutation.error && <ErrorMessage error={startMutation.error} />}
+      {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
+      {stopMutation.error && <ErrorMessage error={stopMutation.error} />}
       <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
         Database cluster deploy now runs Terraform and Galera bootstrap when the form options are enabled. Uncheck the apply options only when you want reviewable workspaces without changing Proxmox.
       </Alert>
@@ -297,6 +334,37 @@ export function DatabaseClustersPage() {
                               <FileCode className="h-3.5 w-3.5" />
                               Manifest
                             </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => startMutation.mutate(cluster.id)}
+                              loading={startMutation.isPending && startMutation.variables === cluster.id}
+                            >
+                              <Play className="h-3.5 w-3.5" />
+                              Start
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => restartMutation.mutate(cluster.id)}
+                              loading={restartMutation.isPending && restartMutation.variables === cluster.id}
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                              Restart
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                if (window.confirm(`Stop all database nodes for ${cluster.name}?`)) {
+                                  stopMutation.mutate(cluster.id);
+                                }
+                              }}
+                              loading={stopMutation.isPending && stopMutation.variables === cluster.id}
+                            >
+                              <Power className="h-3.5 w-3.5" />
+                              Stop
+                            </Button>
                             {cluster.status === 'bootstrap_failed' && (
                               <Button
                                 variant="success"
@@ -362,7 +430,7 @@ export function DatabaseClustersPage() {
 }
 
 function isDeletableDatabaseCluster(status: string) {
-  return status === 'provisioned' || status === 'ready' || status === 'applied' || status.endsWith('_failed');
+  return status === 'provisioned' || status === 'ready' || status === 'applied' || status === 'stopped' || status.endsWith('_failed');
 }
 
 function DeleteDatabaseClusterModal({

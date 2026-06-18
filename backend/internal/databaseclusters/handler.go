@@ -114,6 +114,18 @@ func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) Start(w http.ResponseWriter, r *http.Request) {
+	h.powerAction(w, r, "start")
+}
+
+func (h *Handler) Restart(w http.ResponseWriter, r *http.Request) {
+	h.powerAction(w, r, "restart")
+}
+
+func (h *Handler) Stop(w http.ResponseWriter, r *http.Request) {
+	h.powerAction(w, r, "stop")
+}
+
 func (h *Handler) ApplyTerraform(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
@@ -184,6 +196,23 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+}
+
+func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action string) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	scope, ok := h.authorizeCluster(w, r, id)
+	if !ok {
+		return
+	}
+	resp, err := h.service.PowerAction(id, action, scope)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) ListRuns(w http.ResponseWriter, r *http.Request) {
