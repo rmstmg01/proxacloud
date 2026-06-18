@@ -488,6 +488,26 @@ export const createGlobalImagePullSecret = (
   },
 ) => client.post<ClusterImagePullSecretRecord>('/image-pull-secrets', body).then((r) => r.data);
 
+export const getGlobalImagePullSecrets = () =>
+  client.get<ClusterImagePullSecretRecord[]>('/image-pull-secrets').then((r) => r.data);
+
+export const updateGlobalImagePullSecret = (
+  secretID: number,
+  body: {
+    name: string;
+    namespace: string;
+    registry_server: string;
+    username: string;
+    password: string;
+    email: string;
+    description: string;
+    is_global: boolean;
+  },
+) => client.put<ClusterImagePullSecretRecord>(`/image-pull-secrets/${secretID}`, body).then((r) => r.data);
+
+export const deleteGlobalImagePullSecret = (secretID: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/image-pull-secrets/${secretID}`).then((r) => r.data);
+
 export const updateClusterImagePullSecret = (
   id: number,
   secretID: number,

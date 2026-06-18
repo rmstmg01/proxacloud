@@ -3432,6 +3432,73 @@ func (s *Service) CreateGlobalImagePullSecret(req UpsertClusterImagePullSecretRe
 	return s.createClusterImagePullSecret(0, req)
 }
 
+func (s *Service) ListGlobalImagePullSecrets() ([]ClusterImagePullSecretRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, cluster_id, name, namespace, registry_server, username, email, description,
+		        is_global, last_applied_at, created_at, updated_at
+		 FROM cluster_image_pull_secrets
+		 WHERE is_global = TRUE
+		 ORDER BY namespace ASC, name ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list global image pull secrets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ClusterImagePullSecretRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanClusterImagePullSecret(rows)
+		if scanErr != nil {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) UpdateGlobalImagePullSecret(secretID int64, req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
+	req.IsGlobal = true
+	req = normalizeClusterImagePullSecretRequest(req)
+	if err := validateClusterImagePullSecretRequest(req, false); err != nil {
+		return ClusterImagePullSecretRecord{}, err
+	}
+	_, err := s.db.Exec(
+		`UPDATE cluster_image_pull_secrets
+		 SET cluster_id = NULL, name = $2, namespace = $3, registry_server = $4, username = $5,
+		     email = $6, description = $7, is_global = TRUE, updated_at = NOW()
+		 WHERE id = $1 AND is_global = TRUE`,
+		secretID, req.Name, req.Namespace, req.RegistryServer, req.Username, req.Email, req.Description,
+	)
+	if err != nil {
+		return ClusterImagePullSecretRecord{}, fmt.Errorf("update global image pull secret: %w", err)
+	}
+	if strings.TrimSpace(req.Password) != "" {
+		if err := s.storeClusterImagePullSecretPassword(0, secretID, req.Password); err != nil {
+			return ClusterImagePullSecretRecord{}, err
+		}
+	}
+	return s.GetClusterImagePullSecret(0, secretID)
+}
+
+func (s *Service) DeleteGlobalImagePullSecret(secretID int64) error {
+	var ref string
+	_ = s.db.QueryRow(`SELECT COALESCE(password_ref, '') FROM cluster_image_pull_secrets WHERE id = $1 AND is_global = TRUE`, secretID).Scan(&ref)
+	res, err := s.db.Exec(`DELETE FROM cluster_image_pull_secrets WHERE id = $1 AND is_global = TRUE`, secretID)
+	if err != nil {
+		return fmt.Errorf("delete global image pull secret: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return ErrApplicationManifestNotFound
+	}
+	if s.secrets != nil && strings.TrimSpace(ref) != "" {
+		if err := s.secrets.Delete(context.Background(), ref); err != nil && !errors.Is(err, secrets.ErrSecretNotFound) {
+			return fmt.Errorf("delete stored image pull secret token: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) createClusterImagePullSecret(clusterID int64, req UpsertClusterImagePullSecretRequest) (ClusterImagePullSecretRecord, error) {
 	req = normalizeClusterImagePullSecretRequest(req)
 	if err := validateClusterImagePullSecretRequest(req, true); err != nil {

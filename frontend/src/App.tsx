@@ -16,6 +16,7 @@ import { TopologyPage } from './pages/TopologyPage';
 import { SSHKeysPage } from './pages/SSHKeysPage';
 import { SSLCertificatesPage } from './pages/SSLCertificatesPage';
 import { ClusterSecretsPage } from './pages/ClusterSecretsPage';
+import { ClusterImagePullSecretsPage } from './pages/ClusterImagePullSecretsPage';
 import { ClusterConfigMapsPage } from './pages/ClusterConfigMapsPage';
 import { ClusterManifestsPage } from './pages/ClusterManifestsPage';
 import { DatabaseClustersPage } from './pages/DatabaseClustersPage';
@@ -252,6 +253,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <ClusterSecretsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/image-pull-secrets"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ClusterImagePullSecretsPage />
                 </ProtectedRoute>
               }
             />

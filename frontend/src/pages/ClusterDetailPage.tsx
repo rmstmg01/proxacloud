@@ -1757,6 +1757,9 @@ function ImagePullSecretsTab({ id }: { id: number }) {
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      if (editing?.is_global) {
+        throw new Error('Global image pull secrets are edited from the Image Pull Secrets page.');
+      }
       const body = {
         name: form.name.trim() || 'ghcr-pull-secret',
         namespace: form.namespace.trim() || 'default',
@@ -1765,7 +1768,7 @@ function ImagePullSecretsTab({ id }: { id: number }) {
         password: form.password,
         email: form.email.trim(),
         description: form.description.trim(),
-        is_global: form.is_global,
+        is_global: false,
       };
       return editing
         ? updateClusterImagePullSecret(id, editing.id, body)
@@ -1824,8 +1827,8 @@ function ImagePullSecretsTab({ id }: { id: number }) {
               <Input label="Description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </div>
             <label className="flex items-center gap-3">
-              <input type="checkbox" checked={form.is_global} onChange={(e) => setForm({ ...form, is_global: e.target.checked })} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
-              <span className="text-sm text-slate-700">Available to all clusters</span>
+              <input type="checkbox" checked={false} readOnly disabled className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
+              <span className="text-sm text-slate-700">Global image pull secrets are managed from the left menu</span>
             </label>
             <div className="flex gap-3">
               <Button type="submit" loading={saveMut.isPending}>{editing ? 'Save Pull Secret' : 'Create Pull Secret'}</Button>
@@ -1866,9 +1869,17 @@ function ImagePullSecretsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
                         <div className="flex justify-end gap-2">
-                          <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
+                          {secret.is_global ? (
+                            <Link to="/image-pull-secrets" className="inline-flex items-center rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                              Edit globally
+                            </Link>
+                          ) : (
+                            <Button type="button" size="sm" variant="secondary" onClick={() => startEdit(secret)}>Edit</Button>
+                          )}
                           <Button type="button" size="sm" loading={applyMut.isPending && applyMut.variables === secret.id} onClick={() => applyMut.mutate(secret.id)}>Apply</Button>
-                          <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => deleteMut.mutate(secret.id)}>Delete</Button>
+                          {!secret.is_global && (
+                            <Button type="button" size="sm" variant="danger" loading={deleteMut.isPending && deleteMut.variables === secret.id} onClick={() => deleteMut.mutate(secret.id)}>Delete</Button>
+                          )}
                         </div>
                       </td>
                     </tr>

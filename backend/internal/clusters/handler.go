@@ -1052,6 +1052,47 @@ func (h *Handler) CreateGlobalImagePullSecret(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusCreated, resp)
 }
 
+func (h *Handler) ListGlobalImagePullSecrets(w http.ResponseWriter, _ *http.Request) {
+	resp, err := h.service.ListGlobalImagePullSecrets()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) UpdateGlobalImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	secretID, err := strconv.ParseInt(chi.URLParam(r, "secretID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image pull secret id"})
+		return
+	}
+	var req UpsertClusterImagePullSecretRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateGlobalImagePullSecret(secretID, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteGlobalImagePullSecret(w http.ResponseWriter, r *http.Request) {
+	secretID, err := strconv.ParseInt(chi.URLParam(r, "secretID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid image pull secret id"})
+		return
+	}
+	if err := h.service.DeleteGlobalImagePullSecret(secretID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": secretID, "deleted": true})
+}
+
 func (h *Handler) UpdateClusterImagePullSecret(w http.ResponseWriter, r *http.Request) {
 	clusterID, secretID, ok := parseClusterAndImagePullSecretIDs(w, r)
 	if !ok {

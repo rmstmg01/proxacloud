@@ -21,6 +21,7 @@ import {
   Box,
   Shield,
   HardDrive,
+  LockKeyhole,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { Role } from '../types';
@@ -60,6 +61,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/configmaps', icon: FileText, label: 'ConfigMaps', roles: adminRoles },
       { to: '/secrets', icon: KeyRound, label: 'Secrets', roles: adminRoles },
+      { to: '/image-pull-secrets', icon: LockKeyhole, label: 'Pull Secrets', roles: adminRoles },
       { to: '/manifests', icon: FileCode, label: 'Manifests', roles: adminRoles },
     ],
   },
