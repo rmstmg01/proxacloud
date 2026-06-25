@@ -24,6 +24,7 @@ import (
 	"proxacloud/backend/internal/mailer"
 	"proxacloud/backend/internal/monitoring"
 	"proxacloud/backend/internal/networks"
+	"proxacloud/backend/internal/proxacloudtunnels"
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/rbac"
 	"proxacloud/backend/internal/secrets"
@@ -132,6 +133,7 @@ func NewApp() (*App, error) {
 		PayPalEnvironment:   cfg.PayPalEnvironment,
 	})
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
+	proxacloudTunnelService := proxacloudtunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
 
 	if len(networkService.List()) == 0 {
@@ -172,6 +174,7 @@ func NewApp() (*App, error) {
 	backupHandler := backups.NewHandler(backupService)
 	billingHandler := billing.NewHandler(billingService, userService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
+	proxacloudTunnelHandler := proxacloudtunnels.NewHandler(proxacloudTunnelService)
 	monitoringHandler := monitoring.NewHandler(monitoringService)
 
 	go func() {
@@ -335,6 +338,15 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/manifest", cloudflareTunnelHandler.Manifest)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/cloudflare-tunnels/{id}", cloudflareTunnelHandler.Delete)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/cloudflare-tunnels/{id}/events", cloudflareTunnelHandler.ListEvents)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxacloud-tunnels", proxacloudTunnelHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/proxacloud-tunnels", proxacloudTunnelHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxacloud-tunnels/{id}", proxacloudTunnelHandler.Get)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/proxacloud-tunnels/{id}/deploy", proxacloudTunnelHandler.Deploy)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/proxacloud-tunnels/{id}/attach-cluster", proxacloudTunnelHandler.AttachToCluster)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/proxacloud-tunnels/{id}/token", proxacloudTunnelHandler.UpdateToken)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxacloud-tunnels/{id}/manifest", proxacloudTunnelHandler.Manifest)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/proxacloud-tunnels/{id}", proxacloudTunnelHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxacloud-tunnels/{id}/events", proxacloudTunnelHandler.ListEvents)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/status", monitoringHandler.Status)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/monitoring/stack", monitoringHandler.GetStack)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/monitoring/stack", monitoringHandler.UpsertStack)

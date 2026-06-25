@@ -70,7 +70,8 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/networks', icon: Network, label: 'VPC Networks', roles: adminRoles },
       { to: '/firewalls', icon: Shield, label: 'Firewalls', roles: adminRoles },
-      { to: '/cloudflare-tunnels', icon: Cloud, label: 'Tunnels', roles: adminRoles },
+      { to: '/cloudflare-tunnels', icon: Cloud, label: 'Cloudflare Tunnels', roles: adminRoles },
+      { to: '/proxacloud-tunnels', icon: Cloud, label: 'Proxacloud Tunnels', roles: adminRoles },
       { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs', roles: adminRoles },
     ],
   },

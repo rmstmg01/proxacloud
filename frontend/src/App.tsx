@@ -21,6 +21,7 @@ import { ClusterConfigMapsPage } from './pages/ClusterConfigMapsPage';
 import { ClusterManifestsPage } from './pages/ClusterManifestsPage';
 import { DatabaseClustersPage } from './pages/DatabaseClustersPage';
 import { CloudflareTunnelsPage } from './pages/CloudflareTunnelsPage';
+import { ProxacloudTunnelsPage } from './pages/ProxacloudTunnelsPage';
 import { FirewallsPage } from './pages/FirewallsPage';
 import { CommandCenterPage } from './pages/CommandCenterPage';
 import { DocumentsPage } from './pages/DocumentsPage';
@@ -164,6 +165,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <CloudflareTunnelsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/proxacloud-tunnels"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ProxacloudTunnelsPage />
                 </ProtectedRoute>
               }
             />
