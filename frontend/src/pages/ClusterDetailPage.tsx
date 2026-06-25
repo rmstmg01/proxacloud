@@ -872,6 +872,7 @@ const SAMPLE_APP_MANIFEST = `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sample-app
+  namespace: default
 spec:
   replicas: 2
   selector:
@@ -892,38 +893,15 @@ apiVersion: v1
 kind: Service
 metadata:
   name: sample-app
+  namespace: default
 spec:
+  type: ClusterIP
   selector:
     app: sample-app
   ports:
     - name: http
       port: 80
       targetPort: 80
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: sample-app
-  annotations:
-    kubernetes.io/ingress.class: traefik
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  ingressClassName: traefik
-  tls:
-    - hosts:
-        - sample-app.example.com
-      secretName: sample-app-tls
-  rules:
-    - host: sample-app.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: sample-app
-                port:
-                  number: 80
 `;
 
 function KubectlCommandPanel({ id }: { id: number }) {
@@ -2297,9 +2275,9 @@ function ApplicationsTab({ id }: { id: number }) {
   const [appForm, setAppForm] = useState({
     name: 'sample-app',
     namespace: 'default',
-    hostname: 'sample-app.example.com',
+    hostname: 'test.proxaops.com',
     ingress_class: 'traefik',
-    tls_secret_name: 'sample-app-tls',
+    tls_secret_name: '',
     tls_certificate_id: 0,
     tls_fullchain_pem: '',
     tls_private_key_pem: '',

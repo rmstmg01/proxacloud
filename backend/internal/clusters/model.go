@@ -3939,9 +3939,6 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 		ingressClass = "traefik"
 	}
 	tlsSecretName := strings.TrimSpace(req.TLSSecretName)
-	if hostname != "" && tlsSecretName == "" {
-		tlsSecretName = sanitizeKubernetesName(name + "-tls")
-	}
 	tlsFullchainPEM := strings.TrimSpace(req.TLSFullchainPEM)
 	tlsPrivateKeyPEM := strings.TrimSpace(req.TLSPrivateKeyPEM)
 	if req.TLSCertificateID > 0 {
@@ -3984,8 +3981,8 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	if hostname != "" {
 		warnings = append(warnings, fmt.Sprintf("application ingress will use hostname %s", hostname))
 	}
-	if hostname != "" && !hasTLSPEMs {
-		warnings = append(warnings, fmt.Sprintf("no TLS PEMs were uploaded; ingress will reference existing secret %s", tlsSecretName))
+	if hostname != "" && tlsSecretName == "" {
+		warnings = append(warnings, "no TLS secret was provided; ingress will use plain HTTP behind the cluster ingress controller")
 	}
 	selectedSecrets, err := s.resolveSelectedClusterSecrets(clusterID, namespace, req.SelectedSecretIDs)
 	if err != nil {
@@ -8410,23 +8407,29 @@ spec:
 
 func buildAppIngressManifest(appName, hostname, ingressClass, tlsSecretName string) string {
 	name := sanitizeKubernetesName(appName)
-	if tlsSecretName == "" {
-		tlsSecretName = sanitizeKubernetesName(appName + "-tls")
+	tlsSecretName = strings.TrimSpace(tlsSecretName)
+	entrypoints := "web"
+	tlsSpec := ""
+	tlsAnnotations := ""
+	if tlsSecretName != "" {
+		entrypoints = "web,websecure"
+		tlsAnnotations = `
+    traefik.ingress.kubernetes.io/router.tls: "true"`
+		tlsSpec = fmt.Sprintf(`  tls:
+    - hosts:
+        - %s
+      secretName: %s
+`, hostname, tlsSecretName)
 	}
 	return fmt.Sprintf(`apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: %s
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.entrypoints: %s%s
 spec:
   ingressClassName: %s
-  tls:
-    - hosts:
-        - %s
-      secretName: %s
-  rules:
+%s  rules:
     - host: %s
       http:
         paths:
@@ -8437,5 +8440,5 @@ spec:
                 name: %s
                 port:
                   number: 80
-`, name, ingressClass, hostname, tlsSecretName, hostname, name)
+`, name, entrypoints, tlsAnnotations, ingressClass, tlsSpec, hostname, name)
 }
