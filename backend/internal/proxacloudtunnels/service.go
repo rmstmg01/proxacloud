@@ -627,8 +627,8 @@ func requestFromRecord(rec tunnelRecord) CreateTunnelRequest {
 }
 
 func buildAgentManifest(req CreateTunnelRequest, token string) string {
-	labels := fmt.Sprintf("app.kubernetes.io/name: proxacloud-agent\n    app.kubernetes.io/instance: %s", req.DeploymentName)
-	selector := fmt.Sprintf("app.kubernetes.io/name: proxacloud-agent\n      app.kubernetes.io/instance: %s", req.DeploymentName)
+	labels := fmt.Sprintf("app: %s\n    app.kubernetes.io/name: proxacloud-agent\n    app.kubernetes.io/instance: %s", req.DeploymentName, req.DeploymentName)
+	selector := fmt.Sprintf("app: %s", req.DeploymentName)
 	imagePullSecrets := ""
 	if req.ImagePullSecret != "" {
 		imagePullSecrets = fmt.Sprintf(`      imagePullSecrets:
@@ -680,6 +680,7 @@ spec:
   template:
     metadata:
       labels:
+        app: %s
         app.kubernetes.io/name: proxacloud-agent
         app.kubernetes.io/instance: %s
     spec:
@@ -736,13 +737,12 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app.kubernetes.io/name: proxacloud-agent
-    app.kubernetes.io/instance: %s
+    app: %s
   ports:
     - name: metrics
       port: 9091
       targetPort: metrics
-`, req.Namespace, req.DeploymentName, req.Namespace, labels, token, req.DeploymentName, req.Namespace, labels, selector, req.DeploymentName, req.Namespace, labels, req.Replicas, selector, req.DeploymentName, imagePullSecrets, req.Image, req.DeploymentName, req.ProxacloudTunnelID, req.GatewayURL, req.TargetURL, req.DeploymentName, req.Namespace, labels, req.DeploymentName)
+`, req.Namespace, req.DeploymentName, req.Namespace, labels, token, req.DeploymentName, req.Namespace, labels, selector, req.DeploymentName, req.Namespace, labels, req.Replicas, selector, req.DeploymentName, req.DeploymentName, imagePullSecrets, req.Image, req.DeploymentName, req.ProxacloudTunnelID, req.GatewayURL, req.TargetURL, req.DeploymentName, req.Namespace, labels, req.DeploymentName)
 }
 
 func defaultString(value, fallback string) string {
