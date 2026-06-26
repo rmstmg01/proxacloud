@@ -1,5 +1,5 @@
 import client from './client';
-import type { NetworkProfile, NodeNetworkTag, NetworkReservedIP, VPC } from '../types';
+import type { NetworkIPScanResponse, NetworkIPUsageSummary, NetworkProfile, NodeNetworkTag, NetworkReservedIP, VPC } from '../types';
 
 export const getVPCs = () =>
   client.get<VPC[]>('/vpcs').then((r) => r.data);
@@ -42,3 +42,9 @@ export const createReservedIP = (
 
 export const deleteReservedIP = (networkProfileID: number, reservedID: number) =>
   client.delete<{ id: number; deleted: boolean }>(`/networks/${networkProfileID}/reserved-ips/${reservedID}`).then((r) => r.data);
+
+export const getNetworkIPUsage = (networkProfileID: number) =>
+  client.get<NetworkIPUsageSummary>(`/networks/${networkProfileID}/ip-usage`).then((r) => r.data);
+
+export const scanNetworkIPUsage = (networkProfileID: number) =>
+  client.post<NetworkIPScanResponse>(`/networks/${networkProfileID}/ip-usage/scan`).then((r) => r.data);

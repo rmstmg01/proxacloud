@@ -72,6 +72,41 @@ export interface NetworkReservedIP {
 
 // ─── Proxmox ──────────────────────────────────────────────────────────────────
 
+export interface NetworkIPUsageEntry {
+  ip_address: string;
+  status: 'used' | 'reserved' | 'detected' | 'conflict' | string;
+  source_type: string;
+  source_name: string;
+  cluster_id?: number;
+  last_seen_at?: string;
+  details?: string;
+}
+
+export interface NetworkIPUsageSummary {
+  network_profile_id: number;
+  cidr: string;
+  gateway: string;
+  total_usable: number;
+  used_count: number;
+  reserved_count: number;
+  detected_count: number;
+  available_count: number;
+  conflict_count: number;
+  last_scan_at?: string;
+  entries: NetworkIPUsageEntry[];
+  available_preview: string[];
+}
+
+export interface NetworkIPScanResponse {
+  network_profile_id: number;
+  scanned_count: number;
+  detected_count: number;
+  started_at: string;
+  finished_at: string;
+  warnings: string[];
+  usage: NetworkIPUsageSummary;
+}
+
 export interface ProxmoxCredential {
   id: number;
   name: string;

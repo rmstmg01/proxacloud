@@ -150,6 +150,42 @@ func (h *Handler) SetDefault(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (h *Handler) GetIPUsage(w http.ResponseWriter, r *http.Request) {
+	networkID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+	usage, err := h.service.GetIPUsage(networkID)
+	if err != nil {
+		if errors.Is(err, ErrNetworkNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, usage)
+}
+
+func (h *Handler) ScanIPUsage(w http.ResponseWriter, r *http.Request) {
+	networkID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+	scan, err := h.service.ScanIPUsage(networkID)
+	if err != nil {
+		if errors.Is(err, ErrNetworkNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, scan)
+}
+
 func (h *Handler) ListNodeTags(w http.ResponseWriter, _ *http.Request) {
 	tags, err := h.service.ListNodeTags()
 	if err != nil {

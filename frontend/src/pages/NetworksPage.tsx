@@ -1,9 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Star } from 'lucide-react';
-import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP, getVPCs, createVPC } from '../api/networks';
+import { Plus, Pencil, Star, Radar, RefreshCw } from 'lucide-react';
+import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP, getVPCs, createVPC, getNetworkIPUsage, scanNetworkIPUsage } from '../api/networks';
 import { getNodes } from '../api/proxmox';
-import type { NetworkProfile, VPC } from '../types';
+import type { NetworkIPUsageEntry, NetworkProfile, VPC } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -34,6 +34,30 @@ const emptyForm: NetworkFormData = {
   vlan: 0,
   is_default: false,
 };
+
+function ipStatusVariant(status: string) {
+  switch (status) {
+    case 'used':
+      return 'info' as const;
+    case 'reserved':
+      return 'warning' as const;
+    case 'detected':
+      return 'purple' as const;
+    case 'conflict':
+      return 'danger' as const;
+    default:
+      return 'default' as const;
+  }
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString();
+}
+
+function sourceLabel(entry: NetworkIPUsageEntry) {
+  return entry.source_type.replace(/_/g, ' ');
+}
 
 function NetworkForm({
   initial,
@@ -107,6 +131,7 @@ export function NetworksPage() {
   const [createVPCOpen, setCreateVPCOpen] = useState(false);
   const [editNetwork, setEditNetwork] = useState<NetworkProfile | null>(null);
   const [reservedOpenFor, setReservedOpenFor] = useState<NetworkProfile | null>(null);
+  const [usageNetworkID, setUsageNetworkID] = useState(0);
   const [reservedForm, setReservedForm] = useState({ hostname: '', ip_address: '', description: '' });
   const [vpcForm, setVPCForm] = useState({ name: '', cidr: '10.0.0.0/16', description: '', is_default: false });
 
@@ -120,6 +145,15 @@ export function NetworksPage() {
     mutationFn: (d: NetworkFormData) =>
       createNetwork({ ...d, dns: d.dns.split(',').map((s) => s.trim()) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['networks'] }); setCreateOpen(false); },
+  });
+
+  const selectedUsageNetwork = (networks ?? []).find((network) => network.id === usageNetworkID) ?? networks?.[0];
+  const selectedUsageNetworkID = selectedUsageNetwork?.id ?? 0;
+  const { data: ipUsage, error: ipUsageError, isFetching: ipUsageFetching } = useQuery({
+    queryKey: ['network-ip-usage', selectedUsageNetworkID],
+    queryFn: () => getNetworkIPUsage(selectedUsageNetworkID),
+    enabled: selectedUsageNetworkID > 0,
+    refetchInterval: 60_000,
   });
 
   const createVPCMut = useMutation({
@@ -172,6 +206,14 @@ export function NetworksPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-reserved-ips', reservedOpenFor?.id] }),
   });
 
+  const scanUsageMut = useMutation({
+    mutationFn: scanNetworkIPUsage,
+    onSuccess: (resp) => {
+      qc.setQueryData(['network-ip-usage', resp.network_profile_id], resp.usage);
+      qc.invalidateQueries({ queryKey: ['network-ip-usage', resp.network_profile_id] });
+    },
+  });
+
   const enabledNodesByName = Array.from(
     new Map((proxmoxNodes ?? []).filter((n) => n.enabled).map((n) => [n.node_name, n])).values(),
   );
@@ -220,6 +262,125 @@ export function NetworksPage() {
           ))}
         </div>
       )}
+      {networks?.length ? (
+        <Card className="mb-6">
+          <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-slate-800">IP Usage Dashboard</h3>
+                <p className="mt-1 text-xs text-slate-600">Database inventory is calculated immediately. Live detection updates when you scan.</p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Subnet</span>
+                  <select
+                    className="min-w-64 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                    value={selectedUsageNetworkID}
+                    onChange={(event) => setUsageNetworkID(Number(event.target.value))}
+                  >
+                    {networks.map((network) => (
+                      <option key={network.id} value={network.id}>
+                        {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => selectedUsageNetworkID && scanUsageMut.mutate(selectedUsageNetworkID)}
+                  loading={scanUsageMut.isPending}
+                >
+                  <Radar className="h-4 w-4" />
+                  Scan network now
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => qc.invalidateQueries({ queryKey: ['network-ip-usage', selectedUsageNetworkID] })}
+                  loading={ipUsageFetching}
+                  title="Refresh IP usage"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="p-6">
+            {ipUsageError && <ErrorMessage error={ipUsageError} />}
+            {scanUsageMut.error && <ErrorMessage error={scanUsageMut.error} />}
+            {scanUsageMut.data?.warnings?.map((warning) => (
+              <p key={warning} className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{warning}</p>
+            ))}
+            {ipUsage ? (
+              <div className="space-y-5">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  {[
+                    ['Usable', ipUsage.total_usable],
+                    ['Used', ipUsage.used_count],
+                    ['Reserved', ipUsage.reserved_count],
+                    ['Detected', ipUsage.detected_count],
+                    ['Available', ipUsage.available_count],
+                    ['Conflicts', ipUsage.conflict_count],
+                  ].map(([label, value]) => (
+                    <div key={label} className="rounded-md border border-slate-200 px-4 py-3">
+                      <p className="text-xs font-medium uppercase text-slate-500">{label}</p>
+                      <p className="mt-1 text-2xl font-semibold text-slate-900">{value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-[1.4fr_0.8fr]">
+                  <div className="overflow-x-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 bg-slate-50">
+                          <th className="px-4 py-2 text-left font-medium text-slate-600">IP Address</th>
+                          <th className="px-4 py-2 text-left font-medium text-slate-600">Status</th>
+                          <th className="px-4 py-2 text-left font-medium text-slate-600">Source</th>
+                          <th className="px-4 py-2 text-left font-medium text-slate-600">Used By</th>
+                          <th className="px-4 py-2 text-left font-medium text-slate-600">Last Seen</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {ipUsage.entries.map((entry, index) => (
+                          <tr key={`${entry.ip_address}-${entry.source_type}-${index}`} className={entry.status === 'conflict' ? 'bg-red-50' : undefined}>
+                            <td className="px-4 py-2 font-mono text-slate-800">{entry.ip_address}</td>
+                            <td className="px-4 py-2"><Badge variant={ipStatusVariant(entry.status)}>{entry.status}</Badge></td>
+                            <td className="px-4 py-2 text-slate-600">{sourceLabel(entry)}</td>
+                            <td className="px-4 py-2 text-slate-700">{entry.source_name || '-'}</td>
+                            <td className="px-4 py-2 text-slate-500">{formatDateTime(entry.last_seen_at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {!ipUsage.entries.length && <p className="px-4 py-3 text-sm text-slate-500">No used, reserved, or detected IPs yet.</p>}
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900">Available IP Preview</p>
+                        <p className="mt-1 text-xs text-slate-500">Showing first {ipUsage.available_preview.length} available addresses.</p>
+                      </div>
+                      <Badge variant="success">{ipUsage.available_count} free</Badge>
+                    </div>
+                    <div className="mt-3 flex max-h-56 flex-wrap gap-2 overflow-auto">
+                      {ipUsage.available_preview.map((ip) => (
+                        <span key={ip} className="rounded bg-emerald-50 px-2 py-1 font-mono text-xs text-emerald-800">{ip}</span>
+                      ))}
+                      {!ipUsage.available_preview.length && <p className="text-sm text-slate-500">No available IPs in this subnet.</p>}
+                    </div>
+                    <p className="mt-3 text-xs text-slate-500">Last scan: {formatDateTime(ipUsage.last_scan_at)}</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <PageSpinner />
+            )}
+          </div>
+        </Card>
+      ) : null}
       {networks && (
         <Card>
           {networks.length === 0 ? (

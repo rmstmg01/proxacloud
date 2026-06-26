@@ -246,6 +246,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/networks", networkHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/networks/{id}", networkHandler.Update)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/networks/{id}/set-default", networkHandler.SetDefault)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/networks/{id}/ip-usage", networkHandler.GetIPUsage)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/networks/{id}/ip-usage/scan", networkHandler.ScanIPUsage)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/networks/{id}/reserved-ips", networkHandler.ListReservedIPs)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/networks/{id}/reserved-ips", networkHandler.CreateReservedIP)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/networks/{id}/reserved-ips/{reservedId}", networkHandler.DeleteReservedIP)

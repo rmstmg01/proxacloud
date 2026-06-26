@@ -1,11 +1,17 @@
 package networks
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"os/exec"
+	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -63,6 +69,41 @@ type ReservedIP struct {
 	Description      string    `json:"description"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type IPUsageEntry struct {
+	IPAddress  string     `json:"ip_address"`
+	Status     string     `json:"status"`
+	SourceType string     `json:"source_type"`
+	SourceName string     `json:"source_name"`
+	ClusterID  int64      `json:"cluster_id,omitempty"`
+	LastSeenAt *time.Time `json:"last_seen_at,omitempty"`
+	Details    string     `json:"details,omitempty"`
+}
+
+type IPUsageSummary struct {
+	NetworkProfileID int64          `json:"network_profile_id"`
+	CIDR             string         `json:"cidr"`
+	Gateway          string         `json:"gateway"`
+	TotalUsable      int            `json:"total_usable"`
+	UsedCount        int            `json:"used_count"`
+	ReservedCount    int            `json:"reserved_count"`
+	DetectedCount    int            `json:"detected_count"`
+	AvailableCount   int            `json:"available_count"`
+	ConflictCount    int            `json:"conflict_count"`
+	LastScanAt       *time.Time     `json:"last_scan_at,omitempty"`
+	Entries          []IPUsageEntry `json:"entries"`
+	AvailablePreview []string       `json:"available_preview"`
+}
+
+type IPScanResponse struct {
+	NetworkProfileID int            `json:"network_profile_id"`
+	ScannedCount     int            `json:"scanned_count"`
+	DetectedCount    int            `json:"detected_count"`
+	StartedAt        time.Time      `json:"started_at"`
+	FinishedAt       time.Time      `json:"finished_at"`
+	Warnings         []string       `json:"warnings"`
+	Usage            IPUsageSummary `json:"usage"`
 }
 
 type Service struct {
@@ -509,6 +550,234 @@ func (s *Service) DeleteNodeTag(nodeName string) error {
 	return nil
 }
 
+func (s *Service) GetIPUsage(networkProfileID int64) (IPUsageSummary, error) {
+	profile, err := s.GetByID(networkProfileID)
+	if err != nil {
+		return IPUsageSummary{}, err
+	}
+	_, cidrNet, err := net.ParseCIDR(strings.TrimSpace(profile.CIDR))
+	if err != nil {
+		return IPUsageSummary{}, errors.New("network profile cidr is invalid")
+	}
+
+	usable := usableIPv4Addresses(cidrNet)
+	entriesByIP := map[string][]IPUsageEntry{}
+	addEntry := func(entry IPUsageEntry) {
+		ip := normalizeIPv4(entry.IPAddress)
+		if ip == "" || !cidrNet.Contains(net.ParseIP(ip).To4()) {
+			return
+		}
+		entry.IPAddress = ip
+		entriesByIP[ip] = append(entriesByIP[ip], entry)
+	}
+
+	gateway := normalizeIPv4(profile.Gateway)
+	if gateway != "" {
+		addEntry(IPUsageEntry{IPAddress: gateway, Status: "reserved", SourceType: "gateway", SourceName: "Network gateway"})
+	}
+	for _, dns := range profile.DNS {
+		if ip := normalizeIPv4(dns); ip != "" {
+			addEntry(IPUsageEntry{IPAddress: ip, Status: "reserved", SourceType: "dns", SourceName: "DNS server"})
+		}
+	}
+	if err := s.addReservedIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addClusterNodeIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addClusterVIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addMetalLBIPUsage(networkProfileID, cidrNet, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addVPSIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addContainerIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	if err := s.addDatabaseNodeIPUsage(networkProfileID, addEntry); err != nil {
+		return IPUsageSummary{}, err
+	}
+	lastScanAt, err := s.addDetectedIPUsage(networkProfileID, addEntry)
+	if err != nil {
+		return IPUsageSummary{}, err
+	}
+
+	entries := make([]IPUsageEntry, 0)
+	usedIPs := map[string]bool{}
+	reservedIPs := map[string]bool{}
+	detectedIPs := map[string]bool{}
+	conflictIPs := map[string]bool{}
+	for ip, list := range entriesByIP {
+		authoritativeCount := 0
+		for _, entry := range list {
+			if entry.SourceType != "live_scan" {
+				authoritativeCount++
+			}
+		}
+		if authoritativeCount > 1 {
+			conflictIPs[ip] = true
+		}
+		for _, entry := range list {
+			if conflictIPs[ip] && entry.SourceType != "live_scan" {
+				entry.Status = "conflict"
+			}
+			switch entry.Status {
+			case "used":
+				usedIPs[ip] = true
+			case "reserved":
+				reservedIPs[ip] = true
+			case "detected":
+				detectedIPs[ip] = true
+			case "conflict":
+				usedIPs[ip] = true
+			}
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		cmp := compareIPv4(entries[i].IPAddress, entries[j].IPAddress)
+		if cmp == 0 {
+			return entries[i].SourceType < entries[j].SourceType
+		}
+		return cmp < 0
+	})
+
+	occupied := map[string]bool{}
+	for ip := range usedIPs {
+		occupied[ip] = true
+	}
+	for ip := range reservedIPs {
+		occupied[ip] = true
+	}
+	for ip := range detectedIPs {
+		occupied[ip] = true
+	}
+	availablePreview := make([]string, 0, 128)
+	availableCount := 0
+	for _, ip := range usable {
+		if occupied[ip] {
+			continue
+		}
+		availableCount++
+		if len(availablePreview) < 128 {
+			availablePreview = append(availablePreview, ip)
+		}
+	}
+
+	return IPUsageSummary{
+		NetworkProfileID: networkProfileID,
+		CIDR:             profile.CIDR,
+		Gateway:          profile.Gateway,
+		TotalUsable:      len(usable),
+		UsedCount:        len(usedIPs),
+		ReservedCount:    len(reservedIPs),
+		DetectedCount:    len(detectedIPs),
+		AvailableCount:   availableCount,
+		ConflictCount:    len(conflictIPs),
+		LastScanAt:       lastScanAt,
+		Entries:          entries,
+		AvailablePreview: availablePreview,
+	}, nil
+}
+
+func (s *Service) ScanIPUsage(networkProfileID int64) (IPScanResponse, error) {
+	profile, err := s.GetByID(networkProfileID)
+	if err != nil {
+		return IPScanResponse{}, err
+	}
+	_, cidrNet, err := net.ParseCIDR(strings.TrimSpace(profile.CIDR))
+	if err != nil {
+		return IPScanResponse{}, errors.New("network profile cidr is invalid")
+	}
+	startedAt := time.Now()
+	candidates := usableIPv4Addresses(cidrNet)
+	const maxScanSize = 1024
+	warnings := []string{}
+	if len(candidates) > maxScanSize {
+		candidates = candidates[:maxScanSize]
+		warnings = append(warnings, fmt.Sprintf("scan limited to first %d usable IPs for large CIDR %s", maxScanSize, profile.CIDR))
+	}
+
+	type result struct {
+		ip string
+		ok bool
+	}
+	jobs := make(chan string)
+	results := make(chan result)
+	workers := 64
+	if len(candidates) < workers {
+		workers = len(candidates)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ip := range jobs {
+				results <- result{ip: ip, ok: pingIPv4(ip)}
+			}
+		}()
+	}
+	go func() {
+		for _, ip := range candidates {
+			jobs <- ip
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+
+	detected := make([]string, 0)
+	for res := range results {
+		if res.ok {
+			detected = append(detected, res.ip)
+		}
+	}
+	sort.Slice(detected, func(i, j int) bool { return compareIPv4(detected[i], detected[j]) < 0 })
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return IPScanResponse{}, fmt.Errorf("begin ip scan transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for _, ip := range detected {
+		if _, err := tx.Exec(
+			`INSERT INTO network_ip_detections (network_profile_id, ip_address, method, first_seen_at, last_seen_at)
+			 VALUES ($1, $2, 'icmp', NOW(), NOW())
+			 ON CONFLICT (network_profile_id, ip_address)
+			 DO UPDATE SET method = EXCLUDED.method, last_seen_at = NOW()`,
+			networkProfileID,
+			ip,
+		); err != nil {
+			return IPScanResponse{}, fmt.Errorf("record detected ip %s: %w", ip, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return IPScanResponse{}, fmt.Errorf("commit ip scan results: %w", err)
+	}
+
+	usage, err := s.GetIPUsage(networkProfileID)
+	if err != nil {
+		return IPScanResponse{}, err
+	}
+	return IPScanResponse{
+		NetworkProfileID: int(networkProfileID),
+		ScannedCount:     len(candidates),
+		DetectedCount:    len(detected),
+		StartedAt:        startedAt,
+		FinishedAt:       time.Now(),
+		Warnings:         warnings,
+		Usage:            usage,
+	}, nil
+}
+
 func (s *Service) GetReservedIPsByNetworkProfileID(networkProfileID int64) ([]ReservedIP, error) {
 	if networkProfileID <= 0 {
 		return nil, errors.New("network profile id is required")
@@ -635,6 +904,202 @@ func (s *Service) DeleteReservedIP(networkProfileID int64, reservedIPID int64) e
 	return nil
 }
 
+func (s *Service) addReservedIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(
+		`SELECT hostname, ip_address, description
+		 FROM network_reserved_ips
+		 WHERE network_profile_id = $1`,
+		networkProfileID,
+	)
+	if err != nil {
+		return fmt.Errorf("load reserved ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var hostname, ip, description string
+		if err := rows.Scan(&hostname, &ip, &description); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "reserved", SourceType: "manual_reservation", SourceName: hostname, Details: description})
+	}
+	return rows.Err()
+}
+
+func (s *Service) addClusterNodeIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(
+		`SELECT c.id, c.name, n.vm_name, COALESCE(n.ip_address, '')
+		 FROM cluster_nodes n
+		 JOIN clusters c ON c.id = n.cluster_id
+		 WHERE c.network_profile_id = $1 AND COALESCE(n.ip_address, '') <> ''`,
+		networkProfileID,
+	)
+	if err != nil {
+		return fmt.Errorf("load cluster node ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var clusterID int64
+		var clusterName, vmName, ip string
+		if err := rows.Scan(&clusterID, &clusterName, &vmName, &ip); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "used", SourceType: "cluster_node", SourceName: fmt.Sprintf("%s / %s", clusterName, vmName), ClusterID: clusterID})
+	}
+	return rows.Err()
+}
+
+func (s *Service) addClusterVIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(
+		`SELECT c.id, c.name, COALESCE(b.control_plane_vip, '')
+		 FROM cluster_bootstrap_configs b
+		 JOIN clusters c ON c.id = b.cluster_id
+		 WHERE c.network_profile_id = $1 AND COALESCE(b.control_plane_vip, '') <> ''`,
+		networkProfileID,
+	)
+	if err != nil {
+		return fmt.Errorf("load control plane vip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var clusterID int64
+		var clusterName, ip string
+		if err := rows.Scan(&clusterID, &clusterName, &ip); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "used", SourceType: "control_plane_vip", SourceName: clusterName + " kube-vip", ClusterID: clusterID})
+	}
+	return rows.Err()
+}
+
+type metalLBPoolUsage struct {
+	Name      string   `json:"name"`
+	Addresses []string `json:"addresses"`
+}
+
+func (s *Service) addMetalLBIPUsage(networkProfileID int64, cidrNet *net.IPNet, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(
+		`SELECT c.id, c.name, m.address_pools
+		 FROM metallb_configs m
+		 JOIN clusters c ON c.id = m.cluster_id
+		 WHERE c.network_profile_id = $1`,
+		networkProfileID,
+	)
+	if err != nil {
+		return fmt.Errorf("load metallb ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var clusterID int64
+		var clusterName string
+		var raw []byte
+		if err := rows.Scan(&clusterID, &clusterName, &raw); err != nil {
+			continue
+		}
+		var pools []metalLBPoolUsage
+		if err := json.Unmarshal(raw, &pools); err != nil {
+			continue
+		}
+		for _, pool := range pools {
+			for _, item := range pool.Addresses {
+				for _, ip := range expandAddressExpression(item, cidrNet, 256) {
+					add(IPUsageEntry{
+						IPAddress:  ip,
+						Status:     "reserved",
+						SourceType: "metallb_pool",
+						SourceName: fmt.Sprintf("%s / %s", clusterName, pool.Name),
+						ClusterID:  clusterID,
+						Details:    item,
+					})
+				}
+			}
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Service) addVPSIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(`SELECT name, ip_address FROM vps_instances WHERE network_profile_id = $1 AND ip_address <> ''`, networkProfileID)
+	if err != nil {
+		return fmt.Errorf("load vps ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, ip string
+		if err := rows.Scan(&name, &ip); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "used", SourceType: "vps", SourceName: name})
+	}
+	return rows.Err()
+}
+
+func (s *Service) addContainerIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(`SELECT name, ip_address FROM container_instances WHERE network_profile_id = $1 AND ip_address <> ''`, networkProfileID)
+	if err != nil {
+		return fmt.Errorf("load container ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, ip string
+		if err := rows.Scan(&name, &ip); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "used", SourceType: "container", SourceName: name})
+	}
+	return rows.Err()
+}
+
+func (s *Service) addDatabaseNodeIPUsage(networkProfileID int64, add func(IPUsageEntry)) error {
+	rows, err := s.db.Query(
+		`SELECT d.name, n.vm_name, n.ip_address
+		 FROM database_cluster_nodes n
+		 JOIN database_clusters d ON d.id = n.database_cluster_id
+		 WHERE d.network_profile_id = $1 AND n.ip_address <> ''`,
+		networkProfileID,
+	)
+	if err != nil {
+		return fmt.Errorf("load database node ip usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var dbName, vmName, ip string
+		if err := rows.Scan(&dbName, &vmName, &ip); err != nil {
+			continue
+		}
+		add(IPUsageEntry{IPAddress: ip, Status: "used", SourceType: "database_node", SourceName: fmt.Sprintf("%s / %s", dbName, vmName)})
+	}
+	return rows.Err()
+}
+
+func (s *Service) addDetectedIPUsage(networkProfileID int64, add func(IPUsageEntry)) (*time.Time, error) {
+	rows, err := s.db.Query(
+		`SELECT ip_address, method, last_seen_at
+		 FROM network_ip_detections
+		 WHERE network_profile_id = $1
+		 ORDER BY last_seen_at DESC`,
+		networkProfileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load detected ip usage: %w", err)
+	}
+	defer rows.Close()
+	var lastScanAt *time.Time
+	for rows.Next() {
+		var ip, method string
+		var lastSeen time.Time
+		if err := rows.Scan(&ip, &method, &lastSeen); err != nil {
+			continue
+		}
+		if lastScanAt == nil || lastSeen.After(*lastScanAt) {
+			value := lastSeen
+			lastScanAt = &value
+		}
+		value := lastSeen
+		add(IPUsageEntry{IPAddress: ip, Status: "detected", SourceType: "live_scan", SourceName: method, LastSeenAt: &value})
+	}
+	return lastScanAt, rows.Err()
+}
+
 func isNetworkOrBroadcastAddress(cidr *net.IPNet, ip net.IP) bool {
 	networkIP := cidr.IP.To4()
 	ipv4 := ip.To4()
@@ -649,6 +1114,139 @@ func isNetworkOrBroadcastAddress(cidr *net.IPNet, ip net.IP) bool {
 		broadcast[i] = networkIP[i] | ^cidr.Mask[i]
 	}
 	return broadcast.Equal(ipv4)
+}
+
+func normalizeIPv4(value string) string {
+	ip := net.ParseIP(strings.TrimSpace(value)).To4()
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func usableIPv4Addresses(cidr *net.IPNet) []string {
+	if cidr == nil || cidr.IP.To4() == nil {
+		return nil
+	}
+	out := make([]string, 0)
+	start := ipv4ToUint32(cidr.IP.To4())
+	ones, bits := cidr.Mask.Size()
+	if bits != 32 {
+		return nil
+	}
+	size := uint32(1) << uint32(32-ones)
+	if ones == 0 {
+		return nil
+	}
+	end := start + size - 1
+	for current := start; current <= end; current++ {
+		ip := uint32ToIPv4(current)
+		if isNetworkOrBroadcastAddress(cidr, ip) {
+			if current == end {
+				break
+			}
+			continue
+		}
+		out = append(out, ip.String())
+		if current == end {
+			break
+		}
+	}
+	return out
+}
+
+func expandAddressExpression(value string, cidrNet *net.IPNet, limit int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.Contains(value, "-") {
+		parts := strings.SplitN(value, "-", 2)
+		start := net.ParseIP(strings.TrimSpace(parts[0])).To4()
+		end := net.ParseIP(strings.TrimSpace(parts[1])).To4()
+		if start == nil || end == nil {
+			return nil
+		}
+		startNum := ipv4ToUint32(start)
+		endNum := ipv4ToUint32(end)
+		if endNum < startNum {
+			return nil
+		}
+		out := make([]string, 0)
+		for current := startNum; current <= endNum && len(out) < limit; current++ {
+			ip := uint32ToIPv4(current)
+			if cidrNet == nil || cidrNet.Contains(ip) {
+				out = append(out, ip.String())
+			}
+			if current == endNum {
+				break
+			}
+		}
+		return out
+	}
+	if strings.Contains(value, "/") {
+		_, nested, err := net.ParseCIDR(value)
+		if err != nil {
+			return nil
+		}
+		out := make([]string, 0)
+		for _, ip := range usableIPv4Addresses(nested) {
+			parsed := net.ParseIP(ip).To4()
+			if parsed != nil && (cidrNet == nil || cidrNet.Contains(parsed)) {
+				out = append(out, ip)
+				if len(out) >= limit {
+					break
+				}
+			}
+		}
+		return out
+	}
+	ip := net.ParseIP(value).To4()
+	if ip == nil || (cidrNet != nil && !cidrNet.Contains(ip)) {
+		return nil
+	}
+	return []string{ip.String()}
+}
+
+func compareIPv4(a, b string) int {
+	aa := net.ParseIP(a).To4()
+	bb := net.ParseIP(b).To4()
+	if aa == nil || bb == nil {
+		return strings.Compare(a, b)
+	}
+	av := ipv4ToUint32(aa)
+	bv := ipv4ToUint32(bb)
+	switch {
+	case av < bv:
+		return -1
+	case av > bv:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func ipv4ToUint32(ip net.IP) uint32 {
+	ip = ip.To4()
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func uint32ToIPv4(value uint32) net.IP {
+	return net.IPv4(byte(value>>24), byte(value>>16), byte(value>>8), byte(value))
+}
+
+func pingIPv4(ip string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	args := []string{"-c", "1", "-W", "1", ip}
+	if runtime.GOOS == "windows" {
+		args = []string{"-n", "1", "-w", "1000", ip}
+	}
+	cmd := exec.CommandContext(ctx, "ping", args...)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
 }
 
 func validateProfile(p Profile) error {
