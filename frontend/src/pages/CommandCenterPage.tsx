@@ -127,9 +127,16 @@ export function CommandCenterPage() {
     },
   });
 
+  const clearRunState = () => {
+    setRunID('');
+    setOutputCopied(false);
+    kubectlMutation.reset();
+    nodeMutation.reset();
+  };
+
   const activeRun = (runKind === 'kubernetes' ? kubectlRunQuery.data : nodeRunQuery.data)
-    ?? kubectlMutation.data
-    ?? nodeMutation.data;
+    ?? (runID ? kubectlMutation.data : undefined)
+    ?? (runID ? nodeMutation.data : undefined);
   const isRunning = activeRun?.status === 'running';
   const outputText = activeRun
     ? [
@@ -144,6 +151,7 @@ export function CommandCenterPage() {
     event?.preventDefault();
     const trimmed = command.trim();
     if (!clusterID || !trimmed) return;
+    clearRunState();
     if (mode === 'kubernetes') {
       await kubectlMutation.mutateAsync(trimmed);
       return;
@@ -194,7 +202,10 @@ export function CommandCenterPage() {
               <Select
                 label="Command type"
                 value={mode}
-                onChange={(event) => resetCommandFromMode(event.target.value as CommandMode)}
+                onChange={(event) => {
+                  resetCommandFromMode(event.target.value as CommandMode);
+                  clearRunState();
+                }}
               >
                 <option value="kubernetes">Kubernetes</option>
                 <option value="docker">Docker</option>
@@ -205,7 +216,7 @@ export function CommandCenterPage() {
                 value={clusterID}
                 onChange={(event) => {
                   setClusterID(Number(event.target.value));
-                  setRunID('');
+                  clearRunState();
                 }}
               >
                 {clustersQuery.data.map((cluster) => (
@@ -220,7 +231,7 @@ export function CommandCenterPage() {
                   value={nodeName}
                   onChange={(event) => {
                     setNodeName(event.target.value);
-                    setRunID('');
+                    clearRunState();
                   }}
                 >
                   {nodesQuery.data?.map((node) => (
