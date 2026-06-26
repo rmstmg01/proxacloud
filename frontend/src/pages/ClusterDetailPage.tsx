@@ -2349,7 +2349,7 @@ function ApplicationsTab({ id }: { id: number }) {
       namespace: appForm.namespace.trim() || 'default',
       hostname: appForm.hostname.trim(),
       ingress_class: appForm.ingress_class.trim() || 'traefik',
-      tls_secret_name: appForm.tls_secret_name.trim() || `${appForm.name.trim() || 'application'}-tls`,
+      tls_secret_name: appForm.tls_secret_name.trim(),
       tls_certificate_id: appForm.tls_certificate_id,
       tls_fullchain_pem: appForm.tls_fullchain_pem.trim(),
       tls_private_key_pem: appForm.tls_private_key_pem.trim(),
@@ -2513,7 +2513,7 @@ function ApplicationsTab({ id }: { id: number }) {
                 label="TLS secret name"
                 value={appForm.tls_secret_name}
                 onChange={(e) => setAppForm({ ...appForm, tls_secret_name: e.target.value })}
-                placeholder="sample-app-tls"
+                placeholder="Leave empty for HTTP"
               />
             </div>
             <div className="max-w-xl">
@@ -2535,8 +2535,8 @@ function ApplicationsTab({ id }: { id: number }) {
                 ))}
               </Select>
             </div>
-            <Alert variant="info" title="Existing certificate upload">
-              Select a saved certificate or choose your Let&apos;s Encrypt fullchain.pem and privkey.pem to create/update the Kubernetes TLS secret before the app manifest is applied.
+            <Alert variant="info" title="TLS certificate upload">
+              Leave TLS fields empty for plain HTTP behind the tunnel. Select or upload a certificate only when this Ingress should terminate TLS inside Kubernetes.
             </Alert>
             <div className="border border-slate-200 rounded-md p-4 space-y-3">
               <div className="flex items-center justify-between gap-3">
