@@ -57,22 +57,18 @@ const navGroups: NavGroup[] = [
     ],
   },
   {
-    label: 'Kubernetes Resources',
-    items: [
-      { to: '/configmaps', icon: FileText, label: 'ConfigMaps', roles: adminRoles },
-      { to: '/secrets', icon: KeyRound, label: 'Secrets', roles: adminRoles },
-      { to: '/image-pull-secrets', icon: LockKeyhole, label: 'Pull Secrets', roles: adminRoles },
-      { to: '/manifests', icon: FileCode, label: 'Manifests', roles: adminRoles },
-    ],
-  },
-  {
     label: 'Network & Access',
     items: [
       { to: '/networks', icon: Network, label: 'VPC Networks', roles: adminRoles },
       { to: '/firewalls', icon: Shield, label: 'Firewalls', roles: adminRoles },
+      { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs', roles: adminRoles },
+    ],
+  },
+  {
+    label: 'Zero Trust',
+    items: [
       { to: '/cloudflare-tunnels', icon: Cloud, label: 'Cloudflare Tunnels', roles: adminRoles },
       { to: '/proxacloud-tunnels', icon: Cloud, label: 'Proxacloud Tunnels', roles: adminRoles },
-      { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs', roles: adminRoles },
     ],
   },
   {
@@ -93,6 +89,15 @@ const navGroups: NavGroup[] = [
       { to: '/documents', icon: BookOpen, label: 'Documents' },
       { to: '/ssh-keys', icon: KeyRound, label: 'SSH Keys', roles: adminRoles },
       { to: '/users', icon: Users, label: 'Users', roles: adminRoles },
+    ],
+  },
+  {
+    label: 'Kubernetes Resources',
+    items: [
+      { to: '/configmaps', icon: FileText, label: 'ConfigMaps', roles: adminRoles },
+      { to: '/secrets', icon: KeyRound, label: 'Secrets', roles: adminRoles },
+      { to: '/image-pull-secrets', icon: LockKeyhole, label: 'Pull Secrets', roles: adminRoles },
+      { to: '/manifests', icon: FileCode, label: 'Manifests', roles: adminRoles },
     ],
   },
 ];
@@ -126,7 +131,7 @@ export function Sidebar() {
         <div className="space-y-4">
           {visibleGroups.map((group) => (
             <div key={group.label}>
-              <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <p className="mb-2 rounded-md border border-slate-700/70 bg-slate-800/70 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-slate-100 shadow-sm">
                 {group.label}
               </p>
               <div className="space-y-1">
