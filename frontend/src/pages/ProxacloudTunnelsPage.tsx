@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FileCode, RefreshCw, Rocket, Trash2 } from 'lucide-react';
+import { FileCode, Plus, RefreshCw, Rocket, Trash2, X } from 'lucide-react';
 import {
   createProxacloudTunnel,
   deleteProxacloudTunnel,
@@ -56,6 +56,7 @@ export function ProxacloudTunnelsPage() {
   const [manifestID, setManifestID] = useState<number | null>(null);
   const [lastResult, setLastResult] = useState('');
   const [deleteName, setDeleteName] = useState('');
+  const [showCreateForm, setShowCreateForm] = useState(false);
 
   const { data: tunnels, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ['proxacloud-tunnels'],
@@ -85,6 +86,7 @@ export function ProxacloudTunnelsPage() {
       setManifestID(resp.id);
       setLastResult(resp.status === 'deployed' ? 'Proxacloud agent deployed.' : `Proxacloud tunnel saved with status ${resp.status}.`);
       setForm(initialForm);
+      setShowCreateForm(false);
     },
   });
 
@@ -162,10 +164,16 @@ export function ProxacloudTunnelsPage() {
         title="Proxacloud Tunnels"
         description="Deploy Proxacloud Tunnel agents into Kubernetes clusters as an alternative tunnel provider."
         actions={
-          <Button variant="secondary" onClick={() => refetch()} loading={isFetching}>
-            <RefreshCw className="h-4 w-4" />
-            Refresh
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setShowCreateForm((current) => !current)}>
+              {showCreateForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {showCreateForm ? 'Close form' : 'Create tunnel'}
+            </Button>
+            <Button variant="secondary" onClick={() => refetch()} loading={isFetching}>
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
+          </div>
         }
       />
 
@@ -173,72 +181,7 @@ export function ProxacloudTunnelsPage() {
       {error && <ErrorMessage error={error} />}
       {mutationError && <ErrorMessage error={mutationError} />}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Create Proxacloud Tunnel Agent</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">Use a tunnel ID and token generated from the Proxacloud Tunnel dashboard.</p>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={submit} className="grid gap-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <Input label="Name" value={form.name} onChange={(e) => update('name', e.target.value)} required />
-                <Select label="Cluster" value={form.cluster_id} onChange={(e) => update('cluster_id', e.target.value)} disabled={form.is_global} required={!form.is_global}>
-                  <option value="">Select cluster</option>
-                  {clusters?.map((cluster) => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}
-                </Select>
-                <Input label="Namespace" value={form.namespace} onChange={(e) => update('namespace', e.target.value)} required />
-                <Input label="Deployment name" value={form.deployment_name} onChange={(e) => update('deployment_name', e.target.value)} required />
-                <Input label="Tunnel ID" value={form.proxacloud_tunnel_id} onChange={(e) => update('proxacloud_tunnel_id', e.target.value)} required />
-                <Input label="Tunnel token" type="password" value={form.tunnel_token} onChange={(e) => update('tunnel_token', e.target.value)} required />
-                <Input label="Gateway URL" value={form.gateway_url} onChange={(e) => update('gateway_url', e.target.value)} required />
-                <Input label="Target URL" value={form.target_url} onChange={(e) => update('target_url', e.target.value)} required helperText="Usually Traefik or ingress-nginx service DNS inside this cluster." />
-                <Input label="Agent image" value={form.image} onChange={(e) => update('image', e.target.value)} required helperText="Use an immutable commit tag, not latest." />
-                <Input label="Image pull secret" value={form.image_pull_secret} onChange={(e) => update('image_pull_secret', e.target.value)} helperText="Optional. Required for private GHCR packages." />
-                <Input label="Replicas" type="number" min="1" value={form.replicas} onChange={(e) => update('replicas', e.target.value)} />
-              </div>
-
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <h3 className="mb-3 text-sm font-semibold text-slate-900">Route metadata</h3>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Input label="Public hostname" value={form.routes[0].hostname} onChange={(e) => updateRoute('hostname', e.target.value)} required />
-                  <Input label="Path" value={form.routes[0].path} onChange={(e) => updateRoute('path', e.target.value)} placeholder="/" />
-                  <Input label="Service namespace" value={form.routes[0].service_namespace} onChange={(e) => updateRoute('service_namespace', e.target.value)} />
-                  <Input label="Service name" value={form.routes[0].service_name} onChange={(e) => updateRoute('service_name', e.target.value)} />
-                  <Input label="Service port" type="number" value={form.routes[0].service_port} onChange={(e) => updateRoute('service_port', e.target.value)} />
-                  <Select label="Service scheme" value={form.routes[0].service_scheme} onChange={(e) => updateRoute('service_scheme', e.target.value)}>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                  </Select>
-                </div>
-              </div>
-
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                <input type="checkbox" checked={form.apply} onChange={(e) => update('apply', e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
-                Deploy agent manifest after creating record
-              </label>
-
-              <Button type="submit" loading={createMutation.isPending}>
-                <Rocket className="h-4 w-4" />
-                Create Proxacloud Tunnel
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Deployment Notes</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm text-slate-600">
-            <p>Point public DNS for each hostname to the Proxacloud gateway or gateway load balancer.</p>
-            <p>The Kubernetes agent connects outbound to the gateway. No public inbound service is created in the private cluster.</p>
-            <p>For private GHCR images, create the image pull secret in the target namespace before deployment.</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card className="mt-6">
+      <Card>
         <CardHeader>
           <CardTitle>Proxacloud Tunnel Records</CardTitle>
         </CardHeader>
@@ -297,6 +240,73 @@ export function ProxacloudTunnelsPage() {
           )}
         </CardContent>
       </Card>
+
+      {showCreateForm && (
+        <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <Card>
+            <CardHeader>
+              <CardTitle>Create Proxacloud Tunnel Agent</CardTitle>
+              <p className="mt-1 text-sm text-slate-500">Use a tunnel ID and token generated from the Proxacloud Tunnel dashboard.</p>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={submit} className="grid gap-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Input label="Name" value={form.name} onChange={(e) => update('name', e.target.value)} required />
+                  <Select label="Cluster" value={form.cluster_id} onChange={(e) => update('cluster_id', e.target.value)} disabled={form.is_global} required={!form.is_global}>
+                    <option value="">Select cluster</option>
+                    {clusters?.map((cluster) => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}
+                  </Select>
+                  <Input label="Namespace" value={form.namespace} onChange={(e) => update('namespace', e.target.value)} required />
+                  <Input label="Deployment name" value={form.deployment_name} onChange={(e) => update('deployment_name', e.target.value)} required />
+                  <Input label="Tunnel ID" value={form.proxacloud_tunnel_id} onChange={(e) => update('proxacloud_tunnel_id', e.target.value)} required />
+                  <Input label="Tunnel token" type="password" value={form.tunnel_token} onChange={(e) => update('tunnel_token', e.target.value)} required />
+                  <Input label="Gateway URL" value={form.gateway_url} onChange={(e) => update('gateway_url', e.target.value)} required />
+                  <Input label="Target URL" value={form.target_url} onChange={(e) => update('target_url', e.target.value)} required helperText="Usually Traefik or ingress-nginx service DNS inside this cluster." />
+                  <Input label="Agent image" value={form.image} onChange={(e) => update('image', e.target.value)} required helperText="Use an immutable commit tag, not latest." />
+                  <Input label="Image pull secret" value={form.image_pull_secret} onChange={(e) => update('image_pull_secret', e.target.value)} helperText="Optional. Required for private GHCR packages." />
+                  <Input label="Replicas" type="number" min="1" value={form.replicas} onChange={(e) => update('replicas', e.target.value)} />
+                </div>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <h3 className="mb-3 text-sm font-semibold text-slate-900">Route metadata</h3>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Input label="Public hostname" value={form.routes[0].hostname} onChange={(e) => updateRoute('hostname', e.target.value)} required />
+                    <Input label="Path" value={form.routes[0].path} onChange={(e) => updateRoute('path', e.target.value)} placeholder="/" />
+                    <Input label="Service namespace" value={form.routes[0].service_namespace} onChange={(e) => updateRoute('service_namespace', e.target.value)} />
+                    <Input label="Service name" value={form.routes[0].service_name} onChange={(e) => updateRoute('service_name', e.target.value)} />
+                    <Input label="Service port" type="number" value={form.routes[0].service_port} onChange={(e) => updateRoute('service_port', e.target.value)} />
+                    <Select label="Service scheme" value={form.routes[0].service_scheme} onChange={(e) => updateRoute('service_scheme', e.target.value)}>
+                      <option value="http">http</option>
+                      <option value="https">https</option>
+                    </Select>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <input type="checkbox" checked={form.apply} onChange={(e) => update('apply', e.target.checked)} className="h-4 w-4 rounded border-slate-300" />
+                  Deploy agent manifest after creating record
+                </label>
+
+                <Button type="submit" loading={createMutation.isPending}>
+                  <Rocket className="h-4 w-4" />
+                  Create Proxacloud Tunnel
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Deployment Notes</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-slate-600">
+              <p>Point public DNS for each hostname to the Proxacloud gateway or gateway load balancer.</p>
+              <p>The Kubernetes agent connects outbound to the gateway. No public inbound service is created in the private cluster.</p>
+              <p>For private GHCR images, create the image pull secret in the target namespace before deployment.</p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {selectedTunnel && (
         <div className="mt-6 grid gap-6 xl:grid-cols-2">
