@@ -218,6 +218,8 @@ type ClusterSummary struct {
 	Status            string     `json:"status"`
 	HealthStatus      string     `json:"health_status"`
 	HealthCheckedAt   *time.Time `json:"health_checked_at,omitempty"`
+	KubeconfigPath    string     `json:"kubeconfig_path,omitempty"`
+	KubeconfigMode    string     `json:"kubeconfig_mode"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
@@ -1513,7 +1515,7 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 			if dbErr := s.insertProvisionRun(clusterID, "bootstrap", runStatus, workDir, runOutput); dbErr != nil {
 				log.Printf("ERROR saving bootstrap run for cluster %d: %v", clusterID, dbErr)
 			}
-			exportPath, exportErr := s.exportBootstrapKubeconfig(workDir)
+			exportPath, exportErr := s.exportBootstrapKubeconfig(clusterID, workDir)
 			if exportErr != nil {
 				log.Printf("WARN export kubeconfig for cluster %d: %v", clusterID, exportErr)
 				_ = s.appendOperationEvent(operationID, "export-kubeconfig", "warning", fmt.Sprintf("Failed to export kubeconfig: %v", exportErr))
@@ -1573,7 +1575,7 @@ func (s *Service) ListClusters(scopes ...tenant.Scope) ([]ClusterSummary, error)
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
-	query := `SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
+	query := `SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, COALESCE(kubeconfig_path, ''), created_at, updated_at
 		 FROM clusters`
 	args := []any{}
 	if scope.IsCustomer() {
@@ -1608,11 +1610,13 @@ func (s *Service) ListClusters(scopes ...tenant.Scope) ([]ClusterSummary, error)
 			&c.Status,
 			&c.HealthStatus,
 			&c.HealthCheckedAt,
+			&c.KubeconfigPath,
 			&c.CreatedAt,
 			&c.UpdatedAt,
 		); scanErr != nil {
 			continue
 		}
+		c.KubeconfigMode = kubeconfigMode(c.KubeconfigPath)
 		out = append(out, c)
 	}
 
@@ -2547,7 +2551,7 @@ func (s *Service) DeployMetalLB(clusterID int64, req DeployMetalLBRequest) (Depl
 	warnings := []string{}
 	if req.Apply {
 		// Execute kubectl commands to deploy MetalLB
-		if err := s.executeMetalLBDeployment(namespace, version, manifestDir); err != nil {
+		if err := s.executeMetalLBDeployment(clusterID, namespace, version, manifestDir); err != nil {
 			return DeployMetalLBResponse{}, fmt.Errorf("failed to deploy metallb: %w", err)
 		}
 		status = "metallb-deployed"
@@ -2666,7 +2670,7 @@ func (s *Service) runIngressControllerDeploymentAsync(clusterID int64, operation
 	_ = s.updateClusterOperation(operationID, "running", "kubectl-apply", 20, "")
 	_ = s.appendOperationEvent(operationID, "kubectl-apply", "info", fmt.Sprintf("Applying Traefik ingress controller in namespace %s", namespace))
 
-	output, err := s.executeIngressControllerDeployment(namespace, image, replicas, wait, func(step, message string, progress int) {
+	output, err := s.executeIngressControllerDeployment(clusterID, namespace, image, replicas, wait, func(step, message string, progress int) {
 		_ = s.updateClusterOperation(operationID, "running", step, progress, "")
 		_ = s.appendOperationEvent(operationID, step, "info", message)
 	})
@@ -2698,7 +2702,7 @@ func (s *Service) DeployLonghorn(clusterID int64, req DeployLonghornRequest) (De
 		version = "v" + version
 	}
 
-	output, err := s.executeLonghornDeployment(version, req.SetDefault, req.Wait)
+	output, err := s.executeLonghornDeployment(clusterID, version, req.SetDefault, req.Wait)
 	warnings := []string{"Longhorn requires open-iscsi and nfs-common on every Kubernetes node before volumes can attach reliably."}
 	if err != nil {
 		return DeployLonghornResponse{}, fmt.Errorf("failed to deploy longhorn: %w", err)
@@ -2754,7 +2758,7 @@ func (s *Service) DeployCertificateManager(clusterID int64, req DeployCertificat
 	warnings := []string{}
 	if req.Apply {
 		status = "certificate-manager-deployed"
-		applyOutput, err := s.executeCertificateManagerDeployment(namespace, version, issuerName, email, acmeServer, ingressClass, req.Wait)
+		applyOutput, err := s.executeCertificateManagerDeployment(clusterID, namespace, version, issuerName, email, acmeServer, ingressClass, req.Wait)
 		output = applyOutput
 		if err != nil {
 			_ = s.insertProvisionRun(clusterID, "certificate-manager-deploy", "failed", issuerName, output)
@@ -3830,7 +3834,7 @@ func (s *Service) ApplyClusterSavedManifest(clusterID, manifestID int64, req App
 	if err != nil {
 		return ApplyClusterSavedManifestResponse{}, err
 	}
-	output, applyErr := s.executeSavedManifestApply(rec.Namespace, revision.RawManifest)
+	output, applyErr := s.executeSavedManifestApply(clusterID, rec.Namespace, revision.RawManifest)
 	status := "applied"
 	errorMessage := ""
 	if applyErr != nil {
@@ -4039,7 +4043,7 @@ func (s *Service) DeployApp(clusterID int64, req DeployAppRequest) (DeployAppRes
 	}
 	if req.Apply {
 		status = "app-deployed"
-		applyOutput, err := s.executeAppManifestApply(namespace, renderedManifest, appTLSSecretSpec{
+		applyOutput, err := s.executeAppManifestApply(clusterID, namespace, renderedManifest, appTLSSecretSpec{
 			Name:             tlsSecretName,
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
@@ -4236,7 +4240,7 @@ func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req Redepl
 	warnings := []string{fmt.Sprintf("redeployed from revision %d", revision.RevisionNumber)}
 	if req.Apply {
 		status = "app-deployed"
-		output, err = s.executeAppManifestApply(app.Namespace, revision.RenderedManifest, appTLSSecretSpec{
+		output, err = s.executeAppManifestApply(clusterID, app.Namespace, revision.RenderedManifest, appTLSSecretSpec{
 			Name:             app.TLSSecretName,
 			FullchainPEM:     tlsFullchainPEM,
 			PrivateKeyPEM:    tlsPrivateKeyPEM,
@@ -4277,13 +4281,11 @@ func (s *Service) RedeployApplicationManifest(clusterID, appID int64, req Redepl
 	}, nil
 }
 
-func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir string) error {
+func (s *Service) executeMetalLBDeployment(clusterID int64, namespace, version, manifestDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	// Use the kubeconfig from the mounted location or configured env.
-	kubeconfigPath := s.kubeconfigPath()
-	kubeconfigPath, err := s.resolveKubeconfigPath(kubeconfigPath)
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return err
 	}
@@ -4318,11 +4320,11 @@ func (s *Service) executeMetalLBDeployment(namespace, version, manifestDir strin
 	return nil
 }
 
-func (s *Service) executeIngressControllerDeployment(namespace, image string, replicas int, wait bool, progress func(step, message string, progress int)) (string, error) {
+func (s *Service) executeIngressControllerDeployment(clusterID int64, namespace, image string, replicas int, wait bool, progress func(step, message string, progress int)) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return "", err
 	}
@@ -4378,11 +4380,11 @@ func (s *Service) executeIngressControllerDeployment(namespace, image string, re
 	return strings.Join(outputs, "\n"), nil
 }
 
-func (s *Service) executeLonghornDeployment(version string, setDefault bool, wait bool) (string, error) {
+func (s *Service) executeLonghornDeployment(clusterID int64, version string, setDefault bool, wait bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return "", err
 	}
@@ -4440,11 +4442,11 @@ func (s *Service) executeLonghornDeployment(version string, setDefault bool, wai
 	return strings.Join(outputs, "\n"), nil
 }
 
-func (s *Service) executeCertificateManagerDeployment(namespace, version, issuerName, email, acmeServer, ingressClass string, wait bool) (string, error) {
+func (s *Service) executeCertificateManagerDeployment(clusterID int64, namespace, version, issuerName, email, acmeServer, ingressClass string, wait bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return "", err
 	}
@@ -4502,11 +4504,11 @@ type appTLSSecretSpec struct {
 	CreateFromUpload bool
 }
 
-func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool, selectedConfigMaps []ClusterConfigMapRecord, applyConfigMaps bool, selectedImagePullSecrets []ClusterImagePullSecretRecord, applyImagePullSecrets bool) (string, error) {
+func (s *Service) executeAppManifestApply(clusterID int64, namespace, manifest string, tlsSecret appTLSSecretSpec, selectedSecrets []ClusterSecretRecord, applySelectedSecrets bool, selectedConfigMaps []ClusterConfigMapRecord, applyConfigMaps bool, selectedImagePullSecrets []ClusterImagePullSecretRecord, applyImagePullSecrets bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return "", err
 	}
@@ -4587,11 +4589,11 @@ func (s *Service) executeAppManifestApply(namespace, manifest string, tlsSecret 
 	return strings.Join(outputs, "\n"), nil
 }
 
-func (s *Service) executeSavedManifestApply(namespace, manifest string) (string, error) {
+func (s *Service) executeSavedManifestApply(clusterID int64, namespace, manifest string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return "", err
 	}
@@ -4674,7 +4676,7 @@ func (s *Service) ApplyRawManifest(clusterID int64, namespace, manifest string) 
 	if _, err := s.getClusterSummary(clusterID); err != nil {
 		return "", err
 	}
-	return s.executeSavedManifestApply(namespace, manifest)
+	return s.executeSavedManifestApply(clusterID, namespace, manifest)
 }
 
 func (s *Service) ApplyMonitoringStack(namespace, valuesYAML, manifest string) (string, error) {
@@ -5093,7 +5095,7 @@ func (s *Service) replaceApplicationManifestImagePullSecrets(appID int64, secret
 func (s *Service) applyClusterConfigMapRecord(rec ClusterConfigMapRecord) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(rec.ClusterID)
 	if err != nil {
 		return "", err
 	}
@@ -5114,7 +5116,7 @@ func (s *Service) applyClusterConfigMapRecordWithContext(ctx context.Context, ku
 func (s *Service) applyClusterSecretRecord(rec ClusterSecretRecord) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(rec.ClusterID)
 	if err != nil {
 		return "", err
 	}
@@ -5138,7 +5140,7 @@ func (s *Service) applyClusterSecretRecordWithContext(ctx context.Context, kubec
 func (s *Service) applyClusterImagePullSecretRecord(rec ClusterImagePullSecretRecord) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(rec.ClusterID)
 	if err != nil {
 		return "", err
 	}
@@ -5617,17 +5619,18 @@ func (s *Service) kubeNamespaceDiagnostics(kubeconfigPath, namespace, workload s
 	return strings.Join(sections, "\n")
 }
 
-func (s *Service) exportBootstrapKubeconfig(workDir string) (string, error) {
+func (s *Service) exportBootstrapKubeconfig(clusterID int64, workDir string) (string, error) {
 	localKubeconfig := filepath.Join(workDir, "admin.conf")
 	data, err := os.ReadFile(localKubeconfig)
 	if err != nil {
 		return "", fmt.Errorf("read fetched kubeconfig %s: %w", localKubeconfig, err)
 	}
 
-	destPath := s.kubeconfigPath()
-	if info, err := os.Stat(destPath); err == nil && info.IsDir() {
-		destPath = filepath.Join(destPath, "config")
+	cluster, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return "", err
 	}
+	destPath := s.clusterKubeconfigExportPath(cluster)
 	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return "", fmt.Errorf("ensure kubeconfig mount directory %s: %w", destDir, err)
@@ -5635,6 +5638,9 @@ func (s *Service) exportBootstrapKubeconfig(workDir string) (string, error) {
 
 	if err := os.WriteFile(destPath, data, 0o600); err != nil {
 		return "", fmt.Errorf("write kubeconfig to %s: %w", destPath, err)
+	}
+	if _, err := s.db.Exec(`UPDATE clusters SET kubeconfig_path = $2, updated_at = NOW() WHERE id = $1`, clusterID, destPath); err != nil {
+		return "", fmt.Errorf("save kubeconfig path for cluster %d: %w", clusterID, err)
 	}
 
 	return destPath, nil
@@ -5645,6 +5651,67 @@ func (s *Service) kubeconfigPath() string {
 		return envPath
 	}
 	return "/app/backend/.kube/config"
+}
+
+func (s *Service) kubeconfigRootDir() string {
+	base := s.kubeconfigPath()
+	if info, err := os.Stat(base); err == nil && info.IsDir() {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return "/app/backend/.kube"
+	}
+	if strings.HasSuffix(filepath.Clean(base), string(filepath.Separator)) {
+		return strings.TrimRight(base, string(filepath.Separator))
+	}
+	return filepath.Dir(base)
+}
+
+func (s *Service) clusterKubeconfigExportPath(cluster ClusterSummary) string {
+	filename := fmt.Sprintf("%d-%s.config", cluster.ID, sanitizePathToken(cluster.Name))
+	return filepath.Join(s.kubeconfigRootDir(), "clusters", filename)
+}
+
+func kubeconfigMode(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return "legacy-shared"
+	}
+	return "dedicated"
+}
+
+func (s *Service) resolveClusterKubeconfigPath(clusterID int64) (string, error) {
+	cluster, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cluster.KubeconfigPath) != "" {
+		return s.resolveKubeconfigPath(cluster.KubeconfigPath)
+	}
+	if bootstrapPath, err := s.latestBootstrapKubeconfigPath(clusterID); err == nil {
+		return bootstrapPath, nil
+	} else if !errors.Is(err, sql.ErrNoRows) && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return s.resolveKubeconfigPath(s.kubeconfigPath())
+}
+
+func (s *Service) latestBootstrapKubeconfigPath(clusterID int64) (string, error) {
+	var workDir string
+	err := s.db.QueryRow(`
+		SELECT work_dir
+		FROM provision_runs
+		WHERE cluster_id = $1 AND action = 'bootstrap' AND work_dir <> ''
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, clusterID).Scan(&workDir)
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(workDir, "admin.conf")
+	if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+		return candidate, nil
+	}
+	return "", os.ErrNotExist
 }
 
 func (s *Service) resolveKubeconfigPath(path string) (string, error) {
@@ -5677,7 +5744,7 @@ func (s *Service) StartKubectlCommand(clusterID int64, req KubectlCommandRequest
 		return KubectlCommandRun{}, err
 	}
 
-	kubeconfigPath, err := s.resolveKubeconfigPath(s.kubeconfigPath())
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(clusterID)
 	if err != nil {
 		return KubectlCommandRun{}, err
 	}
@@ -7577,7 +7644,7 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	var c ClusterSummary
 	err := s.db.QueryRow(
-		`SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, created_at, updated_at
+		`SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, COALESCE(kubeconfig_path, ''), created_at, updated_at
 		 FROM clusters WHERE id = $1`,
 		clusterID,
 	).Scan(
@@ -7598,6 +7665,7 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 		&c.Status,
 		&c.HealthStatus,
 		&c.HealthCheckedAt,
+		&c.KubeconfigPath,
 		&c.CreatedAt,
 		&c.UpdatedAt,
 	)
@@ -7607,6 +7675,7 @@ func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 		}
 		return ClusterSummary{}, fmt.Errorf("get cluster summary: %w", err)
 	}
+	c.KubeconfigMode = kubeconfigMode(c.KubeconfigPath)
 	return c, nil
 }
 

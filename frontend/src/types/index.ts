@@ -441,6 +441,8 @@ export interface ClusterSummary {
   status: string;
   health_status: string;
   health_checked_at?: string;
+  kubeconfig_path?: string;
+  kubeconfig_mode?: string;
   created_at: string;
   updated_at: string;
 }

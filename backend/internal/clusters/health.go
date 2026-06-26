@@ -403,6 +403,14 @@ func checkKubernetesNodeReadiness(db *sql.DB, clusterID int64, nodes []clusterNo
 }
 
 func resolveClusterHealthKubeconfigPath(db *sql.DB, clusterID int64) (string, error) {
+	var storedPath string
+	if err := db.QueryRow(`SELECT COALESCE(kubeconfig_path, '') FROM clusters WHERE id = $1`, clusterID).Scan(&storedPath); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(storedPath) != "" {
+		return resolveHealthKubeconfigFile(storedPath)
+	}
+
 	var workDir string
 	err := db.QueryRow(`
 		SELECT work_dir

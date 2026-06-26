@@ -233,6 +233,13 @@ export function CommandCenterPage() {
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                 <p className="font-medium text-slate-800">{selectedCluster?.name}</p>
                 <p className="mt-1">{mode === 'kubernetes' ? 'Cluster kubeconfig selected automatically.' : 'Node command runs over saved bootstrap SSH settings.'}</p>
+                {mode === 'kubernetes' && selectedCluster && (
+                  <p className={`mt-1 text-xs ${selectedCluster.kubeconfig_mode === 'dedicated' ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {selectedCluster.kubeconfig_mode === 'dedicated'
+                      ? `Dedicated kubeconfig: ${selectedCluster.kubeconfig_path}`
+                      : 'Legacy shared kubeconfig: rotate or re-bootstrap this cluster to isolate kubectl operations.'}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

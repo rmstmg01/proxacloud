@@ -1,0 +1,2 @@
+ALTER TABLE clusters
+    ADD COLUMN IF NOT EXISTS kubeconfig_path TEXT NOT NULL DEFAULT '';

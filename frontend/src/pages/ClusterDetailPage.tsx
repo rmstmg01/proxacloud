@@ -145,6 +145,8 @@ function OverviewTab({ id }: { id: number }) {
     ['Control Planes', String(cluster.control_plane_count)],
     ['Workers', String(cluster.worker_count)],
     ['Subnet ID', String(cluster.network_profile_id)],
+    ['Kubeconfig Mode', cluster.kubeconfig_mode === 'dedicated' ? 'Dedicated per-cluster profile' : 'Legacy shared profile'],
+    ['Kubeconfig Path', cluster.kubeconfig_path || 'Using shared fallback'],
     ['Created', new Date(cluster.created_at).toLocaleString()],
     ['Updated', new Date(cluster.updated_at).toLocaleString()],
   ];
