@@ -39,16 +39,22 @@ const (
 )
 
 type User struct {
-	ID              int64      `json:"id"`
-	Username        string     `json:"username"`
-	FullName        string     `json:"full_name"`
-	Email           string     `json:"email"`
-	ContactNumber   string     `json:"contact_number"`
-	Role            rbac.Role  `json:"role"`
-	Status          Status     `json:"status"`
-	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	PasswordHash    string     `json:"-"`
+	ID                     int64      `json:"id"`
+	Username               string     `json:"username"`
+	FullName               string     `json:"full_name"`
+	Email                  string     `json:"email"`
+	ContactNumber          string     `json:"contact_number"`
+	Role                   rbac.Role  `json:"role"`
+	Status                 Status     `json:"status"`
+	EmailVerifiedAt        *time.Time `json:"email_verified_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	TwoFactorEnabled       bool       `json:"two_factor_enabled"`
+	TwoFactorMethod        string     `json:"two_factor_method"`
+	TwoFactorEnabledAt     *time.Time `json:"two_factor_enabled_at,omitempty"`
+	PasswordHash           string     `json:"-"`
+	TwoFactorSecret        string     `json:"-"`
+	TwoFactorPendingSecret string     `json:"-"`
+	LastLoginIP            string     `json:"-"`
 }
 
 type ProfileInput struct {
@@ -415,12 +421,14 @@ func (s *Service) Authenticate(username, password string) (User, error) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.password_hash, u.status, u.email_verified_at, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.password_hash, u.status, u.email_verified_at, u.created_at, r.name,
+		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
+		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName)
+	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrInvalidCredentials
@@ -442,12 +450,14 @@ func (s *Service) GetByUsername(username string) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
+		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName)
+	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}
@@ -460,12 +470,14 @@ func (s *Service) GetByID(id int64) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
+		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.id = $1`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName)
+	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}
@@ -475,7 +487,9 @@ func (s *Service) GetByID(id int64) (User, bool) {
 
 func (s *Service) ListUsers() []User {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name
+		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
+		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 ORDER BY u.created_at ASC`,
@@ -489,7 +503,7 @@ func (s *Service) ListUsers() []User {
 	for rows.Next() {
 		var user User
 		var roleName string
-		if scanErr := rows.Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName); scanErr != nil {
+		if scanErr := rows.Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP); scanErr != nil {
 			continue
 		}
 		user.Role = rbac.Role(roleName)
@@ -509,7 +523,13 @@ func (s *Service) getRoleID(role rbac.Role) (int64, error) {
 }
 
 func sanitizeUser(u User) User {
+	if strings.TrimSpace(u.TwoFactorMethod) == "" {
+		u.TwoFactorMethod = twoFactorMethodNone
+	}
 	u.PasswordHash = ""
+	u.TwoFactorSecret = ""
+	u.TwoFactorPendingSecret = ""
+	u.LastLoginIP = ""
 	return u
 }
 

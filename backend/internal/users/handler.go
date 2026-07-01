@@ -41,6 +41,15 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if started, err := h.beginLoginTwoFactor(w, r, user); started {
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start two-factor verification"})
+		}
+		return
+	}
+
+	h.users.setLastLogin(user.ID, clientIP(r))
+
 	token, err := h.tokens.Issue(user.Username, user.Role)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue token"})

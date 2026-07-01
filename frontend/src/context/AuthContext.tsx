@@ -1,11 +1,12 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
-import type { User } from '../types';
-import { login as apiLogin } from '../api/auth';
+import type { LoginResponse, LoginResult, User } from '../types';
+import { login as apiLogin, verifyLogin2FA as apiVerifyLogin2FA } from '../api/auth';
 
 interface AuthContextValue {
   user: User | null;
   token: string | null;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<LoginResult>;
+  verifyLogin2FA: (challengeToken: string, code: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -30,8 +31,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(saved.user);
   const [token, setToken] = useState<string | null>(saved.token);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const res = await apiLogin(username, password);
+  const saveSession = useCallback((res: LoginResponse) => {
     localStorage.setItem(TOKEN_KEY, res.token);
     localStorage.setItem(USER_KEY, JSON.stringify(res.user));
     sessionStorage.removeItem(TOKEN_KEY);
@@ -39,6 +39,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(res.token);
     setUser(res.user);
   }, []);
+
+  const login = useCallback(async (username: string, password: string) => {
+    const res = await apiLogin(username, password);
+    if ('token' in res) {
+      saveSession(res);
+    }
+    return res;
+  }, [saveSession]);
+
+  const verifyLogin2FA = useCallback(async (challengeToken: string, code: string) => {
+    const res = await apiVerifyLogin2FA(challengeToken, code);
+    saveSession(res);
+  }, [saveSession]);
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
@@ -50,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout }}>
+    <AuthContext.Provider value={{ user, token, login, verifyLogin2FA, logout }}>
       {children}
     </AuthContext.Provider>
   );

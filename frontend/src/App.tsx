@@ -5,6 +5,7 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { VerifyEmailPage } from './pages/VerifyEmailPage';
+import { ProfileSettingsPage } from './pages/ProfileSettingsPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ClustersPage } from './pages/ClustersPage';
 import { ClusterDetailPage } from './pages/ClusterDetailPage';
@@ -56,6 +57,14 @@ export function App() {
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route
+              path="/profile/settings"
+              element={
+                <ProtectedRoute>
+                  <ProfileSettingsPage />
+                </ProtectedRoute>
+              }
+            />
             <Route
               path="/dashboard"
               element={

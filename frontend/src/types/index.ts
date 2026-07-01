@@ -13,11 +13,35 @@ export interface User {
   status: UserStatus;
   email_verified_at?: string;
   created_at: string;
+  two_factor_enabled: boolean;
+  two_factor_method: 'none' | 'email' | 'totp';
+  two_factor_enabled_at?: string;
 }
 
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+export interface Login2FAChallenge {
+  requires_2fa: true;
+  challenge_token: string;
+  method: 'email' | 'totp';
+  message: string;
+}
+
+export type LoginResult = LoginResponse | Login2FAChallenge;
+
+export interface TwoFactorStatus {
+  enabled: boolean;
+  method: 'none' | 'email' | 'totp';
+}
+
+export interface TwoFactorTOTPSetup {
+  otpauth_url: string;
+  secret: string;
+  qr_code: string;
+  message: string;
 }
 
 // ─── Networks ─────────────────────────────────────────────────────────────────

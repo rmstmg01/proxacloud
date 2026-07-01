@@ -211,6 +211,8 @@ func NewApp() (*App, error) {
 
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Post("/auth/login", userHandler.Login)
+		api.Post("/auth/login/2fa/verify", userHandler.Login2FAVerify)
+		api.Post("/auth/login/2fa/send-email-code", userHandler.Login2FAResendEmailCode)
 		api.Post("/auth/register", userHandler.Register)
 		api.Get("/auth/verify-email", userHandler.VerifyEmail)
 		api.Post("/auth/verify-email", userHandler.VerifyEmail)
@@ -224,6 +226,12 @@ func NewApp() (*App, error) {
 		api.Group(func(protected chi.Router) {
 			protected.Use(auth.AuthMiddleware(tokens))
 			protected.Get("/auth/me", userHandler.Me)
+			protected.Get("/profile/2fa/status", userHandler.TwoFactorStatus)
+			protected.Post("/profile/2fa/email/enable-request", userHandler.EnableTwoFactorEmailRequest)
+			protected.Post("/profile/2fa/email/enable-confirm", userHandler.EnableTwoFactorEmailConfirm)
+			protected.Post("/profile/2fa/totp/setup", userHandler.SetupTwoFactorTOTP)
+			protected.Post("/profile/2fa/totp/confirm", userHandler.ConfirmTwoFactorTOTP)
+			protected.Post("/profile/2fa/disable", userHandler.DisableTwoFactor)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/users", userHandler.ListUsers)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users", userHandler.CreateUser)

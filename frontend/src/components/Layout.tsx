@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { LogOut, Settings } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { useAuth } from '../context/AuthContext';
@@ -89,15 +90,15 @@ export function Layout({ children }: LayoutProps) {
                     </div>
                   </div>
                   <div className="py-1">
-                    <button
-                      type="button"
-                      className="flex w-full cursor-not-allowed items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-400"
-                      disabled
+                    <Link
+                      to="/profile/settings"
+                      onClick={() => setAccountOpen(false)}
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 transition-colors hover:bg-slate-50"
                       role="menuitem"
                     >
                       <Settings className="h-4 w-4" />
                       Profile settings
-                    </button>
+                    </Link>
                   </div>
                   <div className="border-t border-slate-100 py-1">
                     <button
