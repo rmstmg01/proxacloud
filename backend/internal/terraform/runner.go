@@ -56,22 +56,23 @@ type WorkspaceSpec struct {
 }
 
 type StandaloneVPSSpec struct {
-	WorkspaceKey    string   `json:"-"`
-	Name            string   `json:"name"`
-	ProxmoxNodeName string   `json:"proxmox_node_name"`
-	CPU             int      `json:"cpu"`
-	MemoryMB        int      `json:"memory_mb"`
-	DiskGB          int      `json:"disk_gb"`
-	NetworkCIDR     string   `json:"network_cidr"`
-	Gateway         string   `json:"gateway"`
-	DNS             []string `json:"dns"`
-	Bridge          string   `json:"bridge"`
-	VLAN            int      `json:"vlan"`
-	CloudInitImage  string   `json:"cloud_init_image"`
-	SSHPublicKey    string   `json:"ssh_public_key"`
-	SSHUser         string   `json:"ssh_user"`
-	RootPassword    string   `json:"-"`
-	IPAddress       string   `json:"ip_address,omitempty"`
+	WorkspaceKey        string   `json:"-"`
+	Name                string   `json:"name"`
+	ProxmoxNodeName     string   `json:"proxmox_node_name"`
+	CPU                 int      `json:"cpu"`
+	MemoryMB            int      `json:"memory_mb"`
+	DiskGB              int      `json:"disk_gb"`
+	NetworkCIDR         string   `json:"network_cidr"`
+	Gateway             string   `json:"gateway"`
+	DNS                 []string `json:"dns"`
+	Bridge              string   `json:"bridge"`
+	VLAN                int      `json:"vlan"`
+	CloudInitImage      string   `json:"cloud_init_image"`
+	SSHPublicKey        string   `json:"ssh_public_key"`
+	SSHUser             string   `json:"ssh_user"`
+	RootPassword        string   `json:"-"`
+	IPAddress           string   `json:"ip_address,omitempty"`
+	AgentInstallCommand string   `json:"-"`
 }
 
 type StandaloneContainerSpec struct {
@@ -729,11 +730,12 @@ func renderStandaloneVPSCloudInit(spec StandaloneVPSSpec) (string, error) {
 	}
 
 	payload := map[string]any{
-		"Name":         strings.TrimSpace(spec.Name),
-		"SSHUser":      strings.TrimSpace(spec.SSHUser),
-		"SSHPublicKey": strings.TrimSpace(spec.SSHPublicKey),
-		"RootPassword": strings.TrimSpace(spec.RootPassword),
-		"IPAddress":    strings.TrimSpace(spec.IPAddress),
+		"Name":                strings.TrimSpace(spec.Name),
+		"SSHUser":             strings.TrimSpace(spec.SSHUser),
+		"SSHPublicKey":        strings.TrimSpace(spec.SSHPublicKey),
+		"RootPassword":        strings.TrimSpace(spec.RootPassword),
+		"IPAddress":           strings.TrimSpace(spec.IPAddress),
+		"AgentInstallCommand": strings.TrimSpace(spec.AgentInstallCommand),
 	}
 
 	var out bytes.Buffer
@@ -1115,4 +1117,7 @@ runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
   - [ bash, -lc, "echo VPS_NAME={{ .Name }} > /etc/managed-vps.env" ]
   - [ bash, -lc, "echo VPS_IP={{ .IPAddress }} >> /etc/managed-vps.env" ]
+{{- if .AgentInstallCommand }}
+  - [ bash, -lc, {{ printf "%q" .AgentInstallCommand }} ]
+{{- end }}
 `

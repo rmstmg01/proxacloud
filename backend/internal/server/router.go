@@ -24,6 +24,7 @@ import (
 	"proxacloud/backend/internal/mailer"
 	"proxacloud/backend/internal/monitoring"
 	"proxacloud/backend/internal/networks"
+	"proxacloud/backend/internal/proxacloudtunnelapi"
 	"proxacloud/backend/internal/proxacloudtunnels"
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/rbac"
@@ -160,6 +161,23 @@ func NewApp() (*App, error) {
 		Password: cfg.SMTPPassword,
 		From:     cfg.SMTPFrom,
 	})
+	tunnelAPIClient := proxacloudtunnelapi.New(proxacloudtunnelapi.Config{
+		BaseURL:  cfg.ProxacloudTunnelAPIURL,
+		APIToken: cfg.ProxacloudTunnelAPIToken,
+	})
+	vpsService.SetTunnelIntegration(vps.TunnelConfig{
+		Enabled:         cfg.ProxacloudTunnelEnabled,
+		APIURL:          cfg.ProxacloudTunnelAPIURL,
+		GatewayURL:      cfg.ProxacloudTunnelGatewayURL,
+		PublicHostname:  cfg.ProxacloudTunnelPublicHostname,
+		HostnameSuffix:  cfg.ProxacloudTunnelHostnameSuffix,
+		HTTPTargetURL:   cfg.ProxacloudTunnelHTTPSTargetURL,
+		SSHHost:         cfg.ProxacloudTunnelSSHHost,
+		SSHPort:         cfg.ProxacloudTunnelSSHPort,
+		PublicPortStart: cfg.ProxacloudTunnelPublicPortStart,
+		PublicPortEnd:   cfg.ProxacloudTunnelPublicPortEnd,
+		AgentBinaryURL:  cfg.ProxacloudTunnelAgentBinaryURL,
+	}, tunnelAPIClient, mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
 	proxmoxHandler := proxmox.NewHandler(proxmoxService)
@@ -309,6 +327,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}", vpsHandler.Get)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/vps/{id}", vpsHandler.Delete)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/events", vpsHandler.ListEvents)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/tunnel", vpsHandler.GetTunnel)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/tunnel/retry", vpsHandler.RetryTunnel)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/deploy", vpsHandler.Deploy)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/redeploy", vpsHandler.Redeploy)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/start", vpsHandler.Start)

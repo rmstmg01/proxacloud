@@ -394,12 +394,37 @@ export interface VPSConsoleResponse {
   warnings: string[];
 }
 
+export interface VPSTunnelAttachment {
+  id: number;
+  vps_id: number;
+  customer_account_id?: number;
+  tunnel_id: string;
+  http_route_id: string;
+  tcp_route_id: string;
+  token_id: string;
+  public_hostname: string;
+  public_port: number;
+  http_target_url: string;
+  tcp_target_host: string;
+  tcp_target_port: number;
+  ssh_user: string;
+  install_command_redacted?: string;
+  status: string;
+  last_error: string;
+  emailed_at?: string;
+  created_at: string;
+  updated_at: string;
+  ssh_command: string;
+  web_url: string;
+}
+
 export interface VPSCreateResponse {
   vps_id: number;
   status: string;
   terraform_work_dir: string;
   terraform_output?: string;
   warnings: string[];
+  tunnel?: VPSTunnelAttachment;
 }
 
 export interface ContainerTemplate {

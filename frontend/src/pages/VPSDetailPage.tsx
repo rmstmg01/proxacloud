@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Copy, ExternalLink, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
 import {
   createFirewall,
   createFirewallAttachment,
@@ -14,9 +14,11 @@ import {
 import {
   getVPSEvents,
   getVPSInstance,
+  getVPSTunnel,
   redeployVPSInstance,
   refreshVPSStatus,
   restartVPSInstance,
+  retryVPSTunnel,
   shutdownVPSInstance,
   startVPSInstance,
 } from '../api/vps';
@@ -28,7 +30,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
-import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule } from '../types';
+import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule, VPSTunnelAttachment } from '../types';
 
 const defaultFirewallRuleForm = {
   name: '',
@@ -76,6 +78,18 @@ export function VPSDetailPage() {
     enabled: Number.isFinite(vpsID) && vpsID > 0 && showEvents,
     refetchInterval: showEvents ? 15_000 : false,
   });
+  const { data: tunnel, error: tunnelError, isFetching: tunnelFetching } = useQuery<VPSTunnelAttachment | null>({
+    queryKey: ['vps', vpsID, 'tunnel'],
+    queryFn: async () => {
+      try {
+        return await getVPSTunnel(vpsID);
+      } catch (err: any) {
+        if (err?.response?.status === 404) return null;
+        throw err;
+      }
+    },
+    enabled: Number.isFinite(vpsID) && vpsID > 0,
+  });
   const firewallsQuery = useQuery({
     queryKey: ['firewalls'],
     queryFn: getFirewalls,
@@ -112,6 +126,7 @@ export function VPSDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['vps'] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'events'] });
+    queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel'] });
     queryClient.invalidateQueries({ queryKey: ['firewalls'] });
   };
 
@@ -127,6 +142,7 @@ export function VPSDetailPage() {
   const startMutation = useMutation({ mutationFn: startVPSInstance, onSuccess: invalidate });
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
+  const tunnelRetryMutation = useMutation({ mutationFn: retryVPSTunnel, onSuccess: invalidate });
   const firewallMutation = useMutation({
     mutationFn: async () => {
       if (!vps) throw new Error('VPS is not loaded');
@@ -190,6 +206,11 @@ export function VPSDetailPage() {
   const openConsole = () => {
     if (!vps) return;
     window.open(`/vps/${vps.id}/console`, '_blank', 'noopener,noreferrer');
+  };
+
+  const copyText = (value?: string) => {
+    if (!value) return;
+    navigator.clipboard?.writeText(value);
   };
 
   const openFirewallRule = () => {
@@ -257,6 +278,7 @@ export function VPSDetailPage() {
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
+      {tunnelRetryMutation.error && <ErrorMessage error={tunnelRetryMutation.error} />}
       {firewallMutation.error && <ErrorMessage error={firewallMutation.error} />}
       {showEvents && eventsError && <ErrorMessage error={eventsError} />}
 
@@ -333,6 +355,66 @@ export function VPSDetailPage() {
                 <Info label="Terraform work dir" value={vps.terraform_work_dir} />
                 <Info label="Created" value={new Date(vps.created_at).toLocaleString()} />
               </dl>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle>Proxacloud Tunnel Access</CardTitle>
+              <Button variant="secondary" onClick={() => tunnelRetryMutation.mutate(vps.id)} loading={tunnelRetryMutation.isPending}>
+                <RefreshCw className="h-4 w-4" />
+                Retry
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {tunnelFetching && !tunnel ? (
+                <p className="text-sm text-slate-500">Loading tunnel access...</p>
+              ) : tunnelError ? (
+                <ErrorMessage error={tunnelError} />
+              ) : tunnel ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={tunnel.status} />
+                    <span className="text-sm text-slate-500">{tunnel.public_hostname}</span>
+                    {tunnel.emailed_at && <span className="text-sm text-slate-500">Emailed {new Date(tunnel.emailed_at).toLocaleString()}</span>}
+                  </div>
+                  {tunnel.last_error && <Alert variant="error" title="Tunnel setup failed">{tunnel.last_error}</Alert>}
+                  <dl className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
+                    <Info
+                      label="Web URL"
+                      value={
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <a href={tunnel.web_url} target="_blank" rel="noreferrer" className="truncate text-sky-700 hover:text-sky-900">
+                            {tunnel.web_url}
+                          </a>
+                          <ExternalLink className="h-4 w-4 shrink-0 text-slate-400" />
+                        </span>
+                      }
+                    />
+                    <Info label="HTTP target" value={tunnel.http_target_url} />
+                    <Info
+                      label="SSH command"
+                      value={
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <code className="truncate rounded bg-slate-100 px-2 py-1 text-xs text-slate-800">{tunnel.ssh_command}</code>
+                          <button
+                            type="button"
+                            onClick={() => copyText(tunnel.ssh_command)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                            title="Copy SSH command"
+                            aria-label="Copy SSH command"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </span>
+                      }
+                    />
+                    <Info label="TCP route" value={`${tunnel.public_hostname}:${tunnel.public_port} -> ${tunnel.tcp_target_host}:${tunnel.tcp_target_port}`} />
+                  </dl>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-500">No Proxacloud tunnel attachment has been created for this VPS.</p>
+              )}
             </CardContent>
           </Card>
 

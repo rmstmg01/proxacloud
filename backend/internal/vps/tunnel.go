@@ -1,0 +1,474 @@
+package vps
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
+	"proxacloud/backend/internal/proxacloudtunnelapi"
+)
+
+var ErrTunnelAttachmentNotFound = errors.New("vps tunnel attachment not found")
+
+type tunnelAPI interface {
+	Enabled() bool
+	CreateTunnel(context.Context, proxacloudtunnelapi.CreateTunnelRequest) (proxacloudtunnelapi.Tunnel, error)
+	CreateHTTPRoute(context.Context, string, proxacloudtunnelapi.CreateHTTPRouteRequest) (proxacloudtunnelapi.Route, error)
+	CreateTCPRoute(context.Context, string, proxacloudtunnelapi.CreateTCPRouteRequest) (proxacloudtunnelapi.TCPRoute, error)
+	CreateToken(context.Context, string, proxacloudtunnelapi.CreateTokenRequest) (proxacloudtunnelapi.TokenResponse, error)
+}
+
+type tunnelMailer interface {
+	Send(to, subject, body string) error
+	Enabled() bool
+}
+
+type TunnelConfig struct {
+	Enabled         bool
+	APIURL          string
+	GatewayURL      string
+	PublicHostname  string
+	HostnameSuffix  string
+	HTTPTargetURL   string
+	SSHHost         string
+	SSHPort         int
+	PublicPortStart int
+	PublicPortEnd   int
+	AgentBinaryURL  string
+}
+
+type TunnelAttachment struct {
+	ID                     int64      `json:"id"`
+	VPSID                  int64      `json:"vps_id"`
+	CustomerAccountID      int64      `json:"customer_account_id,omitempty"`
+	TunnelID               string     `json:"tunnel_id"`
+	HTTPRouteID            string     `json:"http_route_id"`
+	TCPRouteID             string     `json:"tcp_route_id"`
+	TokenID                string     `json:"token_id"`
+	PublicHostname         string     `json:"public_hostname"`
+	PublicPort             int        `json:"public_port"`
+	HTTPTargetURL          string     `json:"http_target_url"`
+	TCPTargetHost          string     `json:"tcp_target_host"`
+	TCPTargetPort          int        `json:"tcp_target_port"`
+	SSHUser                string     `json:"ssh_user"`
+	InstallCommandRedacted string     `json:"install_command_redacted,omitempty"`
+	Status                 string     `json:"status"`
+	LastError              string     `json:"last_error"`
+	EmailedAt              *time.Time `json:"emailed_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	SSHCommand             string     `json:"ssh_command"`
+	WebURL                 string     `json:"web_url"`
+}
+
+func (s *Service) SetTunnelIntegration(cfg TunnelConfig, client tunnelAPI, mailer tunnelMailer) {
+	cfg.APIURL = strings.TrimRight(strings.TrimSpace(cfg.APIURL), "/")
+	cfg.GatewayURL = strings.TrimSpace(cfg.GatewayURL)
+	if cfg.GatewayURL == "" {
+		cfg.GatewayURL = gatewayURLFromAPIURL(cfg.APIURL)
+	}
+	cfg.PublicHostname = strings.TrimSpace(cfg.PublicHostname)
+	cfg.HostnameSuffix = strings.TrimSpace(cfg.HostnameSuffix)
+	cfg.HTTPTargetURL = strings.TrimSpace(cfg.HTTPTargetURL)
+	if cfg.HTTPTargetURL == "" {
+		cfg.HTTPTargetURL = "http://127.0.0.1:80"
+	}
+	cfg.SSHHost = strings.TrimSpace(cfg.SSHHost)
+	if cfg.SSHHost == "" {
+		cfg.SSHHost = "127.0.0.1"
+	}
+	if cfg.SSHPort <= 0 || cfg.SSHPort > 65535 {
+		cfg.SSHPort = 22
+	}
+	if cfg.PublicPortStart <= 0 {
+		cfg.PublicPortStart = 22000
+	}
+	if cfg.PublicPortEnd < cfg.PublicPortStart || cfg.PublicPortEnd > 65535 {
+		cfg.PublicPortEnd = 29999
+	}
+	cfg.AgentBinaryURL = strings.TrimSpace(cfg.AgentBinaryURL)
+
+	s.tunnelConfig = cfg
+	s.tunnelClient = client
+	s.mailer = mailer
+}
+
+func (s *Service) configureTunnelForCreate(ctx context.Context, vpsID int64, req CreateRequest, sshUser string) (string, *TunnelAttachment, error) {
+	if !s.tunnelConfigured() {
+		return "", nil, errors.New("proxacloud tunnel integration is enabled but API URL/token are not configured")
+	}
+	attachment, err := s.reserveTunnelAttachment(ctx, vpsID, req, sshUser)
+	if err != nil {
+		return "", nil, err
+	}
+	installCommand, updated, err := s.provisionTunnelAttachment(ctx, attachment, req.Name)
+	if err != nil {
+		_ = s.markTunnelAttachmentFailed(ctx, attachment.ID, err)
+		return "", nil, err
+	}
+	return installCommand, &updated, nil
+}
+
+func (s *Service) RetryTunnel(id int64) (TunnelAttachment, error) {
+	rec, err := s.Get(id)
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+	if !s.tunnelConfigured() {
+		return TunnelAttachment{}, errors.New("proxacloud tunnel integration is not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	attachment, err := s.GetTunnelAttachment(id)
+	if errors.Is(err, ErrTunnelAttachmentNotFound) {
+		attachment, err = s.reserveTunnelAttachment(ctx, id, CreateRequest{
+			Name:              rec.Name,
+			CustomerAccountID: rec.CustomerAccountID,
+		}, rec.SSHUser)
+	}
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+	if (attachment.Status == "configured" || attachment.Status == "emailed") &&
+		attachment.TunnelID != "" && attachment.HTTPRouteID != "" && attachment.TCPRouteID != "" {
+		return attachment, nil
+	}
+	_, updated, err := s.provisionTunnelAttachment(ctx, attachment, rec.Name)
+	if err != nil {
+		_ = s.markTunnelAttachmentFailed(ctx, attachment.ID, err)
+		return TunnelAttachment{}, err
+	}
+	_ = s.insertEvent(id, "tunnel-retry", "success", "Proxacloud tunnel routes configured", updated.AccessSummary())
+	return updated, nil
+}
+
+func (s *Service) GetTunnelAttachment(vpsID int64) (TunnelAttachment, error) {
+	row := s.db.QueryRow(`
+		SELECT id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
+		       public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
+		       install_command_redacted, status, last_error, emailed_at, created_at, updated_at
+		FROM vps_tunnel_attachments
+		WHERE vps_id = $1
+	`, vpsID)
+	return scanTunnelAttachment(row)
+}
+
+func (s *Service) tunnelConfigured() bool {
+	return s.tunnelConfig.Enabled && s.tunnelClient != nil && s.tunnelClient.Enabled()
+}
+
+func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req CreateRequest, sshUser string) (TunnelAttachment, error) {
+	hostname, err := s.hostnameForVPS(req.Name)
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+	port, err := s.allocateTunnelPort(ctx, hostname)
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+
+	var out TunnelAttachment
+	err = s.db.QueryRowContext(ctx, `
+		INSERT INTO vps_tunnel_attachments (
+			vps_id, customer_account_id, public_hostname, public_port, http_target_url,
+			tcp_target_host, tcp_target_port, ssh_user, status
+		)
+		VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, 'pending')
+		ON CONFLICT (vps_id) DO UPDATE SET
+			customer_account_id = EXCLUDED.customer_account_id,
+			public_hostname = EXCLUDED.public_hostname,
+			http_target_url = EXCLUDED.http_target_url,
+			tcp_target_host = EXCLUDED.tcp_target_host,
+			tcp_target_port = EXCLUDED.tcp_target_port,
+			ssh_user = EXCLUDED.ssh_user,
+			status = 'pending',
+			last_error = '',
+			updated_at = NOW()
+		RETURNING id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
+		          public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
+		          install_command_redacted, status, last_error, emailed_at, created_at, updated_at
+	`, vpsID, req.CustomerAccountID, hostname, port, s.tunnelConfig.HTTPTargetURL, s.tunnelConfig.SSHHost, s.tunnelConfig.SSHPort, sshUser).Scan(
+		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
+		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
+		&out.InstallCommandRedacted, &out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if err != nil {
+		return TunnelAttachment{}, fmt.Errorf("reserve vps tunnel attachment: %w", err)
+	}
+	out.populateAccessFields()
+	return out, nil
+}
+
+func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment TunnelAttachment, vpsName string) (string, TunnelAttachment, error) {
+	tunnelName := fmt.Sprintf("VPS %s", vpsName)
+	tunnel, err := s.tunnelClient.CreateTunnel(ctx, proxacloudtunnelapi.CreateTunnelRequest{
+		Name:        tunnelName,
+		Slug:        "vps-" + sanitizeName(vpsName),
+		Description: fmt.Sprintf("Managed VPS tunnel for %s", vpsName),
+	})
+	if err != nil {
+		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud tunnel: %w", err)
+	}
+	httpRoute, err := s.tunnelClient.CreateHTTPRoute(ctx, tunnel.ID, proxacloudtunnelapi.CreateHTTPRouteRequest{
+		Hostname:  attachment.PublicHostname,
+		TargetURL: attachment.HTTPTargetURL,
+		TLSMode:   "edge",
+		Enabled:   true,
+	})
+	if err != nil {
+		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud HTTP route: %w", err)
+	}
+	tcpRoute, err := s.tunnelClient.CreateTCPRoute(ctx, tunnel.ID, proxacloudtunnelapi.CreateTCPRouteRequest{
+		Name:           "SSH",
+		PublicHostname: attachment.PublicHostname,
+		PublicPort:     attachment.PublicPort,
+		TargetHost:     attachment.TCPTargetHost,
+		TargetPort:     attachment.TCPTargetPort,
+		Enabled:        true,
+	})
+	if err != nil {
+		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud TCP route: %w", err)
+	}
+	token, err := s.tunnelClient.CreateToken(ctx, tunnel.ID, proxacloudtunnelapi.CreateTokenRequest{
+		Name:  "VPS agent token",
+		Scope: "all",
+	})
+	if err != nil {
+		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud agent token: %w", err)
+	}
+
+	installCommand := s.agentInstallCommand(tunnel.ID, token.Token)
+	redactedCommand := strings.ReplaceAll(installCommand, token.Token, "REDACTED")
+	var out TunnelAttachment
+	err = s.db.QueryRowContext(ctx, `
+		UPDATE vps_tunnel_attachments
+		SET tunnel_id = $2,
+		    http_route_id = $3,
+		    tcp_route_id = $4,
+		    token_id = $5,
+		    install_command_redacted = $6,
+		    status = 'configured',
+		    last_error = '',
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
+		          public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
+		          install_command_redacted, status, last_error, emailed_at, created_at, updated_at
+	`, attachment.ID, tunnel.ID, httpRoute.ID, tcpRoute.ID, token.Item.ID, redactedCommand).Scan(
+		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
+		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
+		&out.InstallCommandRedacted, &out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if err != nil {
+		return "", TunnelAttachment{}, fmt.Errorf("update vps tunnel attachment: %w", err)
+	}
+	out.populateAccessFields()
+	return installCommand, out, nil
+}
+
+func (s *Service) EmailTunnelDetails(vpsID int64) error {
+	if s.mailer == nil {
+		return nil
+	}
+	attachment, err := s.GetTunnelAttachment(vpsID)
+	if err != nil {
+		if errors.Is(err, ErrTunnelAttachmentNotFound) {
+			return nil
+		}
+		return err
+	}
+	if attachment.Status != "configured" && attachment.Status != "emailed" {
+		return nil
+	}
+	email, name, err := s.ownerEmail(attachment.CustomerAccountID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(email) == "" {
+		return nil
+	}
+
+	subject := "Your ProxaCloud VPS access details"
+	body := fmt.Sprintf("Hello %s,\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nWeb URL: %s\nSSH: %s\n\nHTTP traffic is routed to %s on the VPS. SSH traffic is routed to %s:%d.\n\nProxaOps Cloud\n",
+		name,
+		attachment.WebURL,
+		attachment.SSHCommand,
+		attachment.HTTPTargetURL,
+		attachment.TCPTargetHost,
+		attachment.TCPTargetPort,
+	)
+	if err := s.mailer.Send(email, subject, body); err != nil {
+		return fmt.Errorf("send vps tunnel access email: %w", err)
+	}
+	_, _ = s.db.Exec(`UPDATE vps_tunnel_attachments SET status = 'emailed', emailed_at = NOW(), updated_at = NOW() WHERE id = $1`, attachment.ID)
+	_ = s.insertEvent(vpsID, "tunnel-email", "success", "VPS tunnel access details emailed", email)
+	return nil
+}
+
+func (s *Service) ownerEmail(accountID int64) (string, string, error) {
+	if accountID <= 0 {
+		return "", "", nil
+	}
+	var email, firstName, lastName, username string
+	err := s.db.QueryRow(`
+		SELECT u.email, COALESCE(u.first_name, ''), COALESCE(u.last_name, ''), u.username
+		FROM customer_accounts ca
+		JOIN users u ON u.id = ca.owner_user_id
+		WHERE ca.id = $1
+	`, accountID).Scan(&email, &firstName, &lastName, &username)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("load customer owner email: %w", err)
+	}
+	name := strings.TrimSpace(firstName + " " + lastName)
+	if name == "" {
+		name = username
+	}
+	return email, name, nil
+}
+
+func (s *Service) allocateTunnelPort(ctx context.Context, hostname string) (int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT public_port
+		FROM vps_tunnel_attachments
+		WHERE public_hostname = $1 AND public_port BETWEEN $2 AND $3
+	`, hostname, s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
+	if err != nil {
+		return 0, fmt.Errorf("list allocated tunnel ports: %w", err)
+	}
+	defer rows.Close()
+
+	used := map[int]struct{}{}
+	for rows.Next() {
+		var port int
+		if err := rows.Scan(&port); err != nil {
+			return 0, err
+		}
+		used[port] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for port := s.tunnelConfig.PublicPortStart; port <= s.tunnelConfig.PublicPortEnd; port++ {
+		if _, exists := used[port]; !exists {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available proxacloud tunnel TCP ports for %s", hostname)
+}
+
+func (s *Service) hostnameForVPS(name string) (string, error) {
+	base := sanitizeName(name)
+	if base == "" {
+		base = "vps"
+	}
+	if suffix := strings.TrimSpace(s.tunnelConfig.HostnameSuffix); suffix != "" {
+		suffix = strings.TrimPrefix(suffix, ".")
+		return base + "." + suffix, nil
+	}
+	if host := strings.TrimSpace(s.tunnelConfig.PublicHostname); host != "" {
+		return strings.ToLower(host), nil
+	}
+	return "", errors.New("set PROXACLOUD_TUNNEL_HOSTNAME_SUFFIX or PROXACLOUD_TUNNEL_PUBLIC_HOSTNAME")
+}
+
+func (s *Service) agentInstallCommand(tunnelID, token string) string {
+	apiURL := strings.TrimRight(s.tunnelConfig.APIURL, "/")
+	binaryURL := strings.TrimSpace(s.tunnelConfig.AgentBinaryURL)
+	if binaryURL == "" && apiURL != "" {
+		binaryURL = apiURL + "/api/v1/downloads/proxacloud-agent-linux-amd64"
+	}
+	args := []string{
+		"curl", "-fsSL", apiURL + "/api/v1/install-agent.sh",
+		"|", "sudo", "sh", "-s", "--",
+		"--tunnel-id", tunnelID,
+		"--token", token,
+		"--gateway-url", s.tunnelConfig.GatewayURL,
+		"--target-url", s.tunnelConfig.HTTPTargetURL,
+	}
+	if binaryURL != "" {
+		args = append(args, "--binary-url", binaryURL)
+	}
+	for i, arg := range args {
+		if arg == "|" {
+			continue
+		}
+		args[i] = shellQuote(arg)
+	}
+	return strings.Join(args, " ")
+}
+
+func (s *Service) markTunnelAttachmentFailed(ctx context.Context, id int64, err error) error {
+	_, execErr := s.db.ExecContext(ctx, `
+		UPDATE vps_tunnel_attachments
+		SET status = 'failed', last_error = $2, updated_at = NOW()
+		WHERE id = $1
+	`, id, err.Error())
+	return execErr
+}
+
+func scanTunnelAttachment(row interface {
+	Scan(dest ...any) error
+}) (TunnelAttachment, error) {
+	var out TunnelAttachment
+	var emailedAt sql.NullTime
+	err := row.Scan(
+		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
+		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
+		&out.InstallCommandRedacted, &out.Status, &out.LastError, &emailedAt, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TunnelAttachment{}, ErrTunnelAttachmentNotFound
+	}
+	if err != nil {
+		return TunnelAttachment{}, fmt.Errorf("scan vps tunnel attachment: %w", err)
+	}
+	if emailedAt.Valid {
+		out.EmailedAt = &emailedAt.Time
+	}
+	out.populateAccessFields()
+	return out, nil
+}
+
+func (a *TunnelAttachment) populateAccessFields() {
+	a.WebURL = "https://" + a.PublicHostname
+	if a.SSHUser != "" && a.PublicHostname != "" && a.PublicPort > 0 {
+		a.SSHCommand = fmt.Sprintf("ssh %s@%s -p %d", a.SSHUser, a.PublicHostname, a.PublicPort)
+	}
+}
+
+func (a TunnelAttachment) AccessSummary() string {
+	return fmt.Sprintf("Web URL: %s\nSSH: %s", a.WebURL, a.SSHCommand)
+}
+
+func shellQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func gatewayURLFromAPIURL(apiURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	switch parsed.Scheme {
+	case "https":
+		parsed.Scheme = "wss"
+	case "http":
+		parsed.Scheme = "ws"
+	}
+	parsed.Path = "/__agent/connect"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}

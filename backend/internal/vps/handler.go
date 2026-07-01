@@ -248,6 +248,42 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) GetTunnel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
+	resp, err := h.service.GetTunnelAttachment(id)
+	if err != nil {
+		if errors.Is(err, ErrTunnelAttachmentNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) RetryTunnel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
+	resp, err := h.service.RetryTunnel(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) ListImages(w http.ResponseWriter, _ *http.Request) {
 	resp, err := h.service.ListImages()
 	if err != nil {

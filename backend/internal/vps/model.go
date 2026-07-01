@@ -70,6 +70,9 @@ type Service struct {
 	secrets            secrets.Store
 	terraformRunner    *terraform.Runner
 	autoApply          bool
+	tunnelConfig       TunnelConfig
+	tunnelClient       tunnelAPI
+	mailer             tunnelMailer
 	consoleSessionsMu  sync.Mutex
 	consoleSessions    map[string]consoleSessionRecord
 }
@@ -168,11 +171,12 @@ type CreateRequest struct {
 }
 
 type CreateResponse struct {
-	VPSID            int64    `json:"vps_id"`
-	Status           string   `json:"status"`
-	TerraformWorkDir string   `json:"terraform_work_dir"`
-	TerraformOutput  string   `json:"terraform_output,omitempty"`
-	Warnings         []string `json:"warnings"`
+	VPSID            int64             `json:"vps_id"`
+	Status           string            `json:"status"`
+	TerraformWorkDir string            `json:"terraform_work_dir"`
+	TerraformOutput  string            `json:"terraform_output,omitempty"`
+	Warnings         []string          `json:"warnings"`
+	Tunnel           *TunnelAttachment `json:"tunnel,omitempty"`
 }
 
 type ActionResponse struct {
@@ -328,6 +332,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		return CreateResponse{}, err
 	}
 	req.IPAddress = ipAddress
+	warnings := []string{}
 
 	workDir := s.terraformRunner.WorkspaceDirForKey("vps-" + sanitizeName(req.Name))
 	rootPasswordRef := ""
@@ -370,23 +375,40 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		return CreateResponse{}, fmt.Errorf("insert vps: %w", err)
 	}
 
+	agentInstallCommand := ""
+	var tunnelAttachment *TunnelAttachment
+	if s.tunnelConfig.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		installCommand, attachment, tunnelErr := s.configureTunnelForCreate(ctx, vpsID, req, sshUser)
+		cancel()
+		if tunnelErr != nil {
+			warnings = append(warnings, "Proxacloud tunnel setup failed: "+tunnelErr.Error())
+			_ = s.insertEvent(vpsID, "tunnel-setup", "error", "Proxacloud tunnel setup failed", tunnelErr.Error())
+		} else if attachment != nil {
+			agentInstallCommand = installCommand
+			tunnelAttachment = attachment
+			_ = s.insertEvent(vpsID, "tunnel-setup", "success", "Proxacloud HTTP and TCP tunnel routes configured", attachment.AccessSummary())
+		}
+	}
+
 	spec := terraform.StandaloneVPSSpec{
-		WorkspaceKey:    "vps-" + req.Name,
-		Name:            req.Name,
-		ProxmoxNodeName: req.ProxmoxNodeName,
-		CPU:             req.CPU,
-		MemoryMB:        req.MemoryMB,
-		DiskGB:          req.DiskGB,
-		NetworkCIDR:     network.CIDR,
-		Gateway:         network.Gateway,
-		DNS:             network.DNS,
-		Bridge:          network.Bridge,
-		VLAN:            network.VLAN,
-		CloudInitImage:  req.CloudInitImagePath,
-		SSHPublicKey:    sshPublicKey,
-		SSHUser:         sshUser,
-		RootPassword:    rootPassword,
-		IPAddress:       req.IPAddress,
+		WorkspaceKey:        "vps-" + req.Name,
+		Name:                req.Name,
+		ProxmoxNodeName:     req.ProxmoxNodeName,
+		CPU:                 req.CPU,
+		MemoryMB:            req.MemoryMB,
+		DiskGB:              req.DiskGB,
+		NetworkCIDR:         network.CIDR,
+		Gateway:             network.Gateway,
+		DNS:                 network.DNS,
+		Bridge:              network.Bridge,
+		VLAN:                network.VLAN,
+		CloudInitImage:      req.CloudInitImagePath,
+		SSHPublicKey:        sshPublicKey,
+		SSHUser:             sshUser,
+		RootPassword:        rootPassword,
+		IPAddress:           req.IPAddress,
+		AgentInstallCommand: agentInstallCommand,
 	}
 	workDir, err = s.terraformRunner.PrepareStandaloneVPSWorkspace(spec)
 	if err != nil {
@@ -397,12 +419,12 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	_, _ = s.db.Exec(`UPDATE vps_instances SET terraform_work_dir = $2, updated_at = NOW() WHERE id = $1`, vpsID, workDir)
 	_ = s.insertEvent(vpsID, "terraform-prepare", "success", "Terraform workspace generated", workDir)
 
-	resp := CreateResponse{VPSID: vpsID, Status: "created", TerraformWorkDir: workDir, Warnings: []string{}}
+	resp := CreateResponse{VPSID: vpsID, Status: "created", TerraformWorkDir: workDir, Warnings: warnings, Tunnel: tunnelAttachment}
 	if req.Apply || s.autoApply {
 		action, err := s.Deploy(vpsID)
 		resp.Status = action.Status
 		resp.TerraformOutput = action.Output
-		resp.Warnings = action.Warnings
+		resp.Warnings = append(resp.Warnings, action.Warnings...)
 		if err != nil {
 			return resp, err
 		}
@@ -430,7 +452,12 @@ func (s *Service) Deploy(id int64) (ActionResponse, error) {
 	}
 	_ = s.updateStatus(id, "running")
 	_ = s.insertEvent(id, "terraform-apply", "success", "VPS deployed successfully", result.Output)
-	return ActionResponse{VPSID: id, Action: "deploy", Status: "running", Output: result.Output, Warnings: []string{}}, nil
+	warnings := []string{}
+	if err := s.EmailTunnelDetails(id); err != nil {
+		warnings = append(warnings, err.Error())
+		_ = s.insertEvent(id, "tunnel-email", "error", "VPS tunnel access email failed", err.Error())
+	}
+	return ActionResponse{VPSID: id, Action: "deploy", Status: "running", Output: result.Output, Warnings: warnings}, nil
 }
 
 func (s *Service) Redeploy(id int64) (ActionResponse, error) {
