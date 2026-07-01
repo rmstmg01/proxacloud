@@ -177,6 +177,15 @@ func NewApp() (*App, error) {
 		PublicPortStart: cfg.ProxacloudTunnelPublicPortStart,
 		PublicPortEnd:   cfg.ProxacloudTunnelPublicPortEnd,
 		AgentBinaryURL:  cfg.ProxacloudTunnelAgentBinaryURL,
+		CloudflareDNS: vps.CloudflareDNSConfig{
+			Enabled:    cfg.CloudflareDNSEnabled,
+			APIToken:   cfg.CloudflareAPIToken,
+			ZoneID:     cfg.CloudflareZoneID,
+			Domain:     cfg.CloudflareDomain,
+			Target:     cfg.CloudflareDNSTarget,
+			RecordType: cfg.CloudflareDNSRecordType,
+			Proxied:    cfg.CloudflareDNSProxied,
+		},
 	}, tunnelAPIClient, mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)

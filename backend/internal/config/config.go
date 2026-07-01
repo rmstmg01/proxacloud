@@ -49,6 +49,13 @@ type Config struct {
 	ProxacloudTunnelPublicPortStart int
 	ProxacloudTunnelPublicPortEnd   int
 	ProxacloudTunnelAgentBinaryURL  string
+	CloudflareDNSEnabled            bool
+	CloudflareAPIToken              string
+	CloudflareZoneID                string
+	CloudflareDomain                string
+	CloudflareDNSTarget             string
+	CloudflareDNSRecordType         string
+	CloudflareDNSProxied            bool
 
 	DefaultNetworkName    string
 	DefaultNetworkCIDR    string
@@ -100,6 +107,13 @@ func Load() Config {
 		ProxacloudTunnelPublicPortStart: getenvInt("PROXACLOUD_TUNNEL_PUBLIC_PORT_START", 22000),
 		ProxacloudTunnelPublicPortEnd:   getenvInt("PROXACLOUD_TUNNEL_PUBLIC_PORT_END", 29999),
 		ProxacloudTunnelAgentBinaryURL:  getenv("PROXACLOUD_TUNNEL_AGENT_BINARY_URL", ""),
+		CloudflareDNSEnabled:            getenvBool("CLOUDFLARE_DNS_ENABLED", false),
+		CloudflareAPIToken:              getenv("CLOUDFLARE_API_TOKEN", ""),
+		CloudflareZoneID:                getenv("CLOUDFLARE_ZONE_ID", ""),
+		CloudflareDomain:                getenv("CLOUDFLARE_DOMAIN", "proxaops.com"),
+		CloudflareDNSTarget:             getenv("CLOUDFLARE_DNS_TARGET", ""),
+		CloudflareDNSRecordType:         getenv("CLOUDFLARE_DNS_RECORD_TYPE", ""),
+		CloudflareDNSProxied:            getenvBool("CLOUDFLARE_DNS_PROXIED", false),
 		DefaultNetworkName:              getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
 		DefaultNetworkCIDR:              getenv("DEFAULT_NETWORK_CIDR", "192.168.8.0/24"),
 		DefaultNetworkGateway:           getenv("DEFAULT_NETWORK_GATEWAY", "192.168.8.1"),

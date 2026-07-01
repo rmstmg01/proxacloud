@@ -39,30 +39,46 @@ type TunnelConfig struct {
 	PublicPortStart int
 	PublicPortEnd   int
 	AgentBinaryURL  string
+	CloudflareDNS   CloudflareDNSConfig
+}
+
+type CloudflareDNSConfig struct {
+	Enabled    bool
+	APIToken   string
+	ZoneID     string
+	Domain     string
+	Target     string
+	RecordType string
+	Proxied    bool
 }
 
 type TunnelAttachment struct {
-	ID                     int64      `json:"id"`
-	VPSID                  int64      `json:"vps_id"`
-	CustomerAccountID      int64      `json:"customer_account_id,omitempty"`
-	TunnelID               string     `json:"tunnel_id"`
-	HTTPRouteID            string     `json:"http_route_id"`
-	TCPRouteID             string     `json:"tcp_route_id"`
-	TokenID                string     `json:"token_id"`
-	PublicHostname         string     `json:"public_hostname"`
-	PublicPort             int        `json:"public_port"`
-	HTTPTargetURL          string     `json:"http_target_url"`
-	TCPTargetHost          string     `json:"tcp_target_host"`
-	TCPTargetPort          int        `json:"tcp_target_port"`
-	SSHUser                string     `json:"ssh_user"`
-	InstallCommandRedacted string     `json:"install_command_redacted,omitempty"`
-	Status                 string     `json:"status"`
-	LastError              string     `json:"last_error"`
-	EmailedAt              *time.Time `json:"emailed_at,omitempty"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
-	SSHCommand             string     `json:"ssh_command"`
-	WebURL                 string     `json:"web_url"`
+	ID                         int64      `json:"id"`
+	VPSID                      int64      `json:"vps_id"`
+	CustomerAccountID          int64      `json:"customer_account_id,omitempty"`
+	TunnelID                   string     `json:"tunnel_id"`
+	HTTPRouteID                string     `json:"http_route_id"`
+	TCPRouteID                 string     `json:"tcp_route_id"`
+	TokenID                    string     `json:"token_id"`
+	PublicHostname             string     `json:"public_hostname"`
+	PublicPort                 int        `json:"public_port"`
+	HTTPTargetURL              string     `json:"http_target_url"`
+	TCPTargetHost              string     `json:"tcp_target_host"`
+	TCPTargetPort              int        `json:"tcp_target_port"`
+	SSHUser                    string     `json:"ssh_user"`
+	InstallCommandRedacted     string     `json:"install_command_redacted,omitempty"`
+	CloudflareDNSRecordID      string     `json:"cloudflare_dns_record_id,omitempty"`
+	CloudflareDNSRecordType    string     `json:"cloudflare_dns_record_type,omitempty"`
+	CloudflareDNSRecordContent string     `json:"cloudflare_dns_record_content,omitempty"`
+	CloudflareDNSProxied       bool       `json:"cloudflare_dns_proxied"`
+	CloudflareDNSStatus        string     `json:"cloudflare_dns_status,omitempty"`
+	Status                     string     `json:"status"`
+	LastError                  string     `json:"last_error"`
+	EmailedAt                  *time.Time `json:"emailed_at,omitempty"`
+	CreatedAt                  time.Time  `json:"created_at"`
+	UpdatedAt                  time.Time  `json:"updated_at"`
+	SSHCommand                 string     `json:"ssh_command"`
+	WebURL                     string     `json:"web_url"`
 }
 
 func (s *Service) SetTunnelIntegration(cfg TunnelConfig, client tunnelAPI, mailer tunnelMailer) {
@@ -91,6 +107,17 @@ func (s *Service) SetTunnelIntegration(cfg TunnelConfig, client tunnelAPI, maile
 		cfg.PublicPortEnd = 29999
 	}
 	cfg.AgentBinaryURL = strings.TrimSpace(cfg.AgentBinaryURL)
+	cfg.CloudflareDNS.APIToken = strings.TrimSpace(cfg.CloudflareDNS.APIToken)
+	cfg.CloudflareDNS.ZoneID = strings.TrimSpace(cfg.CloudflareDNS.ZoneID)
+	cfg.CloudflareDNS.Domain = strings.Trim(strings.ToLower(strings.TrimSpace(cfg.CloudflareDNS.Domain)), ".")
+	if cfg.CloudflareDNS.Domain == "" {
+		cfg.CloudflareDNS.Domain = "proxaops.com"
+	}
+	cfg.CloudflareDNS.Target = strings.TrimSpace(cfg.CloudflareDNS.Target)
+	cfg.CloudflareDNS.RecordType = strings.ToUpper(strings.TrimSpace(cfg.CloudflareDNS.RecordType))
+	if cfg.CloudflareDNS.RecordType == "" {
+		cfg.CloudflareDNS.RecordType = cloudflareRecordTypeForTarget(cfg.CloudflareDNS.Target)
+	}
 
 	s.tunnelConfig = cfg
 	s.tunnelClient = client
@@ -152,7 +179,9 @@ func (s *Service) GetTunnelAttachment(vpsID int64) (TunnelAttachment, error) {
 	row := s.db.QueryRow(`
 		SELECT id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
 		       public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
-		       install_command_redacted, status, last_error, emailed_at, created_at, updated_at
+		       install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
+		       cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
+		       status, last_error, emailed_at, created_at, updated_at
 		FROM vps_tunnel_attachments
 		WHERE vps_id = $1
 	`, vpsID)
@@ -192,11 +221,15 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 			updated_at = NOW()
 		RETURNING id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
 		          public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
-		          install_command_redacted, status, last_error, emailed_at, created_at, updated_at
+		          install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
+		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
+		          status, last_error, emailed_at, created_at, updated_at
 	`, vpsID, req.CustomerAccountID, hostname, port, s.tunnelConfig.HTTPTargetURL, s.tunnelConfig.SSHHost, s.tunnelConfig.SSHPort, sshUser).Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
-		&out.InstallCommandRedacted, &out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
+		&out.CloudflareDNSRecordContent, &out.CloudflareDNSProxied, &out.CloudflareDNSStatus,
+		&out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		return TunnelAttachment{}, fmt.Errorf("reserve vps tunnel attachment: %w", err)
@@ -242,6 +275,10 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 	if err != nil {
 		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud agent token: %w", err)
 	}
+	dnsResult, err := s.ensureCloudflareDNSRecord(ctx, attachment)
+	if err != nil {
+		return "", TunnelAttachment{}, err
+	}
 
 	installCommand := s.agentInstallCommand(tunnel.ID, token.Token)
 	redactedCommand := strings.ReplaceAll(installCommand, token.Token, "REDACTED")
@@ -253,17 +290,27 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 		    tcp_route_id = $4,
 		    token_id = $5,
 		    install_command_redacted = $6,
+		    cloudflare_dns_record_id = $7,
+		    cloudflare_dns_record_type = $8,
+		    cloudflare_dns_record_content = $9,
+		    cloudflare_dns_proxied = $10,
+		    cloudflare_dns_status = $11,
 		    status = 'configured',
 		    last_error = '',
 		    updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
 		          public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
-		          install_command_redacted, status, last_error, emailed_at, created_at, updated_at
-	`, attachment.ID, tunnel.ID, httpRoute.ID, tcpRoute.ID, token.Item.ID, redactedCommand).Scan(
+		          install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
+		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
+		          status, last_error, emailed_at, created_at, updated_at
+	`, attachment.ID, tunnel.ID, httpRoute.ID, tcpRoute.ID, token.Item.ID, redactedCommand,
+		dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status).Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
-		&out.InstallCommandRedacted, &out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
+		&out.CloudflareDNSRecordContent, &out.CloudflareDNSProxied, &out.CloudflareDNSStatus,
+		&out.Status, &out.LastError, &out.EmailedAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if err != nil {
 		return "", TunnelAttachment{}, fmt.Errorf("update vps tunnel attachment: %w", err)
@@ -423,7 +470,9 @@ func scanTunnelAttachment(row interface {
 	err := row.Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
-		&out.InstallCommandRedacted, &out.Status, &out.LastError, &emailedAt, &out.CreatedAt, &out.UpdatedAt,
+		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
+		&out.CloudflareDNSRecordContent, &out.CloudflareDNSProxied, &out.CloudflareDNSStatus,
+		&out.Status, &out.LastError, &emailedAt, &out.CreatedAt, &out.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TunnelAttachment{}, ErrTunnelAttachmentNotFound
