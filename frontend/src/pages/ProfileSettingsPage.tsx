@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { KeyRound, Mail, QrCode, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
+  changePassword,
   confirmEmailTwoFactor,
   confirmTOTP,
   disableTwoFactor,
   getTwoFactorStatus,
   requestEmailTwoFactor,
   setupTOTP,
+  updateProfile,
 } from '../api/auth';
 import type { TwoFactorStatus, TwoFactorTOTPSetup } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
@@ -18,7 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
 import { Input } from '../components/ui/Input';
 
 export function ProfileSettingsPage() {
-  const { user } = useAuth();
+  const { user, saveSession } = useAuth();
   const [status, setStatus] = useState<TwoFactorStatus>({ enabled: false, method: 'none' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -36,6 +38,19 @@ export function ProfileSettingsPage() {
   const [disablePassword, setDisablePassword] = useState('');
   const [disableCode, setDisableCode] = useState('');
 
+  const [profileForm, setProfileForm] = useState({
+    username: '',
+    first_name: '',
+    last_name: '',
+    contact_number: '',
+    current_password: '',
+  });
+  const [passwordForm, setPasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
+
   const loadStatus = async () => {
     setLoading(true);
     try {
@@ -50,6 +65,18 @@ export function ProfileSettingsPage() {
   useEffect(() => {
     void loadStatus();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const names = splitName(user.full_name);
+    setProfileForm({
+      username: user.username || '',
+      first_name: user.first_name || names.firstName,
+      last_name: user.last_name || names.lastName,
+      contact_number: user.contact_number || '',
+      current_password: '',
+    });
+  }, [user]);
 
   const resetMessages = () => {
     setError(null);
@@ -134,6 +161,42 @@ export function ProfileSettingsPage() {
     }
   };
 
+  const saveProfile = async () => {
+    resetMessages();
+    setSaving(true);
+    try {
+      const res = await updateProfile(profileForm);
+      saveSession(res);
+      setProfileForm((prev) => ({ ...prev, current_password: '' }));
+      setSuccess('Profile updated successfully');
+    } catch (err) {
+      setError(err as Error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const savePassword = async () => {
+    resetMessages();
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      setError(new Error('New password and confirmation do not match'));
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await changePassword({
+        current_password: passwordForm.current_password,
+        new_password: passwordForm.new_password,
+      });
+      setSuccess(res.message);
+      setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+    } catch (err) {
+      setError(err as Error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const methodLabel = status.method === 'totp' ? 'Authenticator app' : status.method === 'email' ? 'Email code' : 'None';
 
   return (
@@ -143,6 +206,93 @@ export function ProfileSettingsPage() {
       <div className="space-y-6">
         {error && <ErrorMessage error={error} />}
         {success && <Alert variant="success">{success}</Alert>}
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Account details</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Input
+                label="Username"
+                value={profileForm.username}
+                onChange={(e) => setProfileForm({ ...profileForm, username: e.target.value })}
+                autoComplete="username"
+              />
+              <Input label="Email" type="email" value={user?.email || ''} readOnly helperText="Email cannot be changed here." />
+              <Input
+                label="First name"
+                value={profileForm.first_name}
+                onChange={(e) => setProfileForm({ ...profileForm, first_name: e.target.value })}
+                autoComplete="given-name"
+              />
+              <Input
+                label="Last name"
+                value={profileForm.last_name}
+                onChange={(e) => setProfileForm({ ...profileForm, last_name: e.target.value })}
+                autoComplete="family-name"
+              />
+              <Input
+                label="Contact number"
+                type="tel"
+                value={profileForm.contact_number}
+                onChange={(e) => setProfileForm({ ...profileForm, contact_number: e.target.value })}
+                autoComplete="tel"
+              />
+              <Input
+                label="Current password"
+                type="password"
+                value={profileForm.current_password}
+                onChange={(e) => setProfileForm({ ...profileForm, current_password: e.target.value })}
+                autoComplete="current-password"
+                helperText="Required only when changing username."
+              />
+            </div>
+            <Button type="button" onClick={saveProfile} loading={saving} disabled={!profileForm.username.trim()}>
+              Save profile
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Password</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+            <Input
+              label="Current password"
+              type="password"
+              value={passwordForm.current_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
+              autoComplete="current-password"
+            />
+            <Input
+              label="New password"
+              type="password"
+              value={passwordForm.new_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+              autoComplete="new-password"
+              minLength={8}
+            />
+            <Input
+              label="Confirm password"
+              type="password"
+              value={passwordForm.confirm_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
+              autoComplete="new-password"
+              minLength={8}
+            />
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={savePassword}
+              loading={saving}
+              disabled={!passwordForm.current_password || passwordForm.new_password.length < 8 || !passwordForm.confirm_password}
+            >
+              Change password
+            </Button>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
@@ -282,4 +432,10 @@ export function ProfileSettingsPage() {
       </div>
     </Layout>
   );
+}
+
+function splitName(fullName: string | undefined): { firstName: string; lastName: string } {
+  const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: '', lastName: '' };
+  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
 }

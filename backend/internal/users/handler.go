@@ -140,6 +140,76 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
+func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		Username        string `json:"username"`
+		FirstName       string `json:"first_name"`
+		LastName        string `json:"last_name"`
+		ContactNumber   string `json:"contact_number"`
+		CurrentPassword string `json:"current_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	user, err := h.users.UpdateOwnProfile(ctxUser.Username, SelfProfileInput{
+		Username:        req.Username,
+		FirstName:       req.FirstName,
+		LastName:        req.LastName,
+		ContactNumber:   req.ContactNumber,
+		CurrentPassword: req.CurrentPassword,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidCredentials):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is required when changing username"})
+		case errors.Is(err, ErrUserExists):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "username already exists"})
+		case errors.Is(err, ErrUserNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	token, err := h.tokens.Issue(user.Username, user.Role)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue token"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
+}
+
+func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	if err := h.users.ChangeOwnPassword(ctxUser.Username, req.CurrentPassword, req.NewPassword); err != nil {
+		if errors.Is(err, ErrInvalidCredentials) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is incorrect"})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Password updated successfully"})
+}
+
 func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username      string `json:"username"`

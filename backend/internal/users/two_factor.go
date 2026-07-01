@@ -204,14 +204,14 @@ func (s *Service) getByIDPrivate(id int64) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		   FROM users u
 		   JOIN roles r ON r.id = u.role_id
 		  WHERE u.id = $1`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
+	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}
@@ -224,14 +224,14 @@ func (s *Service) getByUsernamePrivate(username string) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		   FROM users u
 		   JOIN roles r ON r.id = u.role_id
 		  WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
+	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}

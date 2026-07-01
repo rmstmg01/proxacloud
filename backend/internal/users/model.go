@@ -41,6 +41,8 @@ const (
 type User struct {
 	ID                     int64      `json:"id"`
 	Username               string     `json:"username"`
+	FirstName              string     `json:"first_name"`
+	LastName               string     `json:"last_name"`
 	FullName               string     `json:"full_name"`
 	Email                  string     `json:"email"`
 	ContactNumber          string     `json:"contact_number"`
@@ -58,9 +60,19 @@ type User struct {
 }
 
 type ProfileInput struct {
+	FirstName     string
+	LastName      string
 	FullName      string
 	Email         string
 	ContactNumber string
+}
+
+type SelfProfileInput struct {
+	Username        string
+	FirstName       string
+	LastName        string
+	ContactNumber   string
+	CurrentPassword string
 }
 
 type Service struct {
@@ -85,9 +97,8 @@ func (s *Service) SeedSuperAdmin(username, password string) error {
 
 func (s *Service) CreateUser(username, password string, role rbac.Role, profile ProfileInput) (User, error) {
 	username = strings.TrimSpace(strings.ToLower(username))
-	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile = normalizeProfileInput(profile)
 	profile.Email = strings.TrimSpace(strings.ToLower(profile.Email))
-	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
 	if username == "" || len(password) < 8 {
 		return User{}, errors.New("username required and password must have at least 8 characters")
 	}
@@ -106,16 +117,18 @@ func (s *Service) CreateUser(username, password string, role rbac.Role, profile 
 
 	var created User
 	err = s.db.QueryRow(
-		`INSERT INTO users (username, full_name, email, contact_number, password_hash, role_id, status, email_verified_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, 'active', CASE WHEN NULLIF($3, '') IS NULL THEN NULL ELSE NOW() END)
-		 RETURNING id, username, full_name, email, contact_number, status, email_verified_at, created_at`,
+		`INSERT INTO users (username, first_name, last_name, full_name, email, contact_number, password_hash, role_id, status, email_verified_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', CASE WHEN NULLIF($5, '') IS NULL THEN NULL ELSE NOW() END)
+		 RETURNING id, username, first_name, last_name, full_name, email, contact_number, status, email_verified_at, created_at`,
 		username,
+		profile.FirstName,
+		profile.LastName,
 		profile.FullName,
 		profile.Email,
 		profile.ContactNumber,
 		string(hash),
 		roleID,
-	).Scan(&created.ID, &created.Username, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
+	).Scan(&created.ID, &created.Username, &created.FirstName, &created.LastName, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
 			return User{}, ErrUserExists
@@ -134,9 +147,8 @@ type RegistrationResult struct {
 
 func (s *Service) RegisterClient(username, password string, profile ProfileInput, publicAppURL string) (RegistrationResult, error) {
 	username = strings.TrimSpace(strings.ToLower(username))
-	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile = normalizeProfileInput(profile)
 	profile.Email = strings.TrimSpace(strings.ToLower(profile.Email))
-	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
 	if profile.Email == "" {
 		return RegistrationResult{}, errors.New("email is required")
 	}
@@ -161,11 +173,11 @@ func (s *Service) RegisterClient(username, password string, profile ProfileInput
 
 	var created User
 	err = tx.QueryRow(
-		`INSERT INTO users (username, full_name, email, contact_number, password_hash, role_id, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, username, full_name, email, contact_number, status, email_verified_at, created_at`,
-		username, profile.FullName, profile.Email, profile.ContactNumber, string(hash), roleID, string(StatusEmailPending),
-	).Scan(&created.ID, &created.Username, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
+		`INSERT INTO users (username, first_name, last_name, full_name, email, contact_number, password_hash, role_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id, username, first_name, last_name, full_name, email, contact_number, status, email_verified_at, created_at`,
+		username, profile.FirstName, profile.LastName, profile.FullName, profile.Email, profile.ContactNumber, string(hash), roleID, string(StatusEmailPending),
+	).Scan(&created.ID, &created.Username, &created.FirstName, &created.LastName, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
 			return RegistrationResult{}, ErrUserExists
@@ -267,9 +279,8 @@ func (s *Service) UpdateUser(id int64, role rbac.Role, profile ProfileInput) (Us
 	if !rbac.IsValidRole(role) {
 		return User{}, ErrInvalidRole
 	}
-	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile = normalizeProfileInput(profile)
 	profile.Email = strings.TrimSpace(strings.ToLower(profile.Email))
-	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
 
 	roleID, err := s.getRoleID(role)
 	if err != nil {
@@ -280,19 +291,23 @@ func (s *Service) UpdateUser(id int64, role rbac.Role, profile ProfileInput) (Us
 	var roleName string
 	err = s.db.QueryRow(
 		`UPDATE users
-		 SET full_name = $2,
-		     email = $3,
-		     contact_number = $4,
-		     role_id = $5
+		 SET first_name = $2,
+		     last_name = $3,
+		     full_name = $4,
+		     email = $5,
+		     contact_number = $6,
+		     role_id = $7
 		 WHERE id = $1
-		 RETURNING id, username, full_name, email, contact_number, status, email_verified_at, created_at,
-		           (SELECT name FROM roles WHERE id = $5)`,
+		 RETURNING id, username, first_name, last_name, full_name, email, contact_number, status, email_verified_at, created_at,
+		           (SELECT name FROM roles WHERE id = $7)`,
 		id,
+		profile.FirstName,
+		profile.LastName,
 		profile.FullName,
 		profile.Email,
 		profile.ContactNumber,
 		roleID,
-	).Scan(&updated.ID, &updated.Username, &updated.FullName, &updated.Email, &updated.ContactNumber, &updated.Status, &updated.EmailVerifiedAt, &updated.CreatedAt, &roleName)
+	).Scan(&updated.ID, &updated.Username, &updated.FirstName, &updated.LastName, &updated.FullName, &updated.Email, &updated.ContactNumber, &updated.Status, &updated.EmailVerifiedAt, &updated.CreatedAt, &roleName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrUserNotFound
@@ -302,6 +317,77 @@ func (s *Service) UpdateUser(id int64, role rbac.Role, profile ProfileInput) (Us
 
 	updated.Role = rbac.Role(roleName)
 	return sanitizeUser(updated), nil
+}
+
+func (s *Service) UpdateOwnProfile(currentUsername string, input SelfProfileInput) (User, error) {
+	currentUsername = strings.TrimSpace(strings.ToLower(currentUsername))
+	nextUsername := strings.TrimSpace(strings.ToLower(input.Username))
+	if nextUsername == "" {
+		return User{}, errors.New("username is required")
+	}
+	current, ok := s.getByUsernamePrivate(currentUsername)
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	if nextUsername != current.Username {
+		if err := s.verifyCurrentPassword(current.ID, input.CurrentPassword); err != nil {
+			return User{}, ErrInvalidCredentials
+		}
+	}
+	firstName := strings.TrimSpace(input.FirstName)
+	lastName := strings.TrimSpace(input.LastName)
+	fullName := strings.TrimSpace(strings.Join([]string{firstName, lastName}, " "))
+	contactNumber := strings.TrimSpace(input.ContactNumber)
+
+	var updated User
+	var roleName string
+	err := s.db.QueryRow(
+		`UPDATE users
+		    SET username = $2,
+		        first_name = $3,
+		        last_name = $4,
+		        full_name = $5,
+		        contact_number = $6
+		  WHERE id = $1
+		  RETURNING id, username, first_name, last_name, full_name, email, contact_number, status, email_verified_at, created_at,
+		            (SELECT name FROM roles WHERE id = users.role_id),
+		            two_factor_enabled, COALESCE(two_factor_method, 'none'), COALESCE(two_factor_secret, ''),
+		            COALESCE(two_factor_pending_secret, ''), two_factor_enabled_at, COALESCE(last_login_ip, '')`,
+		current.ID,
+		nextUsername,
+		firstName,
+		lastName,
+		fullName,
+		contactNumber,
+	).Scan(&updated.ID, &updated.Username, &updated.FirstName, &updated.LastName, &updated.FullName, &updated.Email, &updated.ContactNumber, &updated.Status, &updated.EmailVerifiedAt, &updated.CreatedAt, &roleName, &updated.TwoFactorEnabled, &updated.TwoFactorMethod, &updated.TwoFactorSecret, &updated.TwoFactorPendingSecret, &updated.TwoFactorEnabledAt, &updated.LastLoginIP)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
+			return User{}, ErrUserExists
+		}
+		return User{}, fmt.Errorf("update own profile: %w", err)
+	}
+	updated.Role = rbac.Role(roleName)
+	return sanitizeUser(updated), nil
+}
+
+func (s *Service) ChangeOwnPassword(username, currentPassword, newPassword string) error {
+	username = strings.TrimSpace(strings.ToLower(username))
+	if len(newPassword) < 8 {
+		return errors.New("new password must have at least 8 characters")
+	}
+	user, ok := s.getByUsernamePrivate(username)
+	if !ok {
+		return ErrUserNotFound
+	}
+	if err := s.verifyCurrentPassword(user.ID, currentPassword); err != nil {
+		return ErrInvalidCredentials
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE users SET password_hash = $2 WHERE id = $1`, user.ID, string(hash))
+	return err
 }
 
 func (s *Service) SetStatus(id int64, status Status, actorUsername string, reason string) (User, error) {
@@ -421,14 +507,14 @@ func (s *Service) Authenticate(username, password string) (User, error) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.password_hash, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.password_hash, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
+	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrInvalidCredentials
@@ -450,14 +536,14 @@ func (s *Service) GetByUsername(username string) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.username = $1`,
 		username,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
+	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}
@@ -470,14 +556,14 @@ func (s *Service) GetByID(id int64) (User, bool) {
 	var user User
 	var roleName string
 	err := s.db.QueryRow(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
 		 WHERE u.id = $1`,
 		id,
-	).Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
+	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {
 		return User{}, false
 	}
@@ -487,7 +573,7 @@ func (s *Service) GetByID(id int64) (User, bool) {
 
 func (s *Service) ListUsers() []User {
 	rows, err := s.db.Query(
-		`SELECT u.id, u.username, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
+		`SELECT u.id, u.username, u.first_name, u.last_name, u.full_name, u.email, u.contact_number, u.status, u.email_verified_at, u.created_at, r.name,
 		        u.two_factor_enabled, COALESCE(u.two_factor_method, 'none'), COALESCE(u.two_factor_secret, ''),
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
@@ -503,7 +589,7 @@ func (s *Service) ListUsers() []User {
 	for rows.Next() {
 		var user User
 		var roleName string
-		if scanErr := rows.Scan(&user.ID, &user.Username, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP); scanErr != nil {
+		if scanErr := rows.Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP); scanErr != nil {
 			continue
 		}
 		user.Role = rbac.Role(roleName)
@@ -523,6 +609,15 @@ func (s *Service) getRoleID(role rbac.Role) (int64, error) {
 }
 
 func sanitizeUser(u User) User {
+	if strings.TrimSpace(u.FirstName) == "" && strings.TrimSpace(u.LastName) == "" && strings.TrimSpace(u.FullName) != "" {
+		parts := strings.Fields(u.FullName)
+		if len(parts) > 0 {
+			u.FirstName = parts[0]
+			if len(parts) > 1 {
+				u.LastName = strings.Join(parts[1:], " ")
+			}
+		}
+	}
 	if strings.TrimSpace(u.TwoFactorMethod) == "" {
 		u.TwoFactorMethod = twoFactorMethodNone
 	}
@@ -531,6 +626,26 @@ func sanitizeUser(u User) User {
 	u.TwoFactorPendingSecret = ""
 	u.LastLoginIP = ""
 	return u
+}
+
+func normalizeProfileInput(profile ProfileInput) ProfileInput {
+	profile.FirstName = strings.TrimSpace(profile.FirstName)
+	profile.LastName = strings.TrimSpace(profile.LastName)
+	profile.FullName = strings.TrimSpace(profile.FullName)
+	profile.ContactNumber = strings.TrimSpace(profile.ContactNumber)
+	if profile.FirstName == "" && profile.LastName == "" && profile.FullName != "" {
+		parts := strings.Fields(profile.FullName)
+		if len(parts) > 0 {
+			profile.FirstName = parts[0]
+			if len(parts) > 1 {
+				profile.LastName = strings.Join(parts[1:], " ")
+			}
+		}
+	}
+	if profile.FullName == "" {
+		profile.FullName = strings.TrimSpace(strings.Join([]string{profile.FirstName, profile.LastName}, " "))
+	}
+	return profile
 }
 
 func isValidStatus(status Status) bool {

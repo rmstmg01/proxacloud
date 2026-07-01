@@ -7,6 +7,7 @@ interface AuthContextValue {
   token: string | null;
   login: (username: string, password: string) => Promise<LoginResult>;
   verifyLogin2FA: (challengeToken: string, code: string) => Promise<void>;
+  saveSession: (res: LoginResponse) => void;
   logout: () => void;
 }
 
@@ -63,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, verifyLogin2FA, logout }}>
+    <AuthContext.Provider value={{ user, token, login, verifyLogin2FA, saveSession, logout }}>
       {children}
     </AuthContext.Provider>
   );

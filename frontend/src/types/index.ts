@@ -6,6 +6,8 @@ export type UserStatus = 'email_pending' | 'pending_approval' | 'active' | 'susp
 export interface User {
   id: number;
   username: string;
+  first_name: string;
+  last_name: string;
   full_name: string;
   email: string;
   contact_number: string;

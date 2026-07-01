@@ -13,6 +13,21 @@ export const resendLogin2FAEmailCode = (challenge_token: string) =>
 export const getMe = () =>
   client.get<User>('/auth/me').then((r) => r.data);
 
+export const updateProfile = (body: {
+  username: string;
+  first_name: string;
+  last_name: string;
+  contact_number: string;
+  current_password?: string;
+}) =>
+  client.put<LoginResponse>('/profile', body).then((r) => r.data);
+
+export const changePassword = (body: {
+  current_password: string;
+  new_password: string;
+}) =>
+  client.post<{ message: string }>('/profile/password', body).then((r) => r.data);
+
 export const register = (body: {
   username: string;
   full_name: string;

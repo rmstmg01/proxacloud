@@ -226,6 +226,8 @@ func NewApp() (*App, error) {
 		api.Group(func(protected chi.Router) {
 			protected.Use(auth.AuthMiddleware(tokens))
 			protected.Get("/auth/me", userHandler.Me)
+			protected.Put("/profile", userHandler.UpdateProfile)
+			protected.Post("/profile/password", userHandler.ChangePassword)
 			protected.Get("/profile/2fa/status", userHandler.TwoFactorStatus)
 			protected.Post("/profile/2fa/email/enable-request", userHandler.EnableTwoFactorEmailRequest)
 			protected.Post("/profile/2fa/email/enable-confirm", userHandler.EnableTwoFactorEmailConfirm)
