@@ -107,7 +107,7 @@ func (s *Service) ensureCloudflareDNSRecord(ctx context.Context, attachment Tunn
 	}
 
 	if attachment.CloudflareDNSRecordID != "" {
-		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID); err != nil && !strings.Contains(err.Error(), "not found") {
+		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID); err != nil && !isCloudflareMissingRecordError(err.Error()) {
 			return cloudflareDNSResult{}, fmt.Errorf("delete old Cloudflare DNS record: %w", err)
 		}
 	}
@@ -210,7 +210,7 @@ func (s *Service) getCloudflareDNSRecord(ctx context.Context, recordID string) (
 		return nil, fmt.Errorf("failed to parse Cloudflare get response: %w", err)
 	}
 	if !cfResp.Success {
-		if strings.Contains(cloudflareErrorMessage(cfResp), "not found") {
+		if isCloudflareMissingRecordError(cloudflareErrorMessage(cfResp)) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%s", cloudflareErrorMessage(cfResp))
@@ -284,7 +284,7 @@ func (s *Service) deleteCloudflareDNSRecord(ctx context.Context, recordID string
 		return fmt.Errorf("failed to parse Cloudflare delete response: %w", err)
 	}
 	if !cfResp.Success {
-		if strings.Contains(strings.ToLower(cloudflareErrorMessage(cfResp)), "not found") {
+		if isCloudflareMissingRecordError(cloudflareErrorMessage(cfResp)) {
 			return nil
 		}
 		return fmt.Errorf("%s", cloudflareErrorMessage(cfResp))
@@ -304,6 +304,13 @@ func cloudflareErrorMessage(resp cloudflareDNSResponse) string {
 		return "Cloudflare API error: " + resp.Errors[0].Message
 	}
 	return "Cloudflare API error"
+}
+
+func isCloudflareMissingRecordError(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	return strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "record does not exist") ||
+		strings.Contains(msg, "does not exist")
 }
 
 func cloudflareListErrorMessage(resp cloudflareDNSListResponse) string {
