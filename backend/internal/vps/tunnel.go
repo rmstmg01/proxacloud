@@ -20,6 +20,10 @@ type tunnelAPI interface {
 	CreateHTTPRoute(context.Context, string, proxacloudtunnelapi.CreateHTTPRouteRequest) (proxacloudtunnelapi.Route, error)
 	CreateTCPRoute(context.Context, string, proxacloudtunnelapi.CreateTCPRouteRequest) (proxacloudtunnelapi.TCPRoute, error)
 	CreateToken(context.Context, string, proxacloudtunnelapi.CreateTokenRequest) (proxacloudtunnelapi.TokenResponse, error)
+	DeleteTunnel(context.Context, string) error
+	DeleteHTTPRoute(context.Context, string) error
+	DeleteTCPRoute(context.Context, string) error
+	DeleteToken(context.Context, string) error
 }
 
 type tunnelMailer interface {
@@ -327,6 +331,56 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 	}
 	out.populateAccessFields()
 	return installCommand, out, nil
+}
+
+func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment TunnelAttachment) error {
+	if attachment.ID == 0 {
+		return nil
+	}
+
+	if strings.TrimSpace(attachment.CloudflareDNSRecordID) != "" {
+		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID); err != nil {
+			return fmt.Errorf("delete Cloudflare DNS record: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Cloudflare DNS record deleted", attachment.CloudflareDNSSummary())
+	}
+
+	hasTunnelResources := strings.TrimSpace(attachment.TokenID) != "" ||
+		strings.TrimSpace(attachment.HTTPRouteID) != "" ||
+		strings.TrimSpace(attachment.TCPRouteID) != "" ||
+		strings.TrimSpace(attachment.TunnelID) != ""
+	if !hasTunnelResources {
+		return nil
+	}
+	if s.tunnelClient == nil || !s.tunnelClient.Enabled() {
+		return errors.New("proxacloud tunnel integration is not configured")
+	}
+
+	if strings.TrimSpace(attachment.TokenID) != "" {
+		if err := s.tunnelClient.DeleteToken(ctx, attachment.TokenID); err != nil {
+			return fmt.Errorf("delete proxacloud tunnel token: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud tunnel token deleted", attachment.TokenID)
+	}
+	if strings.TrimSpace(attachment.HTTPRouteID) != "" {
+		if err := s.tunnelClient.DeleteHTTPRoute(ctx, attachment.HTTPRouteID); err != nil {
+			return fmt.Errorf("delete proxacloud HTTP route: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud HTTP route deleted", attachment.PublicHostname)
+	}
+	if strings.TrimSpace(attachment.TCPRouteID) != "" {
+		if err := s.tunnelClient.DeleteTCPRoute(ctx, attachment.TCPRouteID); err != nil {
+			return fmt.Errorf("delete proxacloud TCP route: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud TCP route deleted", attachment.SSHCommand)
+	}
+	if strings.TrimSpace(attachment.TunnelID) != "" {
+		if err := s.tunnelClient.DeleteTunnel(ctx, attachment.TunnelID); err != nil {
+			return fmt.Errorf("delete proxacloud tunnel: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud tunnel deleted", attachment.TunnelID)
+	}
+	return nil
 }
 
 func (s *Service) EmailTunnelDetails(vpsID int64) error {

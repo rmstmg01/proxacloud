@@ -616,6 +616,18 @@ func (s *Service) Delete(id int64, confirmationName string) error {
 	if strings.TrimSpace(confirmationName) != rec.Name {
 		return errors.New("vps name confirmation does not match")
 	}
+	attachment, err := s.GetTunnelAttachment(id)
+	if err != nil && !errors.Is(err, ErrTunnelAttachmentNotFound) {
+		return fmt.Errorf("load vps tunnel attachment: %w", err)
+	}
+	if attachment.ID != 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := s.cleanupTunnelAttachment(ctx, attachment); err != nil {
+			_ = s.insertEvent(id, "tunnel-cleanup", "error", "Proxacloud tunnel cleanup failed", err.Error())
+			return err
+		}
+	}
 	if strings.TrimSpace(rec.TerraformWorkDir) != "" {
 		cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
 		if err != nil {

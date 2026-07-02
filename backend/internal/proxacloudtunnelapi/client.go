@@ -141,6 +141,49 @@ func (c *Client) CreateToken(ctx context.Context, tunnelID string, req CreateTok
 	return out, nil
 }
 
+func (c *Client) DeleteTunnel(ctx context.Context, tunnelID string) error {
+	return c.delete(ctx, "/api/v1/tunnels/"+tunnelID)
+}
+
+func (c *Client) DeleteHTTPRoute(ctx context.Context, routeID string) error {
+	return c.delete(ctx, "/api/v1/routes/"+routeID)
+}
+
+func (c *Client) DeleteTCPRoute(ctx context.Context, routeID string) error {
+	return c.delete(ctx, "/api/v1/tcp-routes/"+routeID)
+}
+
+func (c *Client) DeleteToken(ctx context.Context, tokenID string) error {
+	return c.delete(ctx, "/api/v1/tokens/"+tokenID)
+}
+
+func (c *Client) delete(ctx context.Context, path string) error {
+	if !c.Enabled() {
+		return fmt.Errorf("proxacloud tunnel API is not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("build proxacloud tunnel delete request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("call proxacloud tunnel API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("proxacloud tunnel API returned %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
 	if !c.Enabled() {
 		return fmt.Errorf("proxacloud tunnel API is not configured")

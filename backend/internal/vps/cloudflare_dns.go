@@ -284,6 +284,9 @@ func (s *Service) deleteCloudflareDNSRecord(ctx context.Context, recordID string
 		return fmt.Errorf("failed to parse Cloudflare delete response: %w", err)
 	}
 	if !cfResp.Success {
+		if strings.Contains(strings.ToLower(cloudflareErrorMessage(cfResp)), "not found") {
+			return nil
+		}
 		return fmt.Errorf("%s", cloudflareErrorMessage(cfResp))
 	}
 	return nil
