@@ -383,6 +383,21 @@ export interface VPSActionResponse {
   warnings: string[];
 }
 
+export interface VPSLoginDetails {
+  vps_id: number;
+  hostname: string;
+  ip_address: string;
+  ssh_user: string;
+  root_password?: string;
+  has_root_password: boolean;
+}
+
+export interface VPSResetRootPasswordResponse {
+  vps_id: number;
+  root_password: string;
+  output?: string;
+}
+
 export interface VPSConsoleResponse {
   vps_id: number;
   vmid: number;

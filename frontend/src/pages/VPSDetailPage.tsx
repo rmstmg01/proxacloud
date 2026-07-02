@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Copy, ExternalLink, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Copy, ExternalLink, Eye, EyeOff, History, KeyRound, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
 import {
   createFirewall,
   createFirewallAttachment,
@@ -14,9 +14,11 @@ import {
 import {
   getVPSEvents,
   getVPSInstance,
+  getVPSLoginDetails,
   getVPSTunnel,
   redeployVPSInstance,
   refreshVPSStatus,
+  resetVPSRootPassword,
   restartVPSInstance,
   retryVPSTunnel,
   shutdownVPSInstance,
@@ -66,6 +68,7 @@ export function VPSDetailPage() {
   const [firewallRuleOpen, setFirewallRuleOpen] = useState(false);
   const [firewallRuleForm, setFirewallRuleForm] = useState(defaultFirewallRuleForm);
   const [editingFirewallRule, setEditingFirewallRule] = useState<VPSFirewallRule | null>(null);
+  const [showRootPassword, setShowRootPassword] = useState(false);
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -88,6 +91,11 @@ export function VPSDetailPage() {
         throw err;
       }
     },
+    enabled: Number.isFinite(vpsID) && vpsID > 0,
+  });
+  const { data: loginDetails, error: loginDetailsError, isFetching: loginDetailsFetching } = useQuery({
+    queryKey: ['vps', vpsID, 'login-details'],
+    queryFn: () => getVPSLoginDetails(vpsID),
     enabled: Number.isFinite(vpsID) && vpsID > 0,
   });
   const firewallsQuery = useQuery({
@@ -127,6 +135,7 @@ export function VPSDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'events'] });
     queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel'] });
+    queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'login-details'] });
     queryClient.invalidateQueries({ queryKey: ['firewalls'] });
   };
 
@@ -143,6 +152,13 @@ export function VPSDetailPage() {
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
   const tunnelRetryMutation = useMutation({ mutationFn: retryVPSTunnel, onSuccess: invalidate });
+  const resetRootPasswordMutation = useMutation({
+    mutationFn: () => resetVPSRootPassword(vpsID),
+    onSuccess: () => {
+      setShowRootPassword(true);
+      invalidate();
+    },
+  });
   const firewallMutation = useMutation({
     mutationFn: async () => {
       if (!vps) throw new Error('VPS is not loaded');
@@ -213,6 +229,8 @@ export function VPSDetailPage() {
     navigator.clipboard?.writeText(value);
   };
 
+  const displayedRootPassword = resetRootPasswordMutation.data?.root_password ?? loginDetails?.root_password ?? '';
+
   const openFirewallRule = () => {
     if (!vps) return;
     setEditingFirewallRule(null);
@@ -279,6 +297,8 @@ export function VPSDetailPage() {
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {shutdownMutation.error && <ErrorMessage error={shutdownMutation.error} />}
       {tunnelRetryMutation.error && <ErrorMessage error={tunnelRetryMutation.error} />}
+      {loginDetailsError && <ErrorMessage error={loginDetailsError} />}
+      {resetRootPasswordMutation.error && <ErrorMessage error={resetRootPasswordMutation.error} />}
       {firewallMutation.error && <ErrorMessage error={firewallMutation.error} />}
       {showEvents && eventsError && <ErrorMessage error={eventsError} />}
 
@@ -360,6 +380,98 @@ export function VPSDetailPage() {
 
           <Card>
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle>Login Details</CardTitle>
+              <Button
+                variant="secondary"
+                onClick={() => resetRootPasswordMutation.mutate()}
+                loading={resetRootPasswordMutation.isPending}
+              >
+                <KeyRound className="h-4 w-4" />
+                Reset root password
+              </Button>
+            </CardHeader>
+            <CardContent>
+              {loginDetailsFetching && !loginDetails ? (
+                <p className="text-sm text-slate-500">Loading login details...</p>
+              ) : (
+                <dl className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
+                  <Info
+                    label="Hostname"
+                    value={
+                      <span className="inline-flex min-w-0 items-center gap-2">
+                        <span className="truncate">{loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => copyText(loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name)}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                          title="Copy hostname"
+                          aria-label="Copy hostname"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      </span>
+                    }
+                  />
+                  <Info
+                    label="IP address"
+                    value={
+                      <span className="inline-flex min-w-0 items-center gap-2">
+                        <span className="truncate">{loginDetails?.ip_address || vps.ip_address || '-'}</span>
+                        <button
+                          type="button"
+                          onClick={() => copyText(loginDetails?.ip_address || vps.ip_address)}
+                          disabled={!loginDetails?.ip_address && !vps.ip_address}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                          title="Copy IP address"
+                          aria-label="Copy IP address"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </button>
+                      </span>
+                    }
+                  />
+                  <Info label="SSH user" value={loginDetails?.ssh_user || vps.ssh_user} />
+                  <Info
+                    label="Root password"
+                    value={
+                      displayedRootPassword ? (
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <code className="truncate rounded bg-slate-100 px-2 py-1 text-xs text-slate-800">
+                            {showRootPassword ? displayedRootPassword : '************'}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => setShowRootPassword((current) => !current)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                            title={showRootPassword ? 'Hide root password' : 'Show root password'}
+                            aria-label={showRootPassword ? 'Hide root password' : 'Show root password'}
+                          >
+                            {showRootPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => copyText(displayedRootPassword)}
+                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                            title="Copy root password"
+                            aria-label="Copy root password"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </span>
+                      ) : loginDetails?.has_root_password ? (
+                        'Stored password is unavailable'
+                      ) : (
+                        'No root password set'
+                      )
+                    }
+                  />
+                </dl>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle>Proxacloud Tunnel Access</CardTitle>
               <Button variant="secondary" onClick={() => tunnelRetryMutation.mutate(vps.id)} loading={tunnelRetryMutation.isPending}>
                 <RefreshCw className="h-4 w-4" />
@@ -393,10 +505,10 @@ export function VPSDetailPage() {
                     />
                     <Info label="HTTP target" value={tunnel.http_target_url} />
                     <Info
-                      label="Cloudflare DNS"
+                      label="DNS"
                       value={
                         tunnel.cloudflare_dns_status === 'active'
-                          ? `${tunnel.cloudflare_dns_record_type || 'DNS'} ${tunnel.public_hostname} -> ${tunnel.cloudflare_dns_record_content || '-'}${tunnel.cloudflare_dns_record_id ? ` (${tunnel.cloudflare_dns_record_id})` : ''}`
+                          ? tunnel.public_hostname
                           : tunnel.cloudflare_dns_status || 'not synced'
                       }
                     />

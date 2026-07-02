@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -50,6 +51,7 @@ type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
+	RunVMGuestCommandByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, command []string) (string, string, error)
 	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
 	CreateVMConsoleSessionByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsoleSession, error)
 	ProxyVMConsoleSession(cred proxmox.Credential, session proxmox.VMConsoleSession, w http.ResponseWriter, r *http.Request) error
@@ -179,6 +181,25 @@ type CreateResponse struct {
 	Tunnel           *TunnelAttachment `json:"tunnel,omitempty"`
 }
 
+type LoginDetails struct {
+	VPSID           int64  `json:"vps_id"`
+	Hostname        string `json:"hostname"`
+	IPAddress       string `json:"ip_address"`
+	SSHUser         string `json:"ssh_user"`
+	RootPassword    string `json:"root_password,omitempty"`
+	HasRootPassword bool   `json:"has_root_password"`
+}
+
+type ResetRootPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+type ResetRootPasswordResponse struct {
+	VPSID        int64  `json:"vps_id"`
+	RootPassword string `json:"root_password"`
+	Output       string `json:"output,omitempty"`
+}
+
 type ActionResponse struct {
 	VPSID    int64    `json:"vps_id"`
 	Action   string   `json:"action"`
@@ -280,6 +301,104 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		return Instance{}, fmt.Errorf("get vps: %w", err)
 	}
 	return rec, nil
+}
+
+func (s *Service) LoginDetails(id int64) (LoginDetails, error) {
+	rec, err := s.Get(id)
+	if err != nil {
+		return LoginDetails{}, err
+	}
+
+	details := LoginDetails{
+		VPSID:     rec.ID,
+		Hostname:  rec.VMName,
+		IPAddress: rec.IPAddress,
+		SSHUser:   rec.SSHUser,
+	}
+	if details.Hostname == "" {
+		details.Hostname = rec.Name
+	}
+
+	if attachment, err := s.GetTunnelAttachment(id); err == nil && strings.TrimSpace(attachment.PublicHostname) != "" {
+		details.Hostname = attachment.PublicHostname
+	} else if err != nil && !errors.Is(err, ErrTunnelAttachmentNotFound) {
+		return LoginDetails{}, err
+	}
+
+	ref, err := s.rootPasswordSecretRef(id)
+	if err != nil {
+		return LoginDetails{}, err
+	}
+	if strings.TrimSpace(ref) != "" {
+		details.HasRootPassword = true
+		if s.secrets != nil {
+			value, err := s.secrets.Get(context.Background(), ref)
+			if err != nil {
+				if !errors.Is(err, secrets.ErrSecretNotFound) {
+					return LoginDetails{}, fmt.Errorf("load root password secret: %w", err)
+				}
+			} else {
+				details.RootPassword = string(value)
+			}
+		}
+	}
+	return details, nil
+}
+
+func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (ResetRootPasswordResponse, error) {
+	rec, err := s.Get(id)
+	if err != nil {
+		return ResetRootPasswordResponse{}, err
+	}
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		password, err = generateRootPassword(16)
+		if err != nil {
+			return ResetRootPasswordResponse{}, err
+		}
+	}
+	if err := validateRootPassword(password); err != nil {
+		return ResetRootPasswordResponse{}, err
+	}
+	if s.secrets == nil {
+		return ResetRootPasswordResponse{}, errors.New("secret store is not configured")
+	}
+
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return ResetRootPasswordResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	stdout, stderr, err := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, rootPasswordResetCommand(password))
+	if err != nil {
+		_ = s.insertEvent(id, "root-password-reset", "error", "Root password reset failed", err.Error())
+		return ResetRootPasswordResponse{}, err
+	}
+
+	oldRef, err := s.rootPasswordSecretRef(id)
+	if err != nil {
+		return ResetRootPasswordResponse{}, err
+	}
+	newRef, err := s.secrets.Put(context.Background(), "vps/"+sanitizeName(rec.Name), "root-password", []byte(password))
+	if err != nil {
+		return ResetRootPasswordResponse{}, fmt.Errorf("store root password: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE vps_instances SET root_password_secret_ref = $2, updated_at = NOW() WHERE id = $1`, id, newRef); err != nil {
+		_ = s.secrets.Delete(context.Background(), newRef)
+		return ResetRootPasswordResponse{}, fmt.Errorf("update root password secret ref: %w", err)
+	}
+	if strings.TrimSpace(oldRef) != "" && oldRef != newRef {
+		_ = s.secrets.Delete(context.Background(), oldRef)
+	}
+
+	output := strings.TrimSpace(stdout)
+	if trimmedErr := strings.TrimSpace(stderr); trimmedErr != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += trimmedErr
+	}
+	_ = s.insertEvent(id, "root-password-reset", "success", "Root password reset", output)
+	return ResetRootPasswordResponse{VPSID: id, RootPassword: password, Output: output}, nil
 }
 
 func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
@@ -841,6 +960,9 @@ func validateRootPassword(password string) error {
 	if strings.ContainsAny(password, "\r\n") {
 		return errors.New("root password cannot contain newlines")
 	}
+	if strings.Contains(password, ":") {
+		return errors.New("root password cannot contain colon")
+	}
 	if len(password) < 10 {
 		return errors.New("root password must be at least 10 characters")
 	}
@@ -873,6 +995,77 @@ func validateRootPassword(password string) error {
 		return errors.New("root password must include a special character")
 	}
 	return nil
+}
+
+const generatedRootPasswordSpecials = "!@#$%^&*_-+=?"
+
+func generateRootPassword(length int) (string, error) {
+	if length < 10 {
+		length = 10
+	}
+	groups := []string{
+		"abcdefghijklmnopqrstuvwxyz",
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+		"0123456789",
+		generatedRootPasswordSpecials,
+	}
+	all := strings.Join(groups, "")
+	chars := make([]byte, 0, length)
+	for _, group := range groups {
+		char, err := randomPasswordChar(group)
+		if err != nil {
+			return "", err
+		}
+		chars = append(chars, char)
+	}
+	for len(chars) < length {
+		char, err := randomPasswordChar(all)
+		if err != nil {
+			return "", err
+		}
+		chars = append(chars, char)
+	}
+	for i := len(chars) - 1; i > 0; i-- {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return "", fmt.Errorf("generate root password: %w", err)
+		}
+		j := int(n.Int64())
+		chars[i], chars[j] = chars[j], chars[i]
+	}
+	return string(chars), nil
+}
+
+func randomPasswordChar(chars string) (byte, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+	if err != nil {
+		return 0, fmt.Errorf("generate root password: %w", err)
+	}
+	return chars[n.Int64()], nil
+}
+
+func rootPasswordResetCommand(password string) []string {
+	script := strings.Join([]string{
+		"set -e",
+		"printf '%s\\n' " + shellQuote("root:"+password) + " | chpasswd",
+		"passwd -u root >/dev/null 2>&1 || true",
+		"install -d -m 0755 /etc/ssh/sshd_config.d",
+		"printf 'PasswordAuthentication yes\\nPermitRootLogin yes\\nKbdInteractiveAuthentication yes\\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf",
+		"systemctl restart sshd || systemctl restart ssh || true",
+	}, "; ")
+	return []string{"bash", "-lc", script}
+}
+
+func (s *Service) rootPasswordSecretRef(id int64) (string, error) {
+	var ref string
+	err := s.db.QueryRow(`SELECT COALESCE(root_password_secret_ref, '') FROM vps_instances WHERE id = $1`, id).Scan(&ref)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrVPSNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("load root password secret ref: %w", err)
+	}
+	return ref, nil
 }
 
 func (s *Service) validateNode(credentialID int64, nodeName string) error {

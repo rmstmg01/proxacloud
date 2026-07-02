@@ -338,6 +338,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/events", vpsHandler.ListEvents)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/tunnel", vpsHandler.GetTunnel)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/tunnel/retry", vpsHandler.RetryTunnel)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/login-details", vpsHandler.LoginDetails)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/root-password/reset", vpsHandler.ResetRootPassword)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/deploy", vpsHandler.Deploy)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/redeploy", vpsHandler.Redeploy)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/start", vpsHandler.Start)

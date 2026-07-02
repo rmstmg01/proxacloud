@@ -299,6 +299,10 @@ func (s *Service) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmN
 	return s.client.GetVMStatusByName(cred, proxmoxNodeName, vmName)
 }
 
+func (s *Service) RunVMGuestCommandByName(cred Credential, proxmoxNodeName string, vmName string, command []string) (string, string, error) {
+	return s.client.RunVMGuestCommandByName(cred, proxmoxNodeName, vmName, command)
+}
+
 func (s *Service) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsole, error) {
 	return s.client.VMConsoleURLByName(cred, proxmoxNodeName, vmName)
 }

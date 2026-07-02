@@ -429,6 +429,36 @@ func (c *Client) GetVMStatusByName(cred Credential, proxmoxNodeName string, vmNa
 	return strings.TrimSpace(strings.ToLower(status)), nil
 }
 
+func (c *Client) RunVMGuestCommandByName(cred Credential, proxmoxNodeName string, vmName string, command []string) (string, string, error) {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	if proxmoxNodeName == "" {
+		return "", "", errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return "", "", errors.New("vm name is required")
+	}
+	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+		return "", "", errors.New("guest command is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return "", "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(strings.ToLower(vm.Status)) != "running" {
+		return "", "", fmt.Errorf("vm %q must be running to execute guest commands", vmName)
+	}
+
+	return c.runQEMUAgentCommand(httpClient, base, cred, proxmoxNodeName, vm.VMID, command)
+}
+
 func (c *Client) VMConsoleURLByName(cred Credential, proxmoxNodeName string, vmName string) (VMConsole, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)
@@ -1149,6 +1179,111 @@ func (c *Client) createVMConsoleSession(httpClient *http.Client, base *url.URL, 
 		Ticket:   strings.TrimSpace(payload.Data.Ticket),
 		Cert:     payload.Data.Cert,
 	}, nil
+}
+
+func (c *Client) runQEMUAgentCommand(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, command []string) (string, string, error) {
+	encodedCommand, err := json.Marshal(command)
+	if err != nil {
+		return "", "", fmt.Errorf("encode guest command: %w", err)
+	}
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "agent", "exec")
+	form := url.Values{}
+	form.Set("command", string(encodedCommand))
+	form.Set("capture-output", "1")
+
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", "", fmt.Errorf("create guest exec request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", "", err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("request proxmox guest exec: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("proxmox guest exec api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			PID int `json:"pid"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", fmt.Errorf("decode proxmox guest exec response: %w", err)
+	}
+	if payload.Data.PID <= 0 {
+		return "", "", errors.New("proxmox guest exec returned an empty pid")
+	}
+
+	return c.waitForQEMUAgentCommand(httpClient, base, cred, proxmoxNodeName, vmid, payload.Data.PID, 30*time.Second)
+}
+
+func (c *Client) waitForQEMUAgentCommand(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, pid int, timeout time.Duration) (string, string, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		stdout, stderr, exited, exitCode, err := c.qemuAgentCommandStatus(httpClient, base, cred, proxmoxNodeName, vmid, pid)
+		if err != nil {
+			return "", "", err
+		}
+		if exited {
+			if exitCode != 0 {
+				return stdout, stderr, fmt.Errorf("guest command exited with code %d: %s", exitCode, strings.TrimSpace(stderr))
+			}
+			return stdout, stderr, nil
+		}
+		if time.Now().After(deadline) {
+			return stdout, stderr, fmt.Errorf("guest command did not finish within %s", timeout)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func (c *Client) qemuAgentCommandStatus(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, pid int) (string, string, bool, int, error) {
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "agent", "exec-status")
+	query := reqURL.Query()
+	query.Set("pid", strconv.Itoa(pid))
+	reqURL.RawQuery = query.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return "", "", false, 0, fmt.Errorf("create guest exec status request: %w", err)
+	}
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return "", "", false, 0, err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", false, 0, fmt.Errorf("request proxmox guest exec status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", false, 0, fmt.Errorf("proxmox guest exec status api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+
+	var payload struct {
+		Data struct {
+			Exited   bool   `json:"exited"`
+			ExitCode int    `json:"exitcode"`
+			OutData  string `json:"out-data"`
+			ErrData  string `json:"err-data"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", "", false, 0, fmt.Errorf("decode proxmox guest exec status response: %w", err)
+	}
+	return payload.Data.OutData, payload.Data.ErrData, payload.Data.Exited, payload.Data.ExitCode, nil
 }
 
 func (c *Client) dialVMConsoleWebSocket(httpClient *http.Client, base *url.URL, cred Credential, session VMConsoleSession) (*websocket.Conn, error) {

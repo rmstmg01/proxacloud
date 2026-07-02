@@ -73,6 +73,9 @@ function rootPasswordError(password: string) {
   if (password.length < 10) {
     return 'Root password must be at least 10 characters.';
   }
+  if (password.includes(':')) {
+    return 'Root password cannot include colon.';
+  }
   if (!/[a-z]/.test(password)) {
     return 'Root password must include a lowercase letter.';
   }

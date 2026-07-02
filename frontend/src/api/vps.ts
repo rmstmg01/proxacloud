@@ -6,6 +6,8 @@ import type {
   VPSCreateResponse,
   VPSEvent,
   VPSInstance,
+  VPSLoginDetails,
+  VPSResetRootPasswordResponse,
   VPSTunnelAttachment,
 } from '../types';
 
@@ -21,8 +23,14 @@ export const getVPSEvents = (id: number) =>
 export const getVPSTunnel = (id: number) =>
   client.get<VPSTunnelAttachment>(`/vps/${id}/tunnel`).then((r) => r.data);
 
+export const getVPSLoginDetails = (id: number) =>
+  client.get<VPSLoginDetails>(`/vps/${id}/login-details`).then((r) => r.data);
+
 export const retryVPSTunnel = (id: number) =>
   client.post<VPSTunnelAttachment>(`/vps/${id}/tunnel/retry`).then((r) => r.data);
+
+export const resetVPSRootPassword = (id: number, password = '') =>
+  client.post<VPSResetRootPasswordResponse>(`/vps/${id}/root-password/reset`, { password }).then((r) => r.data);
 
 export const getVPSCloudInitImages = () =>
   client.get<VPSCloudInitImage[]>('/vps/cloud-init-images').then((r) => r.data);
