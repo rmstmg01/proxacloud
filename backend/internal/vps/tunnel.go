@@ -356,6 +356,14 @@ func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment Tunnel
 		return errors.New("proxacloud tunnel integration is not configured")
 	}
 
+	if strings.TrimSpace(attachment.TunnelID) != "" {
+		if err := s.tunnelClient.DeleteTunnel(ctx, attachment.TunnelID); err != nil {
+			return fmt.Errorf("delete proxacloud tunnel: %w", err)
+		}
+		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud tunnel deleted", attachment.TunnelID)
+		return nil
+	}
+
 	if strings.TrimSpace(attachment.TokenID) != "" {
 		if err := s.tunnelClient.DeleteToken(ctx, attachment.TokenID); err != nil {
 			return fmt.Errorf("delete proxacloud tunnel token: %w", err)
@@ -373,12 +381,6 @@ func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment Tunnel
 			return fmt.Errorf("delete proxacloud TCP route: %w", err)
 		}
 		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud TCP route deleted", attachment.SSHCommand)
-	}
-	if strings.TrimSpace(attachment.TunnelID) != "" {
-		if err := s.tunnelClient.DeleteTunnel(ctx, attachment.TunnelID); err != nil {
-			return fmt.Errorf("delete proxacloud tunnel: %w", err)
-		}
-		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Proxacloud tunnel deleted", attachment.TunnelID)
 	}
 	return nil
 }
