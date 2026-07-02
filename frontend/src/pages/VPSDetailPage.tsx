@@ -396,7 +396,7 @@ export function VPSDetailPage() {
                       label="Cloudflare DNS"
                       value={
                         tunnel.cloudflare_dns_status === 'active'
-                          ? `${tunnel.cloudflare_dns_record_type || 'DNS'} ${tunnel.public_hostname} -> ${tunnel.cloudflare_dns_record_content || '-'}`
+                          ? `${tunnel.cloudflare_dns_record_type || 'DNS'} ${tunnel.public_hostname} -> ${tunnel.cloudflare_dns_record_content || '-'}${tunnel.cloudflare_dns_record_id ? ` (${tunnel.cloudflare_dns_record_id})` : ''}`
                           : tunnel.cloudflare_dns_status || 'not synced'
                       }
                     />
