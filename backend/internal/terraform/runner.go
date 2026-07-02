@@ -1115,6 +1115,10 @@ packages:
 
 runcmd:
   - [ systemctl, enable, --now, qemu-guest-agent ]
+{{- if .RootPassword }}
+  - [ bash, -lc, "install -d -m 0755 /etc/ssh/sshd_config.d && printf 'PasswordAuthentication yes\nPermitRootLogin yes\nKbdInteractiveAuthentication yes\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf" ]
+  - [ bash, -lc, "systemctl restart sshd || systemctl restart ssh || true" ]
+{{- end }}
   - [ bash, -lc, "echo VPS_NAME={{ .Name }} > /etc/managed-vps.env" ]
   - [ bash, -lc, "echo VPS_IP={{ .IPAddress }} >> /etc/managed-vps.env" ]
 {{- if .AgentInstallCommand }}

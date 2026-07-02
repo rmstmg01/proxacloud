@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Plus } from 'lucide-react';
+import { ArrowLeft, Copy, Eye, EyeOff, KeyRound, Plus } from 'lucide-react';
 import { createVPSCloudInitImage, createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
@@ -29,6 +29,65 @@ function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_
   };
 }
 
+const passwordGroups = {
+  lower: 'abcdefghijklmnopqrstuvwxyz',
+  upper: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  number: '0123456789',
+  special: '!@#$%^&*_-+=?',
+};
+
+const passwordCharacters = Object.values(passwordGroups).join('');
+
+function randomIndex(max: number) {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return values[0] % max;
+}
+
+function shufflePassword(chars: string[]) {
+  for (let index = chars.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomIndex(index + 1);
+    [chars[index], chars[swapIndex]] = [chars[swapIndex], chars[index]];
+  }
+  return chars.join('');
+}
+
+function generateRootPassword(length = 16) {
+  const size = Math.max(length, 10);
+  const chars = [
+    passwordGroups.lower[randomIndex(passwordGroups.lower.length)],
+    passwordGroups.upper[randomIndex(passwordGroups.upper.length)],
+    passwordGroups.number[randomIndex(passwordGroups.number.length)],
+    passwordGroups.special[randomIndex(passwordGroups.special.length)],
+  ];
+  while (chars.length < size) {
+    chars.push(passwordCharacters[randomIndex(passwordCharacters.length)]);
+  }
+  return shufflePassword(chars);
+}
+
+function rootPasswordError(password: string) {
+  if (password.trim() === '') {
+    return '';
+  }
+  if (password.length < 10) {
+    return 'Root password must be at least 10 characters.';
+  }
+  if (!/[a-z]/.test(password)) {
+    return 'Root password must include a lowercase letter.';
+  }
+  if (!/[A-Z]/.test(password)) {
+    return 'Root password must include an uppercase letter.';
+  }
+  if (!/[0-9]/.test(password)) {
+    return 'Root password must include a number.';
+  }
+  if (!/[!@#$%^&*_\-+=?]/.test(password)) {
+    return 'Root password must include a special character.';
+  }
+  return '';
+}
+
 export function ProvisionVPSPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -40,6 +99,8 @@ export function ProvisionVPSPage() {
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
   const [imageModalOpen, setImageModalOpen] = useState(false);
+  const [showRootPassword, setShowRootPassword] = useState(false);
+  const [passwordCopied, setPasswordCopied] = useState(false);
   const [sshForm, setSSHForm] = useState({
     name: '',
     ssh_user: 'ubuntu',
@@ -76,6 +137,9 @@ export function ProvisionVPSPage() {
     () => (proxmoxNodes ?? []).filter((node) => node.enabled && (!form.proxmox_credential_id || node.credential_id === form.proxmox_credential_id)),
     [proxmoxNodes, form.proxmox_credential_id],
   );
+
+  const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
+  const createDisabled = (form.ssh_key_pair_id === 0 && form.root_password.trim() === '') || passwordError !== '';
 
   useEffect(() => {
     const defaultNetwork = networks?.find((network) => network.is_default) ?? networks?.[0];
@@ -161,7 +225,26 @@ export function ProvisionVPSPage() {
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
+    if (createDisabled) {
+      return;
+    }
     createMutation.mutate(form);
+  };
+
+  const handleGenerateRootPassword = () => {
+    const password = generateRootPassword();
+    setField('root_password', password);
+    setShowRootPassword(true);
+    setPasswordCopied(false);
+  };
+
+  const handleCopyRootPassword = async () => {
+    if (form.root_password === '') {
+      return;
+    }
+    await navigator.clipboard.writeText(form.root_password);
+    setPasswordCopied(true);
+    window.setTimeout(() => setPasswordCopied(false), 1800);
   };
 
   const handleCreateSSH = (event: FormEvent) => {
@@ -341,14 +424,35 @@ export function ProvisionVPSPage() {
               onChange={(event) => setField('ssh_user', event.target.value)}
               required
             />
-            <Input
-              label="Root password"
-              type="password"
-              value={form.root_password}
-              onChange={(event) => setField('root_password', event.target.value)}
-              helperText="Required only when no SSH key is selected"
-              required={form.ssh_key_pair_id === 0}
-            />
+            <div className="space-y-2">
+              <Input
+                label="Root password"
+                type={showRootPassword ? 'text' : 'password'}
+                value={form.root_password}
+                onChange={(event) => {
+                  setField('root_password', event.target.value);
+                  setPasswordCopied(false);
+                }}
+                helperText="Required only when no SSH key is selected"
+                error={passwordError}
+                required={form.ssh_key_pair_id === 0}
+                autoComplete="new-password"
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" size="sm" onClick={handleGenerateRootPassword}>
+                  <KeyRound className="h-4 w-4" />
+                  Generate
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={handleCopyRootPassword} disabled={form.root_password === ''}>
+                  <Copy className="h-4 w-4" />
+                  {passwordCopied ? 'Copied' : 'Copy'}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setShowRootPassword((value) => !value)}>
+                  {showRootPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showRootPassword ? 'Hide' : 'Show'}
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -440,7 +544,7 @@ export function ProvisionVPSPage() {
             type="submit"
             size="lg"
             loading={createMutation.isPending}
-            disabled={form.ssh_key_pair_id === 0 && form.root_password.trim() === ''}
+            disabled={createDisabled}
           >
             {form.apply ? 'Create and Deploy VPS' : 'Create VPS'}
           </Button>

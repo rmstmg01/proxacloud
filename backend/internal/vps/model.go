@@ -795,6 +795,7 @@ func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	req.ProxmoxNodeName = strings.TrimSpace(req.ProxmoxNodeName)
 	req.CloudInitImagePath = strings.TrimSpace(req.CloudInitImagePath)
 	req.SSHUser = strings.TrimSpace(req.SSHUser)
+	req.RootPassword = strings.TrimSpace(req.RootPassword)
 	req.IPMode = strings.TrimSpace(strings.ToLower(req.IPMode))
 	req.IPAddress = strings.TrimSpace(req.IPAddress)
 	if req.IPMode == "" {
@@ -826,6 +827,50 @@ func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	}
 	if req.DiskGB < 5 {
 		return errors.New("disk_gb must be at least 5")
+	}
+	if err := validateRootPassword(req.RootPassword); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRootPassword(password string) error {
+	if password == "" {
+		return nil
+	}
+	if strings.ContainsAny(password, "\r\n") {
+		return errors.New("root password cannot contain newlines")
+	}
+	if len(password) < 10 {
+		return errors.New("root password must be at least 10 characters")
+	}
+	hasLower := false
+	hasUpper := false
+	hasNumber := false
+	hasSpecial := false
+	for _, char := range password {
+		switch {
+		case char >= 'a' && char <= 'z':
+			hasLower = true
+		case char >= 'A' && char <= 'Z':
+			hasUpper = true
+		case char >= '0' && char <= '9':
+			hasNumber = true
+		default:
+			hasSpecial = true
+		}
+	}
+	if !hasLower {
+		return errors.New("root password must include a lowercase letter")
+	}
+	if !hasUpper {
+		return errors.New("root password must include an uppercase letter")
+	}
+	if !hasNumber {
+		return errors.New("root password must include a number")
+	}
+	if !hasSpecial {
+		return errors.New("root password must include a special character")
 	}
 	return nil
 }
