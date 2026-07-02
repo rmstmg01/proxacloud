@@ -211,7 +211,7 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 	if err != nil {
 		return TunnelAttachment{}, err
 	}
-	port, err := s.allocateTunnelPort(ctx, hostname)
+	port, err := s.allocateTunnelPort(ctx)
 	if err != nil {
 		return TunnelAttachment{}, err
 	}
@@ -226,6 +226,7 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 		ON CONFLICT (vps_id) DO UPDATE SET
 			customer_account_id = EXCLUDED.customer_account_id,
 			public_hostname = EXCLUDED.public_hostname,
+			public_port = EXCLUDED.public_port,
 			http_target_url = EXCLUDED.http_target_url,
 			tcp_target_host = EXCLUDED.tcp_target_host,
 			tcp_target_port = EXCLUDED.tcp_target_port,
@@ -271,17 +272,11 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 	if err != nil {
 		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud HTTP route: %w", err)
 	}
-	tcpRoute, err := s.tunnelClient.CreateTCPRoute(ctx, tunnel.ID, proxacloudtunnelapi.CreateTCPRouteRequest{
-		Name:           "SSH",
-		PublicHostname: attachment.PublicHostname,
-		PublicPort:     attachment.PublicPort,
-		TargetHost:     attachment.TCPTargetHost,
-		TargetPort:     attachment.TCPTargetPort,
-		Enabled:        true,
-	})
+	tcpRoute, selectedPort, err := s.createTCPRouteWithPortRetry(ctx, tunnel.ID, attachment)
 	if err != nil {
 		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud TCP route: %w", err)
 	}
+	attachment.PublicPort = selectedPort
 	token, err := s.tunnelClient.CreateToken(ctx, tunnel.ID, proxacloudtunnelapi.CreateTokenRequest{
 		Name:  "VPS agent token",
 		Scope: "all",
@@ -309,6 +304,7 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 		    cloudflare_dns_record_content = $9,
 		    cloudflare_dns_proxied = $10,
 		    cloudflare_dns_status = $11,
+		    public_port = $12,
 		    status = 'configured',
 		    last_error = '',
 		    updated_at = NOW()
@@ -319,7 +315,7 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
 		          status, last_error, emailed_at, created_at, updated_at
 	`, attachment.ID, tunnel.ID, httpRoute.ID, tcpRoute.ID, token.Item.ID, redactedCommand,
-		dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status).Scan(
+		dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status, attachment.PublicPort).Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
 		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
@@ -396,14 +392,67 @@ func (s *Service) ownerEmail(accountID int64) (string, string, error) {
 	return email, name, nil
 }
 
-func (s *Service) allocateTunnelPort(ctx context.Context, hostname string) (int, error) {
+func (s *Service) createTCPRouteWithPortRetry(ctx context.Context, tunnelID string, attachment TunnelAttachment) (proxacloudtunnelapi.TCPRoute, int, error) {
+	ports, err := s.candidateTunnelPorts(ctx, attachment.PublicPort)
+	if err != nil {
+		return proxacloudtunnelapi.TCPRoute{}, 0, err
+	}
+	var lastDuplicate error
+	for _, port := range ports {
+		route, err := s.tunnelClient.CreateTCPRoute(ctx, tunnelID, proxacloudtunnelapi.CreateTCPRouteRequest{
+			Name:           "SSH",
+			PublicHostname: attachment.PublicHostname,
+			PublicPort:     port,
+			TargetHost:     attachment.TCPTargetHost,
+			TargetPort:     attachment.TCPTargetPort,
+			Enabled:        true,
+		})
+		if err == nil {
+			return route, port, nil
+		}
+		if !isDuplicateTCPPublicPortError(err) {
+			return proxacloudtunnelapi.TCPRoute{}, 0, err
+		}
+		lastDuplicate = err
+	}
+	if lastDuplicate != nil {
+		return proxacloudtunnelapi.TCPRoute{}, 0, fmt.Errorf("no available proxacloud tunnel TCP ports between %d and %d: %w", s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd, lastDuplicate)
+	}
+	return proxacloudtunnelapi.TCPRoute{}, 0, fmt.Errorf("no available proxacloud tunnel TCP ports between %d and %d", s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
+}
+
+func isDuplicateTCPPublicPortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "tcp_routes_public_port_key") ||
+		(strings.Contains(msg, "duplicate key value") && strings.Contains(msg, "public_port"))
+}
+
+func (s *Service) allocateTunnelPort(ctx context.Context) (int, error) {
+	ports, err := s.candidateTunnelPorts(ctx, 0)
+	if err != nil {
+		return 0, err
+	}
+	if len(ports) == 0 {
+		return 0, fmt.Errorf("no available proxacloud tunnel TCP ports between %d and %d", s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
+	}
+	return ports[0], nil
+}
+
+func (s *Service) candidateTunnelPorts(ctx context.Context, preferred int) ([]int, error) {
+	if s.tunnelConfig.PublicPortEnd < s.tunnelConfig.PublicPortStart {
+		return nil, fmt.Errorf("invalid proxacloud tunnel TCP port range %d-%d", s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
+	}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT public_port
 		FROM vps_tunnel_attachments
-		WHERE public_hostname = $1 AND public_port BETWEEN $2 AND $3
-	`, hostname, s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
+		WHERE public_port BETWEEN $1 AND $2
+	`, s.tunnelConfig.PublicPortStart, s.tunnelConfig.PublicPortEnd)
 	if err != nil {
-		return 0, fmt.Errorf("list allocated tunnel ports: %w", err)
+		return nil, fmt.Errorf("list allocated tunnel ports: %w", err)
 	}
 	defer rows.Close()
 
@@ -411,19 +460,27 @@ func (s *Service) allocateTunnelPort(ctx context.Context, hostname string) (int,
 	for rows.Next() {
 		var port int
 		if err := rows.Scan(&port); err != nil {
-			return 0, err
+			return nil, err
 		}
 		used[port] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return nil, err
+	}
+
+	ports := make([]int, 0, s.tunnelConfig.PublicPortEnd-s.tunnelConfig.PublicPortStart+1)
+	if preferred >= s.tunnelConfig.PublicPortStart && preferred <= s.tunnelConfig.PublicPortEnd {
+		ports = append(ports, preferred)
 	}
 	for port := s.tunnelConfig.PublicPortStart; port <= s.tunnelConfig.PublicPortEnd; port++ {
+		if port == preferred {
+			continue
+		}
 		if _, exists := used[port]; !exists {
-			return port, nil
+			ports = append(ports, port)
 		}
 	}
-	return 0, fmt.Errorf("no available proxacloud tunnel TCP ports for %s", hostname)
+	return ports, nil
 }
 
 func (s *Service) hostnameForVPS(name string) (string, error) {
