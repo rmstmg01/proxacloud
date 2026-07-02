@@ -1191,7 +1191,6 @@ func (c *Client) runQEMUAgentCommand(httpClient *http.Client, base *url.URL, cre
 	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vmid), "agent", "exec")
 	form := url.Values{}
 	form.Set("command", string(encodedCommand))
-	form.Set("capture-output", "1")
 
 	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
 	if err != nil {
