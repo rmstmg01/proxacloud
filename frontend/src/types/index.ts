@@ -409,6 +409,11 @@ export interface VPSTunnelAttachment {
   tcp_target_port: number;
   ssh_user: string;
   install_command_redacted?: string;
+  cloudflare_dns_record_id?: string;
+  cloudflare_dns_record_type?: string;
+  cloudflare_dns_record_content?: string;
+  cloudflare_dns_proxied: boolean;
+  cloudflare_dns_status?: string;
   status: string;
   last_error: string;
   emailed_at?: string;

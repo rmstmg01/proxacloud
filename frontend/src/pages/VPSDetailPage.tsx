@@ -363,7 +363,7 @@ export function VPSDetailPage() {
               <CardTitle>Proxacloud Tunnel Access</CardTitle>
               <Button variant="secondary" onClick={() => tunnelRetryMutation.mutate(vps.id)} loading={tunnelRetryMutation.isPending}>
                 <RefreshCw className="h-4 w-4" />
-                Retry
+                Retry / Sync
               </Button>
             </CardHeader>
             <CardContent>
@@ -392,6 +392,14 @@ export function VPSDetailPage() {
                       }
                     />
                     <Info label="HTTP target" value={tunnel.http_target_url} />
+                    <Info
+                      label="Cloudflare DNS"
+                      value={
+                        tunnel.cloudflare_dns_status === 'active'
+                          ? `${tunnel.cloudflare_dns_record_type || 'DNS'} ${tunnel.public_hostname} -> ${tunnel.cloudflare_dns_record_content || '-'}`
+                          : tunnel.cloudflare_dns_status || 'not synced'
+                      }
+                    />
                     <Info
                       label="SSH command"
                       value={

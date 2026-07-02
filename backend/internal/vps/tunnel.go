@@ -164,7 +164,13 @@ func (s *Service) RetryTunnel(id int64) (TunnelAttachment, error) {
 	}
 	if (attachment.Status == "configured" || attachment.Status == "emailed") &&
 		attachment.TunnelID != "" && attachment.HTTPRouteID != "" && attachment.TCPRouteID != "" {
-		return attachment, nil
+		updated, syncErr := s.syncCloudflareDNSForAttachment(ctx, attachment)
+		if syncErr != nil {
+			_ = s.insertEvent(id, "cloudflare-dns", "error", "Cloudflare DNS sync failed", syncErr.Error())
+			return TunnelAttachment{}, syncErr
+		}
+		_ = s.insertEvent(id, "cloudflare-dns", "success", "Cloudflare DNS synced", updated.CloudflareDNSSummary())
+		return updated, nil
 	}
 	_, updated, err := s.provisionTunnelAttachment(ctx, attachment, rec.Name)
 	if err != nil {
@@ -173,6 +179,14 @@ func (s *Service) RetryTunnel(id int64) (TunnelAttachment, error) {
 	}
 	_ = s.insertEvent(id, "tunnel-retry", "success", "Proxacloud tunnel routes configured", updated.AccessSummary())
 	return updated, nil
+}
+
+func (s *Service) syncCloudflareDNSForAttachment(ctx context.Context, attachment TunnelAttachment) (TunnelAttachment, error) {
+	dnsResult, err := s.ensureCloudflareDNSRecord(ctx, attachment)
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+	return s.updateTunnelDNSMetadata(ctx, attachment.ID, dnsResult)
 }
 
 func (s *Service) GetTunnelAttachment(vpsID int64) (TunnelAttachment, error) {
@@ -462,6 +476,25 @@ func (s *Service) markTunnelAttachmentFailed(ctx context.Context, id int64, err 
 	return execErr
 }
 
+func (s *Service) updateTunnelDNSMetadata(ctx context.Context, id int64, dnsResult cloudflareDNSResult) (TunnelAttachment, error) {
+	row := s.db.QueryRowContext(ctx, `
+		UPDATE vps_tunnel_attachments
+		SET cloudflare_dns_record_id = $2,
+		    cloudflare_dns_record_type = $3,
+		    cloudflare_dns_record_content = $4,
+		    cloudflare_dns_proxied = $5,
+		    cloudflare_dns_status = $6,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, vps_id, COALESCE(customer_account_id, 0), tunnel_id, http_route_id, tcp_route_id, token_id,
+		          public_hostname, public_port, http_target_url, tcp_target_host, tcp_target_port, ssh_user,
+		          install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
+		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
+		          status, last_error, emailed_at, created_at, updated_at
+	`, id, dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status)
+	return scanTunnelAttachment(row)
+}
+
 func scanTunnelAttachment(row interface {
 	Scan(dest ...any) error
 }) (TunnelAttachment, error) {
@@ -496,6 +529,13 @@ func (a *TunnelAttachment) populateAccessFields() {
 
 func (a TunnelAttachment) AccessSummary() string {
 	return fmt.Sprintf("Web URL: %s\nSSH: %s", a.WebURL, a.SSHCommand)
+}
+
+func (a TunnelAttachment) CloudflareDNSSummary() string {
+	if a.CloudflareDNSStatus == "" || a.CloudflareDNSStatus == "disabled" {
+		return "Cloudflare DNS disabled"
+	}
+	return fmt.Sprintf("%s %s -> %s (proxied=%t)", a.CloudflareDNSRecordType, a.PublicHostname, a.CloudflareDNSRecordContent, a.CloudflareDNSProxied)
 }
 
 func shellQuote(value string) string {
