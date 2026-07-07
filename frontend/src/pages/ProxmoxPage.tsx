@@ -247,7 +247,7 @@ function AddCredentialForm({ onSuccess }: { onSuccess: () => void }) {
         </>
       ) : (
         <>
-          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="root@pam" required />
+          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="admin@pve" helperText="Use the full Proxmox user ID, such as admin@pve or root@pam." required />
           <Input label="Password" type="password" value={form.password} onChange={(e) => set('password', e.target.value)} required />
         </>
       )}
@@ -300,7 +300,7 @@ function EditCredentialForm({ credential, onSuccess }: { credential: ProxmoxCred
         </>
       ) : (
         <>
-          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="root@pam" required />
+          <Input label="Username" value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="admin@pve" helperText="Use the full Proxmox user ID, such as admin@pve or root@pam." required />
           <Input label="Password" type="password" value={form.password} onChange={(e) => set('password', e.target.value)} required />
         </>
       )}

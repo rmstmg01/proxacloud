@@ -144,6 +144,9 @@ func (s *Service) CreateCredential(in Credential) (Credential, error) {
 	if !usesUserPass && !usesToken {
 		return Credential{}, errors.New("provide either username/password or api_token_id/api_token_secret")
 	}
+	if usesUserPass && !strings.Contains(in.Username, "@") {
+		return Credential{}, errors.New("username must include the Proxmox realm, for example user@pve or root@pam")
+	}
 
 	passwordRef, tokenSecretRef, err := s.storeCredentialSecrets(context.Background(), 0, in)
 	if err != nil {
@@ -188,6 +191,9 @@ func (s *Service) UpdateCredential(id int64, in Credential) (Credential, error) 
 	usesToken := in.APITokenID != "" && in.APITokenSecret != ""
 	if !usesUserPass && !usesToken {
 		return Credential{}, errors.New("provide either username/password or api_token_id/api_token_secret")
+	}
+	if usesUserPass && !strings.Contains(in.Username, "@") {
+		return Credential{}, errors.New("username must include the Proxmox realm, for example user@pve or root@pam")
 	}
 
 	if usesToken {
@@ -636,14 +642,14 @@ func (s *Service) storeCredentialSecrets(ctx context.Context, id int64, in Crede
 	}
 	var passwordRef, tokenSecretRef string
 	var err error
-	if strings.TrimSpace(in.Password) != "" {
-		passwordRef, err = s.secrets.Put(ctx, scope, "password", []byte(strings.TrimSpace(in.Password)))
+	if in.Password != "" {
+		passwordRef, err = s.secrets.Put(ctx, scope, "password", []byte(in.Password))
 		if err != nil {
 			return "", "", fmt.Errorf("store proxmox password: %w", err)
 		}
 	}
-	if strings.TrimSpace(in.APITokenSecret) != "" {
-		tokenSecretRef, err = s.secrets.Put(ctx, scope, "api-token-secret", []byte(strings.TrimSpace(in.APITokenSecret)))
+	if in.APITokenSecret != "" {
+		tokenSecretRef, err = s.secrets.Put(ctx, scope, "api-token-secret", []byte(in.APITokenSecret))
 		if err != nil {
 			return "", "", fmt.Errorf("store proxmox api token secret: %w", err)
 		}

@@ -389,6 +389,84 @@ kubectl logs -n cloudflare-tunnel -l app.kubernetes.io/name=cloudflared --tail=1
     ],
   },
   {
+    title: 'PSCS Ticket Attachments: File Not Found',
+    icon: ClipboardList,
+    badge: 'PSCS Storage',
+    description:
+      'Use this when support ticket attachments upload successfully but clicking the attachment returns {"error":"File not found"}. This usually means the database has attachment metadata, but the physical file was saved on pod-local disk instead of shared storage.',
+    commands: [
+      {
+        label: 'Required manifest shape for three backend replicas',
+        command: `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ticket-uploads
+  namespace: pscs
+spec:
+  storageClassName: longhorn
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: pscs
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - name: TICKET_UPLOAD_DIR
+              value: /app/uploads/tickets
+          volumeMounts:
+            - name: ticket-uploads
+              mountPath: /app/uploads/tickets
+      volumes:
+        - name: ticket-uploads
+          persistentVolumeClaim:
+            claimName: ticket-uploads`,
+      },
+      {
+        label: 'Verify PVC, backend mount, and pod spread',
+        command: `kubectl get pvc -n pscs
+kubectl describe deployment backend -n pscs
+kubectl get pods -n pscs -l app=backend -o wide`,
+      },
+      {
+        label: 'Verify the mounted path is writable and readable',
+        command: `kubectl exec -n pscs deploy/backend -- sh -c 'echo pvc-ok > /app/uploads/tickets/pvc-test.txt && ls -l /app/uploads/tickets'
+kubectl exec -n pscs deploy/backend -- cat /app/uploads/tickets/pvc-test.txt`,
+      },
+      {
+        label: 'Verify Longhorn RWX health and data replication',
+        command: `kubectl -n longhorn-system get volumes.longhorn.io
+kubectl -n longhorn-system describe volumes.longhorn.io LONGHORN_VOLUME_NAME
+kubectl get pods -n longhorn-system`,
+      },
+      {
+        label: 'Restart backend and retest attachment access',
+        command: `kubectl rollout restart deployment/backend -n pscs
+kubectl rollout status deployment/backend -n pscs
+kubectl get pods -n pscs -l app=backend -o wide`,
+      },
+    ],
+    notes: [
+      'Ticket text, replies, users, orders, invoices, and email configuration live in the shared MariaDB/Galera database. All backend pods read and write the same database service.',
+      'Attachment metadata lives in the database, but uploaded attachment bytes are files. With multiple backend replicas, those files must live on shared storage mounted by every backend pod.',
+      'The backend must use TICKET_UPLOAD_DIR=/app/uploads/tickets, and the backend image must include code that reads this environment variable. Otherwise the pod may keep writing to ./uploads/tickets inside its own container filesystem.',
+      'For three backend replicas, the ticket-uploads PVC should use ReadWriteMany with the longhorn StorageClass, then be mounted at /app/uploads/tickets in the backend Deployment.',
+      'Expected PVC output includes ticket-uploads Bound, access mode RWX, and storage class longhorn.',
+      'Expected Longhorn output includes Access Mode rwx, Number Of Replicas 3, Robustness healthy, Share State running, and a Share Endpoint beginning with nfs://.',
+      'Longhorn replicates the volume data across replicas. The RWX share-manager is a single active NFS endpoint with failover, not active-active across all workers.',
+      'Old attachments uploaded before the PVC existed may still be missing if the physical files only existed in an old pod filesystem. New attachments after the fix should survive backend pod restarts.',
+    ],
+  },
+  {
     title: 'Storage, Config, And Secrets',
     icon: Terminal,
     badge: 'Advanced',
