@@ -52,6 +52,7 @@ type ProxmoxCredentialStore interface {
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 	RunVMGuestCommandByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, command []string) (string, string, error)
+	SetVMUserPasswordByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, username string, password string) error
 	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
 	CreateVMConsoleSessionByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsoleSession, error)
 	ProxyVMConsoleSession(cred proxmox.Credential, session proxmox.VMConsoleSession, w http.ResponseWriter, r *http.Request) error
@@ -368,13 +369,28 @@ func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (Res
 	if err != nil {
 		return ResetRootPasswordResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
 	}
-	stdout, stderr, err := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, rootPasswordResetCommand(password))
-	if err != nil {
+	if err := s.proxmoxCredentials.SetVMUserPasswordByName(cred, rec.ProxmoxNodeName, rec.VMName, "root", password); err != nil {
 		_ = s.insertEvent(id, "root-password-reset", "error", "Root password reset failed", err.Error())
-		if strings.Contains(strings.ToLower(err.Error()), "guest-exec has been disabled") {
-			return ResetRootPasswordResponse{}, errors.New("QEMU guest agent is running, but guest-exec is disabled inside the VM. Remove guest-exec from the qemu-guest-agent RPC blocklist or allow guest-exec and guest-exec-status, restart qemu-guest-agent inside the VM, then retry")
-		}
 		return ResetRootPasswordResponse{}, err
+	}
+
+	outputParts := []string{"Root password updated through Proxmox QEMU guest agent."}
+	stdout, stderr, guestExecErr := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, rootPasswordSSHEnableCommand())
+	if guestExecErr != nil {
+		message := "Could not update SSH password-login settings because guest-exec is unavailable: " + guestExecErr.Error()
+		outputParts = append(outputParts, message)
+		_ = s.insertEvent(id, "root-password-reset", "warning", "Root password reset succeeded, SSH login settings were not changed", guestExecErr.Error())
+	} else {
+		output := strings.TrimSpace(stdout)
+		if trimmedErr := strings.TrimSpace(stderr); trimmedErr != "" {
+			if output != "" {
+				output += "\n"
+			}
+			output += trimmedErr
+		}
+		if output != "" {
+			outputParts = append(outputParts, output)
+		}
 	}
 
 	oldRef, err := s.rootPasswordSecretRef(id)
@@ -393,13 +409,7 @@ func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (Res
 		_ = s.secrets.Delete(context.Background(), oldRef)
 	}
 
-	output := strings.TrimSpace(stdout)
-	if trimmedErr := strings.TrimSpace(stderr); trimmedErr != "" {
-		if output != "" {
-			output += "\n"
-		}
-		output += trimmedErr
-	}
+	output := strings.Join(outputParts, "\n")
 	_ = s.insertEvent(id, "root-password-reset", "success", "Root password reset", output)
 	return ResetRootPasswordResponse{VPSID: id, RootPassword: password, Output: output}, nil
 }
@@ -1047,10 +1057,9 @@ func randomPasswordChar(chars string) (byte, error) {
 	return chars[n.Int64()], nil
 }
 
-func rootPasswordResetCommand(password string) []string {
+func rootPasswordSSHEnableCommand() []string {
 	script := strings.Join([]string{
 		"set -e",
-		"printf '%s\\n' " + shellQuote("root:"+password) + " | chpasswd",
 		"passwd -u root >/dev/null 2>&1 || true",
 		"install -d -m 0755 /etc/ssh/sshd_config.d",
 		"printf 'PasswordAuthentication yes\\nPermitRootLogin yes\\nKbdInteractiveAuthentication yes\\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf",
