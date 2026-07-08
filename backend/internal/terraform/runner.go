@@ -1119,6 +1119,9 @@ packages:
 
 runcmd:
   - [ bash, -lc, "if [ -f /etc/qemu/qemu-ga.conf ]; then sed -i -E '/^[[:space:]]*(allow-rpcs|block-rpcs|blacklist)[[:space:]]*=/d' /etc/qemu/qemu-ga.conf; fi" ]
+  - [ bash, -lc, "for f in /etc/default/qemu-guest-agent /etc/sysconfig/qemu-guest-agent /etc/sysconfig/qemu-ga; do [ -f \"$f\" ] && sed -i -E 's/--(allow-rpcs|block-rpcs|blacklist)(=|[[:space:]])[^[:space:]\"'\"'\"']+//g; s/(allow-rpcs|block-rpcs|blacklist)=['\"'\"'\"']?[^[:space:]\"'\"'\"']+['\"'\"'\"']?//g' \"$f\"; done" ]
+  - [ bash, -lc, "install -d -m 0755 /etc/systemd/system/qemu-guest-agent.service.d && printf '[Service]\nExecStart=\nExecStart=/usr/sbin/qemu-ga\n' > /etc/systemd/system/qemu-guest-agent.service.d/10-proxacloud-guest-exec.conf" ]
+  - [ systemctl, daemon-reload ]
   - [ systemctl, enable, --now, qemu-guest-agent ]
 {{- if .RootPassword }}
   - [ bash, -lc, "install -d -m 0755 /etc/ssh/sshd_config.d && printf 'PasswordAuthentication yes\nPermitRootLogin yes\nKbdInteractiveAuthentication yes\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf" ]
