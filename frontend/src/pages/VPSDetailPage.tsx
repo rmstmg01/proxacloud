@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Copy, ExternalLink, Eye, EyeOff, History, KeyRound, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, EyeOff, History, KeyRound, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
 import {
   createFirewall,
   createFirewallAttachment,
@@ -69,6 +69,7 @@ export function VPSDetailPage() {
   const [firewallRuleForm, setFirewallRuleForm] = useState(defaultFirewallRuleForm);
   const [editingFirewallRule, setEditingFirewallRule] = useState<VPSFirewallRule | null>(null);
   const [showRootPassword, setShowRootPassword] = useState(false);
+  const [copiedKey, setCopiedKey] = useState('');
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -155,7 +156,7 @@ export function VPSDetailPage() {
   const resetRootPasswordMutation = useMutation({
     mutationFn: () => resetVPSRootPassword(vpsID),
     onSuccess: () => {
-      setShowRootPassword(true);
+      setShowRootPassword(false);
       invalidate();
     },
   });
@@ -224,9 +225,30 @@ export function VPSDetailPage() {
     window.open(`/vps/${vps.id}/console`, '_blank', 'noopener,noreferrer');
   };
 
-  const copyText = (value?: string) => {
+  const copyText = async (key: string, value?: string) => {
     if (!value) return;
-    navigator.clipboard?.writeText(value);
+    await navigator.clipboard?.writeText(value);
+    setCopiedKey(key);
+    window.setTimeout(() => setCopiedKey((current) => (current === key ? '' : current)), 1800);
+  };
+
+  const copyButton = (key: string, value: string | undefined, label: string) => {
+    const copied = copiedKey === key;
+    return (
+      <button
+        type="button"
+        onClick={() => copyText(key, value)}
+        disabled={!value}
+        className={`inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+          copied ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+        }`}
+        title={copied ? 'Copied' : label}
+        aria-label={copied ? 'Copied' : label}
+      >
+        {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+        {copied && <span>Copied</span>}
+      </button>
+    );
   };
 
   const displayedRootPassword = resetRootPasswordMutation.data?.root_password ?? loginDetails?.root_password ?? '';
@@ -391,24 +413,21 @@ export function VPSDetailPage() {
               </Button>
             </CardHeader>
             <CardContent>
+              {resetRootPasswordMutation.isSuccess && (
+                <Alert variant="success" title="Root password reset">
+                  The new root password is ready below. It stays hidden until you choose to show it.
+                </Alert>
+              )}
               {loginDetailsFetching && !loginDetails ? (
-                <p className="text-sm text-slate-500">Loading login details...</p>
+                <p className="mt-4 text-sm text-slate-500">Loading login details...</p>
               ) : (
-                <dl className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
+                <dl className="mt-4 grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
                   <Info
                     label="Hostname"
                     value={
                       <span className="inline-flex min-w-0 items-center gap-2">
                         <span className="truncate">{loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => copyText(loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name)}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                          title="Copy hostname"
-                          aria-label="Copy hostname"
-                        >
-                          <Copy className="h-4 w-4" />
-                        </button>
+                        {copyButton('hostname', loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name, 'Copy hostname')}
                       </span>
                     }
                   />
@@ -417,16 +436,7 @@ export function VPSDetailPage() {
                     value={
                       <span className="inline-flex min-w-0 items-center gap-2">
                         <span className="truncate">{loginDetails?.ip_address || vps.ip_address || '-'}</span>
-                        <button
-                          type="button"
-                          onClick={() => copyText(loginDetails?.ip_address || vps.ip_address)}
-                          disabled={!loginDetails?.ip_address && !vps.ip_address}
-                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
-                          title="Copy IP address"
-                          aria-label="Copy IP address"
-                        >
-                          <Copy className="h-4 w-4" />
-                        </button>
+                        {copyButton('ip-address', loginDetails?.ip_address || vps.ip_address, 'Copy IP address')}
                       </span>
                     }
                   />
@@ -448,15 +458,7 @@ export function VPSDetailPage() {
                           >
                             {showRootPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => copyText(displayedRootPassword)}
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                            title="Copy root password"
-                            aria-label="Copy root password"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
+                          {copyButton('root-password', displayedRootPassword, 'Copy root password')}
                         </span>
                       ) : loginDetails?.has_root_password ? (
                         'Stored password is unavailable'
@@ -517,15 +519,7 @@ export function VPSDetailPage() {
                       value={
                         <span className="inline-flex min-w-0 items-center gap-2">
                           <code className="truncate rounded bg-slate-100 px-2 py-1 text-xs text-slate-800">{tunnel.ssh_command}</code>
-                          <button
-                            type="button"
-                            onClick={() => copyText(tunnel.ssh_command)}
-                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-                            title="Copy SSH command"
-                            aria-label="Copy SSH command"
-                          >
-                            <Copy className="h-4 w-4" />
-                          </button>
+                          {copyButton('ssh-command', tunnel.ssh_command, 'Copy SSH command')}
                         </span>
                       }
                     />
