@@ -945,6 +945,10 @@ resource "proxmox_virtual_environment_vm" "vps" {
 
   depends_on = [proxmox_virtual_environment_file.cloud_init]
 
+  agent {
+    enabled = true
+  }
+
   initialization {
     user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 
