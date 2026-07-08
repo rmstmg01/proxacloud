@@ -371,6 +371,9 @@ func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (Res
 	stdout, stderr, err := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, rootPasswordResetCommand(password))
 	if err != nil {
 		_ = s.insertEvent(id, "root-password-reset", "error", "Root password reset failed", err.Error())
+		if strings.Contains(strings.ToLower(err.Error()), "guest-exec has been disabled") {
+			return ResetRootPasswordResponse{}, errors.New("QEMU guest agent is running, but guest-exec is disabled inside the VM. Remove guest-exec from the qemu-guest-agent RPC blocklist or allow guest-exec and guest-exec-status, restart qemu-guest-agent inside the VM, then retry")
+		}
 		return ResetRootPasswordResponse{}, err
 	}
 

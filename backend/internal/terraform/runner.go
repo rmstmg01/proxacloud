@@ -1118,6 +1118,7 @@ packages:
   - curl
 
 runcmd:
+  - [ bash, -lc, "if [ -f /etc/qemu/qemu-ga.conf ]; then sed -i -E '/^[[:space:]]*(allow-rpcs|block-rpcs|blacklist)[[:space:]]*=/d' /etc/qemu/qemu-ga.conf; fi" ]
   - [ systemctl, enable, --now, qemu-guest-agent ]
 {{- if .RootPassword }}
   - [ bash, -lc, "install -d -m 0755 /etc/ssh/sshd_config.d && printf 'PasswordAuthentication yes\nPermitRootLogin yes\nKbdInteractiveAuthentication yes\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf" ]
