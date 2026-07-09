@@ -28,9 +28,11 @@ import (
 )
 
 const (
-	IPModeDHCP   = "dhcp"
-	IPModeManual = "manual"
-	IPModeAuto   = "auto"
+	IPModeDHCP                   = "dhcp"
+	IPModeManual                 = "manual"
+	IPModeAuto                   = "auto"
+	defaultCloudImageStorageID   = "cloud-images"
+	defaultCloudImageContentType = "import"
 )
 
 var (
@@ -881,8 +883,12 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	return image, nil
 }
 
-func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudInitImage, error) {
+func (s *Service) DiscoverImages(credentialID int64, nodeName string, storageID ...string) ([]CloudInitImage, error) {
 	nodeName = strings.TrimSpace(nodeName)
+	selectedStorageID := defaultCloudImageStorageID
+	if len(storageID) > 0 && strings.TrimSpace(storageID[0]) != "" {
+		selectedStorageID = strings.TrimSpace(storageID[0])
+	}
 	if credentialID <= 0 {
 		return nil, errors.New("proxmox credential is required")
 	}
@@ -896,9 +902,9 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 	if err != nil {
 		return nil, fmt.Errorf("load proxmox credentials: %w", err)
 	}
-	content, err := s.proxmoxCredentials.ListStorageContent(cred, nodeName, "local", "import")
+	content, err := s.proxmoxCredentials.ListStorageContent(cred, nodeName, selectedStorageID, defaultCloudImageContentType)
 	if err != nil {
-		return nil, fmt.Errorf("list Proxmox local:import content on node %s: %w", nodeName, err)
+		return nil, fmt.Errorf("list Proxmox %s:%s content on node %s: %w", selectedStorageID, defaultCloudImageContentType, nodeName, err)
 	}
 	discovered := make([]CloudInitImage, 0)
 	for _, item := range content {
@@ -912,7 +918,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 			Name:             meta.Name,
 			ImagePath:        volID,
 			OSType:           meta.OSType,
-			Description:      "Discovered from Proxmox local:import on " + nodeName,
+			Description:      fmt.Sprintf("Discovered from Proxmox %s:%s on %s", selectedStorageID, defaultCloudImageContentType, nodeName),
 			IsDefault:        false,
 			SSHUser:          meta.SSHUser,
 			DefaultCPU:       meta.DefaultCPU,
@@ -927,7 +933,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string) ([]CloudIn
 		discovered = append(discovered, image)
 	}
 	if len(discovered) == 0 {
-		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage local:import on node %s. Move or upload the image under /var/lib/vz/import on that Proxmox node, then discover again", nodeName)
+		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage %s:%s on node %s. Upload the image under /mnt/pve/%s/import, then discover again", selectedStorageID, defaultCloudImageContentType, nodeName, selectedStorageID)
 	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
@@ -1145,7 +1151,7 @@ func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, erro
 
 func isSupportedCloudImageVolID(volID string) bool {
 	lower := strings.ToLower(strings.TrimSpace(volID))
-	if !strings.HasPrefix(lower, "local:import/") {
+	if !strings.Contains(lower, ":import/") || strings.HasPrefix(lower, ":") {
 		return false
 	}
 	return hasSupportedCloudImageExtension(lower)
@@ -1164,7 +1170,7 @@ func validateCloudInitImagePath(imagePath string) error {
 	trimmed := strings.TrimSpace(imagePath)
 	lower := strings.ToLower(trimmed)
 	if strings.Contains(lower, ":iso/") && hasSupportedCloudImageExtension(lower) {
-		return fmt.Errorf("cloud image %q is stored as Proxmox ISO content. Move the uncompressed cloud image to /var/lib/vz/import on the Proxmox node and use local:import/%s", trimmed, proxmoxStorageFilename(trimmed))
+		return fmt.Errorf("cloud image %q is stored as Proxmox ISO content. Move the uncompressed cloud image to the shared import storage and use %s:import/%s", trimmed, defaultCloudImageStorageID, proxmoxStorageFilename(trimmed))
 	}
 	return nil
 }
@@ -1173,7 +1179,9 @@ func proxmoxStorageFilename(volID string) string {
 	filename := path.Base(strings.TrimSpace(volID))
 	if filename == "." || filename == "/" {
 		trimmed := strings.TrimSpace(volID)
-		trimmed = strings.TrimPrefix(trimmed, "local:import/")
+		if marker := strings.Index(strings.ToLower(trimmed), ":import/"); marker >= 0 {
+			trimmed = trimmed[marker+len(":import/"):]
+		}
 		return strings.TrimPrefix(trimmed, "local:iso/")
 	}
 	return filename

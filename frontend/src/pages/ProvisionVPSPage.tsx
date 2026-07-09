@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Copy, Eye, EyeOff, KeyRound, Plus } from 'lucide-react';
-import { createVPSCloudInitImage, createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
+import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus, RefreshCw, Server } from 'lucide-react';
+import { createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
 import { createSSHKey, getSSHKeys } from '../api/sshKeys';
@@ -91,6 +91,23 @@ function rootPasswordError(password: string) {
   return '';
 }
 
+function osMeta(image: VPSCloudInitImage) {
+  const value = `${image.os_type} ${image.name} ${image.image_path}`.toLowerCase();
+  if (value.includes('alma')) return { label: 'AlmaLinux', tone: 'bg-indigo-50 text-indigo-700 ring-indigo-200' };
+  if (value.includes('ubuntu')) return { label: 'Ubuntu', tone: 'bg-orange-50 text-orange-700 ring-orange-200' };
+  if (value.includes('debian')) return { label: 'Debian', tone: 'bg-rose-50 text-rose-700 ring-rose-200' };
+  if (value.includes('rocky')) return { label: 'Rocky', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' };
+  if (value.includes('centos')) return { label: 'CentOS', tone: 'bg-violet-50 text-violet-700 ring-violet-200' };
+  if (value.includes('fedora')) return { label: 'Fedora', tone: 'bg-sky-50 text-sky-700 ring-sky-200' };
+  return { label: image.os_type || 'Linux', tone: 'bg-slate-50 text-slate-700 ring-slate-200' };
+}
+
+function imageFilename(imagePath: string) {
+  const clean = imagePath.trim();
+  const slash = clean.lastIndexOf('/');
+  return slash >= 0 ? clean.slice(slash + 1) : clean;
+}
+
 export function ProvisionVPSPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -101,21 +118,14 @@ export function ProvisionVPSPage() {
   const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
-  const [imageModalOpen, setImageModalOpen] = useState(false);
   const [showRootPassword, setShowRootPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
+  const lastAutoDiscoveryKey = useRef('');
   const [sshForm, setSSHForm] = useState({
     name: '',
     ssh_user: 'ubuntu',
     public_key: '',
     private_key: '',
-  });
-  const [imageForm, setImageForm] = useState({
-    name: '',
-    image_path: '',
-    os_type: 'ubuntu',
-    description: '',
-    is_default: false,
   });
   const [form, setForm] = useState({
     name: '',
@@ -142,7 +152,10 @@ export function ProvisionVPSPage() {
   );
 
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
-  const createDisabled = (form.ssh_key_pair_id === 0 && form.root_password.trim() === '') || passwordError !== '';
+  const createDisabled =
+    form.cloud_init_image_path.trim() === '' ||
+    (form.ssh_key_pair_id === 0 && form.root_password.trim() === '') ||
+    passwordError !== '';
 
   useEffect(() => {
     const defaultNetwork = networks?.find((network) => network.is_default) ?? networks?.[0];
@@ -191,15 +204,6 @@ export function ProvisionVPSPage() {
     },
   });
 
-  const createImageMutation = useMutation({
-    mutationFn: createVPSCloudInitImage,
-    onSuccess: (image) => {
-      queryClient.invalidateQueries({ queryKey: ['vps-cloud-init-images'] });
-      setForm((prev) => applyImageDefaults(prev, image));
-      setImageForm({ name: '', image_path: '', os_type: 'ubuntu', description: '', is_default: false });
-      setImageModalOpen(false);
-    },
-  });
   const discoverImagesMutation = useMutation({
     mutationFn: () => discoverVPSCloudInitImages(form.proxmox_credential_id, form.proxmox_node_name),
     onSuccess: (discovered) => {
@@ -221,6 +225,18 @@ export function ProvisionVPSPage() {
       }
     },
   });
+
+  useEffect(() => {
+    if (form.proxmox_credential_id === 0 || form.proxmox_node_name === '') {
+      return;
+    }
+    const discoveryKey = `${form.proxmox_credential_id}:${form.proxmox_node_name}`;
+    if (lastAutoDiscoveryKey.current === discoveryKey || discoverImagesMutation.isPending) {
+      return;
+    }
+    lastAutoDiscoveryKey.current = discoveryKey;
+    discoverImagesMutation.mutate();
+  }, [discoverImagesMutation, form.proxmox_credential_id, form.proxmox_node_name]);
 
   const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -253,11 +269,6 @@ export function ProvisionVPSPage() {
   const handleCreateSSH = (event: FormEvent) => {
     event.preventDefault();
     createSSHMutation.mutate(sshForm);
-  };
-
-  const handleCreateImage = (event: FormEvent) => {
-    event.preventDefault();
-    createImageMutation.mutate(imageForm);
   };
 
   return (
@@ -464,27 +475,11 @@ export function ProvisionVPSPage() {
             <CardTitle>Cloud Init Image</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
-              <Select
-                label="Saved image"
-                value={form.cloud_init_image_id}
-                onChange={(event) => {
-                  const selectedID = Number(event.target.value);
-                  const selected = images?.find((image) => image.id === selectedID);
-                  if (selected) {
-                    setForm((prev) => applyImageDefaults(prev, selected));
-                  } else {
-                    setForm((prev) => ({ ...prev, cloud_init_image_id: 0, cloud_init_image_path: '' }));
-                  }
-                }}
-              >
-                <option value={0}>-- Select discovered image --</option>
-                {images?.map((image) => (
-                  <option key={image.id} value={image.id}>
-                    {image.name} {image.is_default ? '(default)' : ''}
-                  </option>
-                ))}
-              </Select>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-800">Discovered cloud images</p>
+                <p className="mt-1 text-xs text-slate-500">Images are loaded automatically for the selected Proxmox node.</p>
+              </div>
               <Button
                 type="button"
                 variant="secondary"
@@ -492,30 +487,56 @@ export function ProvisionVPSPage() {
                 loading={discoverImagesMutation.isPending}
                 disabled={form.proxmox_credential_id === 0 || form.proxmox_node_name === ''}
               >
-                Discover Images
-              </Button>
-              <Button type="button" variant="secondary" onClick={() => setImageModalOpen(true)}>
-                <Plus className="h-4 w-4" />
-                Add Image
+                <RefreshCw className="h-4 w-4" />
+                Refresh
               </Button>
             </div>
-            <Input
-              label="Detected image path"
-              value={form.cloud_init_image_path}
-              onChange={(event) => {
-                setForm((prev) => ({
-                  ...prev,
-                  cloud_init_image_id: 0,
-                  cloud_init_image_path: event.target.value,
-                }));
-              }}
-              placeholder="local:import/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
-              required
-            />
-            {form.cloud_init_image_id > 0 && (
-              <p className="text-xs text-slate-500">
-                Selecting an image applies its defaults for SSH user, CPU, RAM, and disk. Root password remains user-provided.
-              </p>
+
+            {images && images.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {images.map((image) => {
+                  const selected = form.cloud_init_image_id === image.id || form.cloud_init_image_path === image.image_path;
+                  const meta = osMeta(image);
+                  return (
+                    <button
+                      key={image.id}
+                      type="button"
+                      onClick={() => setForm((prev) => applyImageDefaults(prev, image))}
+                      className={`min-h-[116px] rounded-md border p-4 text-left transition-colors ${
+                        selected
+                          ? 'border-indigo-500 bg-indigo-50/60 ring-2 ring-indigo-100'
+                          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md ring-1 ${meta.tone}`}>
+                          <Server className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center justify-between gap-2">
+                            <p className="truncate text-sm font-semibold text-slate-900">{image.name || imageFilename(image.image_path)}</p>
+                            {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span>{meta.label}</span>
+                            {image.is_default && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">default</span>}
+                            <span>{image.ssh_user || 'cloud-user'}</span>
+                            <span>{image.default_cpu || 2} vCPU</span>
+                            <span>{image.default_memory_mb || 2048} MB</span>
+                            <span>{image.default_disk_gb || 20} GB</span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-600">
+                {discoverImagesMutation.isPending
+                  ? 'Discovering cloud images...'
+                  : 'No shared cloud images discovered yet. Upload an image, then refresh.'}
+              </div>
             )}
             {discoverImagesMutation.error && <ErrorMessage error={discoverImagesMutation.error} />}
           </CardContent>
@@ -571,34 +592,6 @@ export function ProvisionVPSPage() {
         </form>
       </Modal>
 
-      <Modal open={imageModalOpen} onClose={() => setImageModalOpen(false)} title="Add Cloud Init Image">
-        <form onSubmit={handleCreateImage} className="space-y-4">
-          <Input label="Name" value={imageForm.name} onChange={(event) => setImageForm({ ...imageForm, name: event.target.value })} required />
-          <Input
-            label="Image path"
-            value={imageForm.image_path}
-            onChange={(event) => setImageForm({ ...imageForm, image_path: event.target.value })}
-            placeholder="local:import/AlmaLinux-10-GenericCloud-10.2-20260526.0.x86_64.qcow2"
-            required
-          />
-          <Input label="OS type" value={imageForm.os_type} onChange={(event) => setImageForm({ ...imageForm, os_type: event.target.value })} required />
-          <Textarea label="Description" value={imageForm.description} onChange={(event) => setImageForm({ ...imageForm, description: event.target.value })} rows={3} />
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={imageForm.is_default}
-              onChange={(event) => setImageForm({ ...imageForm, is_default: event.target.checked })}
-              className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-            />
-            <span className="text-sm text-slate-700">Use as default image</span>
-          </label>
-          {createImageMutation.error && <ErrorMessage error={createImageMutation.error} />}
-          <div className="flex gap-3 pt-2">
-            <Button type="submit" loading={createImageMutation.isPending}>Save</Button>
-            <Button type="button" variant="secondary" onClick={() => setImageModalOpen(false)}>Cancel</Button>
-          </div>
-        </form>
-      </Modal>
     </Layout>
   );
 }

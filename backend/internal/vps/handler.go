@@ -356,12 +356,13 @@ func (h *Handler) DiscoverImages(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CredentialID int64  `json:"proxmox_credential_id"`
 		NodeName     string `json:"node_name"`
+		StorageID    string `json:"storage_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
-	resp, err := h.service.DiscoverImages(req.CredentialID, req.NodeName)
+	resp, err := h.service.DiscoverImages(req.CredentialID, req.NodeName, req.StorageID)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
