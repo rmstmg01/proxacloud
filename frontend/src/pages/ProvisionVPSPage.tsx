@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus, RefreshCw, Server } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus, Server } from 'lucide-react';
 import { createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
@@ -150,6 +150,10 @@ export function ProvisionVPSPage() {
     () => (proxmoxNodes ?? []).filter((node) => node.enabled && (!form.proxmox_credential_id || node.credential_id === form.proxmox_credential_id)),
     [proxmoxNodes, form.proxmox_credential_id],
   );
+  const sharedImages = useMemo(
+    () => (images ?? []).filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
+    [images],
+  );
 
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
   const createDisabled =
@@ -165,11 +169,11 @@ export function ProvisionVPSPage() {
   }, [networks, form.network_profile_id]);
 
   useEffect(() => {
-    const defaultImage = images?.find((image) => image.is_default) ?? images?.[0];
+    const defaultImage = sharedImages.find((image) => image.is_default) ?? sharedImages[0];
     if (defaultImage && form.cloud_init_image_id === 0 && form.cloud_init_image_path === '') {
       setForm((prev) => applyImageDefaults(prev, defaultImage));
     }
-  }, [images, form.cloud_init_image_id, form.cloud_init_image_path]);
+  }, [sharedImages, form.cloud_init_image_id, form.cloud_init_image_path]);
 
   useEffect(() => {
     if (form.proxmox_credential_id === 0 && credentials && credentials.length > 0) {
@@ -209,7 +213,9 @@ export function ProvisionVPSPage() {
     onSuccess: (discovered) => {
       queryClient.setQueryData<VPSCloudInitImage[]>(['vps-cloud-init-images'], (current = []) => {
         const merged = new Map<number, VPSCloudInitImage>();
-        current.forEach((image) => merged.set(image.id, image));
+        current
+          .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
+          .forEach((image) => merged.set(image.id, image));
         discovered.forEach((image) => merged.set(image.id, image));
         return Array.from(merged.values()).sort((a, b) => {
           if (a.is_default !== b.is_default) {
@@ -475,26 +481,9 @@ export function ProvisionVPSPage() {
             <CardTitle>Cloud Init Image</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-slate-800">Discovered cloud images</p>
-                <p className="mt-1 text-xs text-slate-500">Images are loaded automatically for the selected Proxmox node.</p>
-              </div>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => discoverImagesMutation.mutate()}
-                loading={discoverImagesMutation.isPending}
-                disabled={form.proxmox_credential_id === 0 || form.proxmox_node_name === ''}
-              >
-                <RefreshCw className="h-4 w-4" />
-                Refresh
-              </Button>
-            </div>
-
-            {images && images.length > 0 ? (
+            {sharedImages.length > 0 ? (
               <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                {images.map((image) => {
+                {sharedImages.map((image) => {
                   const selected = form.cloud_init_image_id === image.id || form.cloud_init_image_path === image.image_path;
                   const meta = osMeta(image);
                   return (
