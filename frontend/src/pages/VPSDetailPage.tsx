@@ -70,6 +70,7 @@ export function VPSDetailPage() {
   const [editingFirewallRule, setEditingFirewallRule] = useState<VPSFirewallRule | null>(null);
   const [showRootPassword, setShowRootPassword] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
+  const [rootPasswordResetNotice, setRootPasswordResetNotice] = useState(false);
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -157,6 +158,8 @@ export function VPSDetailPage() {
     mutationFn: () => resetVPSRootPassword(vpsID),
     onSuccess: () => {
       setShowRootPassword(false);
+      setRootPasswordResetNotice(true);
+      window.setTimeout(() => setRootPasswordResetNotice(false), 3500);
       invalidate();
     },
   });
@@ -413,9 +416,9 @@ export function VPSDetailPage() {
               </Button>
             </CardHeader>
             <CardContent>
-              {resetRootPasswordMutation.isSuccess && (
-                <Alert variant="success" title="Root password reset">
-                  The new root password is ready below. It stays hidden until you choose to show it.
+              {rootPasswordResetNotice && (
+                <Alert variant="success" title="Password has been reset">
+                  Root password updated.
                 </Alert>
               )}
               {loginDetailsFetching && !loginDetails ? (
