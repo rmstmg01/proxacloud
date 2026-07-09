@@ -366,11 +366,23 @@ func (s *Service) UpdateHostname(id int64, req UpdateHostnameRequest, scopes ...
 	if err != nil {
 		return LoginDetails{}, fmt.Errorf("load proxmox credentials: %w", err)
 	}
+	outputParts := []string{}
 	if err := s.proxmoxCredentials.SetVMHostnameByName(cred, rec.ProxmoxNodeName, rec.VMName, hostname); err != nil {
-		_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", err.Error())
-		return LoginDetails{}, err
+		if !isUnsupportedNativeHostnameAPI(err) {
+			_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", err.Error())
+			return LoginDetails{}, err
+		}
+		stdout, stderr, guestExecErr := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnameGuestExecCommand(hostname))
+		if guestExecErr != nil {
+			message := fmt.Sprintf("Proxmox guest hostname API is not available on this node, and guest-exec hostname update failed: %v", guestExecErr)
+			_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", message)
+			return LoginDetails{}, errors.New(message)
+		}
+		outputParts = append(outputParts, "Guest hostname updated through QEMU guest-exec fallback.")
+		outputParts = append(outputParts, strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n")))
+	} else {
+		outputParts = append(outputParts, "Guest hostname updated through Proxmox QEMU guest agent.")
 	}
-	outputParts := []string{"Guest hostname updated through Proxmox QEMU guest agent."}
 	stdout, stderr, persistenceErr := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnamePersistenceCommand(hostname))
 	if persistenceErr != nil {
 		message := "Could not update cloud-init hostname persistence because guest-exec is unavailable: " + persistenceErr.Error()
@@ -427,7 +439,7 @@ func (s *Service) LoginDetails(id int64) (LoginDetails, error) {
 			value, err := s.secrets.Get(context.Background(), ref)
 			if err != nil {
 				if !errors.Is(err, secrets.ErrSecretNotFound) {
-					return LoginDetails{}, fmt.Errorf("load root password secret: %w", err)
+					return LoginDetails{}, err
 				}
 			} else {
 				details.RootPassword = string(value)
@@ -435,6 +447,16 @@ func (s *Service) LoginDetails(id int64) (LoginDetails, error) {
 		}
 	}
 	return details, nil
+}
+
+func isUnsupportedNativeHostnameAPI(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "status 501") ||
+		strings.Contains(message, "not implemented") ||
+		strings.Contains(message, "set-host-name")
 }
 
 func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (ResetRootPasswordResponse, error) {
@@ -1174,6 +1196,17 @@ func rootPasswordSSHEnableCommand() []string {
 		"install -d -m 0755 /etc/ssh/sshd_config.d",
 		"printf 'PasswordAuthentication yes\\nPermitRootLogin yes\\nKbdInteractiveAuthentication yes\\n' > /etc/ssh/sshd_config.d/99-proxacloud-password-auth.conf",
 		"systemctl restart sshd || systemctl restart ssh || true",
+	}, "; ")
+	return []string{"bash", "-lc", script}
+}
+
+func hostnameGuestExecCommand(hostname string) []string {
+	script := strings.Join([]string{
+		"set -e",
+		fmt.Sprintf("hostnamectl set-hostname %s", shellQuote(hostname)),
+		fmt.Sprintf("printf '%%s\\n' %s > /etc/hostname", shellQuote(hostname)),
+		"install -d -m 0755 /etc/cloud/cloud.cfg.d",
+		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",
 	}, "; ")
 	return []string{"bash", "-lc", script}
 }
