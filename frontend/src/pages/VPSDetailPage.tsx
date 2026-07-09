@@ -391,13 +391,12 @@ export function VPSDetailPage() {
                     </div>
                   }
                 />
-                <Info label="Proxmox node" value={vps.proxmox_node_name} />
+                <Info label="Node" value={vps.proxmox_node_name} />
                 <Info label="Network" value={vps.network_name || String(vps.network_profile_id)} />
                 <Info label="IP address" value={vps.ip_address || vps.ip_mode.toUpperCase()} />
                 <Info label="Resources" value={`${vps.cpu} vCPU / ${vps.memory_mb} MB / ${vps.disk_gb} GB`} />
                 <Info label="SSH user" value={vps.ssh_user} />
-                <Info label="Cloud image" value={vps.cloud_init_image_path} />
-                <Info label="Terraform work dir" value={vps.terraform_work_dir} />
+                <Info label="Cloud image" value={formatCloudImageName(vps.cloud_init_image_path)} />
                 <Info label="Created" value={new Date(vps.created_at).toLocaleString()} />
               </dl>
             </CardContent>
@@ -872,4 +871,30 @@ function Info({ label, value }: { label: string; value: ReactNode }) {
       <dd className="mt-1 break-words text-slate-900">{value}</dd>
     </div>
   );
+}
+
+function formatCloudImageName(imagePath: string) {
+  const filename = imagePath.split('/').pop()?.split(':').pop() || imagePath;
+  const baseName = filename.replace(/\.(qcow2|img|raw|iso|vmdk)$/i, '');
+  const normalized = baseName.replace(/[._]+/g, '-');
+
+  const patterns: Array<[RegExp, (version: string) => string]> = [
+    [/almalinux[- ]*(\d+(?:\.\d+)?)/i, (version) => `AlmaLinux ${version}`],
+    [/rocky[- ]*(\d+(?:\.\d+)?)/i, (version) => `Rocky Linux ${version}`],
+    [/centos[- ]*(\d+(?:\.\d+)?)/i, (version) => `CentOS ${version}`],
+    [/ubuntu[- ]*(\d{2}\.\d{2}|\d+(?:\.\d+)?)/i, (version) => `Ubuntu ${version}`],
+    [/debian[- ]*(\d+(?:\.\d+)?)/i, (version) => `Debian ${version}`],
+    [/fedora[- ]*(\d+(?:\.\d+)?)/i, (version) => `Fedora ${version}`],
+  ];
+
+  for (const [pattern, label] of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) return label(match[1]);
+  }
+
+  return baseName
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b(genericcloud|generic|cloud|latest|x86|x64|amd64|64|qcow2)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim() || imagePath;
 }
