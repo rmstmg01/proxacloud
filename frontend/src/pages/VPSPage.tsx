@@ -1,13 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Play, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { ChevronRight, Pencil, Play, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
 import {
   deleteVPSInstance,
   getVPSInstances,
   restartVPSInstance,
   shutdownVPSInstance,
   startVPSInstance,
+  updateVPSInstance,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent } from '../components/ui/Card';
@@ -23,6 +24,8 @@ export function VPSPage() {
   const queryClient = useQueryClient();
   const [deleteTarget, setDeleteTarget] = useState<VPSInstance | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
+  const [editTarget, setEditTarget] = useState<VPSInstance | null>(null);
+  const [editName, setEditName] = useState('');
   const { data: instances, isLoading, error, dataUpdatedAt } = useQuery({
     queryKey: ['vps'],
     queryFn: getVPSInstances,
@@ -45,6 +48,15 @@ export function VPSPage() {
       setDeleteConfirmationName('');
     },
   });
+  const updateMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) => updateVPSInstance(id, { name }),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: ['vps'] });
+      queryClient.invalidateQueries({ queryKey: ['vps', updated.id] });
+      setEditTarget(null);
+      setEditName('');
+    },
+  });
 
   useEffect(() => {
     if (!dataUpdatedAt) return;
@@ -52,12 +64,25 @@ export function VPSPage() {
     if (!restartMutation.isPending) restartMutation.reset();
     if (!shutdownMutation.isPending) shutdownMutation.reset();
     if (!deleteMutation.isPending) deleteMutation.reset();
+    if (!updateMutation.isPending) updateMutation.reset();
   }, [dataUpdatedAt]);
 
   const confirmDelete = (event: FormEvent) => {
     event.preventDefault();
     if (!deleteTarget || deleteConfirmationName !== deleteTarget.name) return;
     deleteMutation.mutate({ id: deleteTarget.id, confirmationName: deleteConfirmationName });
+  };
+
+  const openEdit = (item: VPSInstance) => {
+    setEditTarget(item);
+    setEditName(item.name);
+  };
+
+  const confirmEdit = (event: FormEvent) => {
+    event.preventDefault();
+    const name = editName.trim();
+    if (!editTarget || name === '') return;
+    updateMutation.mutate({ id: editTarget.id, name });
   };
 
   return (
@@ -116,7 +141,6 @@ export function VPSPage() {
                     <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4">
                         <p className="font-medium text-slate-900">{item.name}</p>
-                        <p className="text-xs text-slate-500">{item.network_name || 'Network selected'}</p>
                       </td>
                       <td className="px-6 py-4 text-slate-600">{item.proxmox_node_name}</td>
                       <td className="px-6 py-4 text-slate-600">{item.ip_address || item.ip_mode.toUpperCase()}</td>
@@ -132,6 +156,15 @@ export function VPSPage() {
                           <Link to={`/vps/${item.id}`} className="inline-flex items-center text-indigo-600 hover:text-indigo-700">
                             Details <ChevronRight className="h-4 w-4" />
                           </Link>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => openEdit(item)}
+                            loading={updateMutation.isPending && updateMutation.variables?.id === item.id}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Edit
+                          </Button>
                           <Button
                             variant="secondary"
                             size="sm"
@@ -181,6 +214,41 @@ export function VPSPage() {
           )}
         </Card>
       )}
+
+      <Modal
+        open={!!editTarget}
+        onClose={() => {
+          if (!updateMutation.isPending) {
+            setEditTarget(null);
+            setEditName('');
+          }
+        }}
+        title="Edit VPS"
+        maxWidth="lg"
+      >
+        {editTarget && (
+          <form onSubmit={confirmEdit} className="space-y-4">
+            <Input
+              label="Name"
+              value={editName}
+              onChange={(event) => setEditName(event.target.value)}
+              autoFocus
+              autoComplete="off"
+              required
+            />
+            {updateMutation.error && <ErrorMessage error={updateMutation.error} />}
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setEditTarget(null)} disabled={updateMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={updateMutation.isPending} disabled={editName.trim() === ''}>
+                <Pencil className="h-4 w-4" />
+                Save
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
 
       <Modal
         open={!!deleteTarget}

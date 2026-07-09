@@ -175,6 +175,10 @@ type CreateRequest struct {
 	CustomerAccountID   int64  `json:"-"`
 }
 
+type UpdateRequest struct {
+	Name string `json:"name"`
+}
+
 type CreateResponse struct {
 	VPSID            int64             `json:"vps_id"`
 	Status           string            `json:"status"`
@@ -304,6 +308,38 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		return Instance{}, fmt.Errorf("get vps: %w", err)
 	}
 	return rec, nil
+}
+
+func (s *Service) Update(id int64, req UpdateRequest, scopes ...tenant.Scope) (Instance, error) {
+	name := sanitizeName(req.Name)
+	if name == "" {
+		return Instance{}, errors.New("name is required")
+	}
+	scope := tenant.Scope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	query := `UPDATE vps_instances SET name = $2, updated_at = NOW() WHERE id = $1`
+	args := []any{id, name}
+	if scope.IsCustomer() {
+		query += ` AND customer_account_id = $3`
+		args = append(args, scope.CustomerAccountID)
+	}
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate") || strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Instance{}, ErrVPSExists
+		}
+		return Instance{}, fmt.Errorf("update vps: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Instance{}, fmt.Errorf("update vps: %w", err)
+	}
+	if affected == 0 {
+		return Instance{}, ErrVPSNotFound
+	}
+	return s.Get(id, scope)
 }
 
 func (s *Service) LoginDetails(id int64) (LoginDetails, error) {

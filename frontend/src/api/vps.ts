@@ -77,6 +77,9 @@ export const createVPSInstance = (body: {
   apply: boolean;
 }) => client.post<VPSCreateResponse>('/vps', body).then((r) => r.data);
 
+export const updateVPSInstance = (id: number, body: { name: string }) =>
+  client.patch<VPSInstance>(`/vps/${id}`, body).then((r) => r.data);
+
 export const deployVPSInstance = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/deploy`).then((r) => r.data);
 
