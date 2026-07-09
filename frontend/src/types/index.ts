@@ -353,6 +353,7 @@ export interface VPSInstance {
   cloud_init_image_path: string;
   ssh_key_pair_id: number;
   vm_name: string;
+  hostname: string;
   ip_mode: 'dhcp' | 'manual' | 'auto';
   ip_address: string;
   cpu: number;

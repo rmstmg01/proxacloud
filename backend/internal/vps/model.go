@@ -133,6 +133,7 @@ type Instance struct {
 	CloudInitImagePath  string    `json:"cloud_init_image_path"`
 	SSHKeyPairID        int64     `json:"ssh_key_pair_id"`
 	VMName              string    `json:"vm_name"`
+	Hostname            string    `json:"hostname"`
 	IPMode              string    `json:"ip_mode"`
 	IPAddress           string    `json:"ip_address"`
 	CPU                 int       `json:"cpu"`
@@ -177,6 +178,10 @@ type CreateRequest struct {
 
 type UpdateRequest struct {
 	Name string `json:"name"`
+}
+
+type UpdateHostnameRequest struct {
+	Hostname string `json:"hostname"`
 }
 
 type CreateResponse struct {
@@ -241,7 +246,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 }
 
 func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE v.customer_account_id = $1`
@@ -271,7 +276,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		scope = scopes[0]
 	}
 	var rec Instance
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
 	args := []any{id}
 	if scope.IsCustomer() {
 		query += ` AND v.customer_account_id = $2`
@@ -290,6 +295,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		&rec.CloudInitImagePath,
 		&rec.SSHKeyPairID,
 		&rec.VMName,
+		&rec.Hostname,
 		&rec.IPMode,
 		&rec.IPAddress,
 		&rec.CPU,
@@ -342,6 +348,50 @@ func (s *Service) Update(id int64, req UpdateRequest, scopes ...tenant.Scope) (I
 	return s.Get(id, scope)
 }
 
+func (s *Service) UpdateHostname(id int64, req UpdateHostnameRequest, scopes ...tenant.Scope) (LoginDetails, error) {
+	hostname := sanitizeHostname(req.Hostname)
+	if hostname == "" {
+		return LoginDetails{}, errors.New("hostname is required")
+	}
+	scope := tenant.Scope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	rec, err := s.Get(id, scope)
+	if err != nil {
+		return LoginDetails{}, err
+	}
+	cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(rec.ProxmoxCredentialID)
+	if err != nil {
+		return LoginDetails{}, fmt.Errorf("load proxmox credentials: %w", err)
+	}
+	stdout, stderr, err := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnameUpdateCommand(hostname))
+	output := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
+	if err != nil {
+		_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", err.Error())
+		return LoginDetails{}, err
+	}
+	query := `UPDATE vps_instances SET hostname = $2, updated_at = NOW() WHERE id = $1`
+	args := []any{id, hostname}
+	if scope.IsCustomer() {
+		query += ` AND customer_account_id = $3`
+		args = append(args, scope.CustomerAccountID)
+	}
+	result, err := s.db.Exec(query, args...)
+	if err != nil {
+		return LoginDetails{}, fmt.Errorf("update vps hostname: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return LoginDetails{}, fmt.Errorf("update vps hostname: %w", err)
+	}
+	if affected == 0 {
+		return LoginDetails{}, ErrVPSNotFound
+	}
+	_ = s.insertEvent(id, "hostname-update", "success", "Hostname updated", output)
+	return s.LoginDetails(id)
+}
+
 func (s *Service) LoginDetails(id int64) (LoginDetails, error) {
 	rec, err := s.Get(id)
 	if err != nil {
@@ -350,18 +400,12 @@ func (s *Service) LoginDetails(id int64) (LoginDetails, error) {
 
 	details := LoginDetails{
 		VPSID:     rec.ID,
-		Hostname:  rec.VMName,
+		Hostname:  rec.Hostname,
 		IPAddress: rec.IPAddress,
 		SSHUser:   rec.SSHUser,
 	}
 	if details.Hostname == "" {
-		details.Hostname = rec.Name
-	}
-
-	if attachment, err := s.GetTunnelAttachment(id); err == nil && strings.TrimSpace(attachment.PublicHostname) != "" {
-		details.Hostname = attachment.PublicHostname
-	} else if err != nil && !errors.Is(err, ErrTunnelAttachmentNotFound) {
-		return LoginDetails{}, err
+		details.Hostname = rec.VMName
 	}
 
 	ref, err := s.rootPasswordSecretRef(id)
@@ -530,8 +574,8 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	var vpsID int64
 	err = s.db.QueryRow(
-		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, NULLIF($7, 0), $8, NULLIF($9, 0), $10, $11, $12, $13, $14, $15, $16, $17, $18, 'created')
+		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, NULLIF($7, 0), $8, NULLIF($9, 0), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'created')
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
@@ -542,6 +586,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		req.CloudInitImageID,
 		req.CloudInitImagePath,
 		req.SSHKeyPairID,
+		req.Name,
 		req.Name,
 		req.IPMode,
 		req.IPAddress,
@@ -1124,6 +1169,51 @@ func rootPasswordSSHEnableCommand() []string {
 	return []string{"bash", "-lc", script}
 }
 
+func hostnameUpdateCommand(hostname string) []string {
+	script := strings.Join([]string{
+		"set -e",
+		fmt.Sprintf("hostnamectl set-hostname %s", shellQuote(hostname)),
+		fmt.Sprintf("printf '%%s\\n' %s > /etc/hostname", shellQuote(hostname)),
+		"install -d -m 0755 /etc/cloud/cloud.cfg.d",
+		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",
+	}, "; ")
+	return []string{"bash", "-lc", script}
+}
+
+func sanitizeHostname(hostname string) string {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	hostname = strings.Trim(hostname, ".")
+	if hostname == "" || len(hostname) > 253 {
+		return ""
+	}
+	labels := strings.Split(hostname, ".")
+	for i, label := range labels {
+		label = sanitizeHostnameLabel(label)
+		if label == "" || len(label) > 63 {
+			return ""
+		}
+		labels[i] = label
+	}
+	return strings.Join(labels, ".")
+}
+
+func sanitizeHostnameLabel(label string) string {
+	var builder strings.Builder
+	previousDash := false
+	for _, r := range label {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			previousDash = false
+			continue
+		}
+		if !previousDash {
+			builder.WriteByte('-')
+			previousDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
 func isQEMUAgentUnavailable(err error) bool {
 	if err == nil {
 		return false
@@ -1376,6 +1466,7 @@ func scanInstance(rows interface {
 		&rec.CloudInitImagePath,
 		&rec.SSHKeyPairID,
 		&rec.VMName,
+		&rec.Hostname,
 		&rec.IPMode,
 		&rec.IPAddress,
 		&rec.CPU,

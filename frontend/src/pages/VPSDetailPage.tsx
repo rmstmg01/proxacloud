@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, EyeOff, History, KeyRound, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, Eye, EyeOff, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
 import {
   createFirewall,
   createFirewallAttachment,
@@ -23,6 +23,7 @@ import {
   retryVPSTunnel,
   shutdownVPSInstance,
   startVPSInstance,
+  updateVPSHostname,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -71,6 +72,8 @@ export function VPSDetailPage() {
   const [showRootPassword, setShowRootPassword] = useState(false);
   const [copiedKey, setCopiedKey] = useState('');
   const [rootPasswordResetNotice, setRootPasswordResetNotice] = useState(false);
+  const [hostnameEditOpen, setHostnameEditOpen] = useState(false);
+  const [hostnameForm, setHostnameForm] = useState('');
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -163,6 +166,13 @@ export function VPSDetailPage() {
       invalidate();
     },
   });
+  const updateHostnameMutation = useMutation({
+    mutationFn: () => updateVPSHostname(vpsID, hostnameForm),
+    onSuccess: () => {
+      setHostnameEditOpen(false);
+      invalidate();
+    },
+  });
   const firewallMutation = useMutation({
     mutationFn: async () => {
       if (!vps) throw new Error('VPS is not loaded');
@@ -223,6 +233,19 @@ export function VPSDetailPage() {
     redeployMutation.mutate(vps.id);
   };
 
+  const openHostnameEdit = () => {
+    if (!vps) return;
+    updateHostnameMutation.reset();
+    setHostnameForm(displayedHostname);
+    setHostnameEditOpen(true);
+  };
+
+  const confirmHostnameEdit = (event: FormEvent) => {
+    event.preventDefault();
+    if (hostnameForm.trim() === '') return;
+    updateHostnameMutation.mutate();
+  };
+
   const openConsole = () => {
     if (!vps) return;
     window.open(`/vps/${vps.id}/console`, '_blank', 'noopener,noreferrer');
@@ -255,6 +278,7 @@ export function VPSDetailPage() {
   };
 
   const displayedRootPassword = resetRootPasswordMutation.data?.root_password ?? loginDetails?.root_password ?? '';
+  const displayedHostname = loginDetails?.hostname || vps?.hostname || vps?.vm_name || vps?.name || '';
 
   const openFirewallRule = () => {
     if (!vps) return;
@@ -403,16 +427,8 @@ export function VPSDetailPage() {
           </Card>
 
           <Card>
-            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <CardHeader>
               <CardTitle>Login Details</CardTitle>
-              <Button
-                variant="secondary"
-                onClick={() => resetRootPasswordMutation.mutate()}
-                loading={resetRootPasswordMutation.isPending}
-              >
-                <KeyRound className="h-4 w-4" />
-                Reset root password
-              </Button>
             </CardHeader>
             <CardContent>
               {rootPasswordResetNotice && (
@@ -428,8 +444,17 @@ export function VPSDetailPage() {
                     label="Hostname"
                     value={
                       <span className="inline-flex min-w-0 items-center gap-2">
-                        <span className="truncate">{loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name}</span>
-                        {copyButton('hostname', loginDetails?.hostname || tunnel?.public_hostname || vps.vm_name || vps.name, 'Copy hostname')}
+                        <span className="truncate">{displayedHostname}</span>
+                        {copyButton('hostname', displayedHostname, 'Copy hostname')}
+                        <button
+                          type="button"
+                          onClick={openHostnameEdit}
+                          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                          title="Edit hostname"
+                          aria-label="Edit hostname"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
                       </span>
                     }
                   />
@@ -461,11 +486,48 @@ export function VPSDetailPage() {
                             {showRootPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
                           {copyButton('root-password', displayedRootPassword, 'Copy root password')}
+                          <button
+                            type="button"
+                            onClick={() => resetRootPasswordMutation.mutate()}
+                            disabled={resetRootPasswordMutation.isPending}
+                            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                            title="Reset root password"
+                            aria-label="Reset root password"
+                          >
+                            <RotateCcw className={`h-4 w-4 ${resetRootPasswordMutation.isPending ? 'animate-spin' : ''}`} />
+                            Reset
+                          </button>
                         </span>
                       ) : loginDetails?.has_root_password ? (
-                        'Stored password is unavailable'
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <span>Stored password is unavailable</span>
+                          <button
+                            type="button"
+                            onClick={() => resetRootPasswordMutation.mutate()}
+                            disabled={resetRootPasswordMutation.isPending}
+                            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                            title="Reset root password"
+                            aria-label="Reset root password"
+                          >
+                            <RotateCcw className={`h-4 w-4 ${resetRootPasswordMutation.isPending ? 'animate-spin' : ''}`} />
+                            Reset
+                          </button>
+                        </span>
                       ) : (
-                        'No root password set'
+                        <span className="inline-flex min-w-0 items-center gap-2">
+                          <span>No root password set</span>
+                          <button
+                            type="button"
+                            onClick={() => resetRootPasswordMutation.mutate()}
+                            disabled={resetRootPasswordMutation.isPending}
+                            className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+                            title="Reset root password"
+                            aria-label="Reset root password"
+                          >
+                            <RotateCcw className={`h-4 w-4 ${resetRootPasswordMutation.isPending ? 'animate-spin' : ''}`} />
+                            Reset
+                          </button>
+                        </span>
                       )
                     }
                   />
@@ -660,6 +722,37 @@ export function VPSDetailPage() {
           )}
         </div>
       )}
+      <Modal
+        open={hostnameEditOpen}
+        onClose={() => {
+          if (!updateHostnameMutation.isPending) {
+            setHostnameEditOpen(false);
+          }
+        }}
+        title="Edit Hostname"
+        maxWidth="lg"
+      >
+        <form onSubmit={confirmHostnameEdit} className="space-y-4">
+          <Input
+            label="Hostname"
+            value={hostnameForm}
+            onChange={(event) => setHostnameForm(event.target.value)}
+            autoFocus
+            autoComplete="off"
+            required
+          />
+          {updateHostnameMutation.error && <ErrorMessage error={updateHostnameMutation.error} />}
+          <div className="flex items-center justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setHostnameEditOpen(false)} disabled={updateHostnameMutation.isPending}>
+              Cancel
+            </Button>
+            <Button type="submit" loading={updateHostnameMutation.isPending} disabled={hostnameForm.trim() === ''}>
+              <Pencil className="h-4 w-4" />
+              Save
+            </Button>
+          </div>
+        </form>
+      </Modal>
       <Modal
         open={redeployOpen}
         onClose={() => {

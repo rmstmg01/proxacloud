@@ -32,6 +32,9 @@ export const retryVPSTunnel = (id: number) =>
 export const resetVPSRootPassword = (id: number, password = '') =>
   client.post<VPSResetRootPasswordResponse>(`/vps/${id}/root-password/reset`, { password }).then((r) => r.data);
 
+export const updateVPSHostname = (id: number, hostname: string) =>
+  client.patch<VPSLoginDetails>(`/vps/${id}/hostname`, { hostname }).then((r) => r.data);
+
 export const getVPSCloudInitImages = () =>
   client.get<VPSCloudInitImage[]>('/vps/cloud-init-images').then((r) => r.data);
 
