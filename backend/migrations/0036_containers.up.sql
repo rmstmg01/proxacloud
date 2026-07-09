@@ -10,14 +10,18 @@ CREATE TABLE IF NOT EXISTS container_templates (
 );
 
 INSERT INTO container_templates (name, template_path, os_type, description, is_default)
-VALUES (
+SELECT
     'Debian 12 LXC Template',
     'local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst',
     'debian',
     'Default Debian 12 LXC template path',
     TRUE
-)
-ON CONFLICT (template_path) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1
+      FROM container_templates
+     WHERE name = 'Debian 12 LXC Template'
+        OR template_path = 'local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst'
+);
 
 CREATE TABLE IF NOT EXISTS container_instances (
     id BIGSERIAL PRIMARY KEY,

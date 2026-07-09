@@ -10,14 +10,18 @@ CREATE TABLE IF NOT EXISTS vps_cloud_init_images (
 );
 
 INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default)
-VALUES (
+SELECT
     'Ubuntu 24.04 Cloud Image',
     'local:import/ubuntu-24.04-server-cloudimg-amd64.img',
     'ubuntu',
     'Default Ubuntu 24.04 cloud-init import image path',
     TRUE
-)
-ON CONFLICT (image_path) DO NOTHING;
+WHERE NOT EXISTS (
+    SELECT 1
+      FROM vps_cloud_init_images
+     WHERE name = 'Ubuntu 24.04 Cloud Image'
+        OR image_path = 'local:import/ubuntu-24.04-server-cloudimg-amd64.img'
+);
 
 CREATE TABLE IF NOT EXISTS vps_instances (
     id BIGSERIAL PRIMARY KEY,
