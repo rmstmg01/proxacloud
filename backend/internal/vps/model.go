@@ -369,9 +369,23 @@ func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (Res
 	if err != nil {
 		return ResetRootPasswordResponse{}, fmt.Errorf("load proxmox credentials: %w", err)
 	}
-	if err := s.proxmoxCredentials.SetVMUserPasswordByName(cred, rec.ProxmoxNodeName, rec.VMName, "root", password); err != nil {
-		_ = s.insertEvent(id, "root-password-reset", "error", "Root password reset failed", err.Error())
-		return ResetRootPasswordResponse{}, err
+	var passwordErr error
+	for attempt := 0; attempt < 6; attempt++ {
+		passwordErr = s.proxmoxCredentials.SetVMUserPasswordByName(cred, rec.ProxmoxNodeName, rec.VMName, "root", password)
+		if passwordErr == nil {
+			break
+		}
+		if !isQEMUAgentUnavailable(passwordErr) || attempt == 5 {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if passwordErr != nil {
+		_ = s.insertEvent(id, "root-password-reset", "error", "Root password reset failed", passwordErr.Error())
+		if isQEMUAgentUnavailable(passwordErr) {
+			return ResetRootPasswordResponse{}, errors.New("QEMU guest agent is not running inside the VM. Start qemu-guest-agent from the VM console, wait for cloud-init to finish after boot, then retry")
+		}
+		return ResetRootPasswordResponse{}, passwordErr
 	}
 
 	outputParts := []string{"Root password updated through Proxmox QEMU guest agent."}
@@ -1066,6 +1080,15 @@ func rootPasswordSSHEnableCommand() []string {
 		"systemctl restart sshd || systemctl restart ssh || true",
 	}, "; ")
 	return []string{"bash", "-lc", script}
+}
+
+func isQEMUAgentUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "qemu guest agent is not running") ||
+		strings.Contains(message, "guest agent is not running")
 }
 
 func (s *Service) rootPasswordSecretRef(id int64) (string, error) {
