@@ -54,6 +54,7 @@ type ProxmoxCredentialStore interface {
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 	RunVMGuestCommandByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, command []string) (string, string, error)
+	SetVMHostnameByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, hostname string) error
 	SetVMUserPasswordByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, username string, password string) error
 	VMConsoleURLByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsole, error)
 	CreateVMConsoleSessionByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (proxmox.VMConsoleSession, error)
@@ -365,12 +366,20 @@ func (s *Service) UpdateHostname(id int64, req UpdateHostnameRequest, scopes ...
 	if err != nil {
 		return LoginDetails{}, fmt.Errorf("load proxmox credentials: %w", err)
 	}
-	stdout, stderr, err := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnameUpdateCommand(hostname))
-	output := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
-	if err != nil {
+	if err := s.proxmoxCredentials.SetVMHostnameByName(cred, rec.ProxmoxNodeName, rec.VMName, hostname); err != nil {
 		_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", err.Error())
 		return LoginDetails{}, err
 	}
+	outputParts := []string{"Guest hostname updated through Proxmox QEMU guest agent."}
+	stdout, stderr, persistenceErr := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnamePersistenceCommand(hostname))
+	if persistenceErr != nil {
+		message := "Could not update cloud-init hostname persistence because guest-exec is unavailable: " + persistenceErr.Error()
+		outputParts = append(outputParts, message)
+		_ = s.insertEvent(id, "hostname-update", "warning", "Hostname updated, cloud-init persistence was not changed", persistenceErr.Error())
+	} else {
+		outputParts = append(outputParts, strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n")))
+	}
+	output := strings.TrimSpace(strings.Join(outputParts, "\n"))
 	query := `UPDATE vps_instances SET hostname = $2, updated_at = NOW() WHERE id = $1`
 	args := []any{id, hostname}
 	if scope.IsCustomer() {
@@ -1169,10 +1178,9 @@ func rootPasswordSSHEnableCommand() []string {
 	return []string{"bash", "-lc", script}
 }
 
-func hostnameUpdateCommand(hostname string) []string {
+func hostnamePersistenceCommand(hostname string) []string {
 	script := strings.Join([]string{
 		"set -e",
-		fmt.Sprintf("hostnamectl set-hostname %s", shellQuote(hostname)),
 		fmt.Sprintf("printf '%%s\\n' %s > /etc/hostname", shellQuote(hostname)),
 		"install -d -m 0755 /etc/cloud/cloud.cfg.d",
 		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",

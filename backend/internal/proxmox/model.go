@@ -309,6 +309,10 @@ func (s *Service) RunVMGuestCommandByName(cred Credential, proxmoxNodeName strin
 	return s.client.RunVMGuestCommandByName(cred, proxmoxNodeName, vmName, command)
 }
 
+func (s *Service) SetVMHostnameByName(cred Credential, proxmoxNodeName string, vmName string, hostname string) error {
+	return s.client.SetVMHostnameByName(cred, proxmoxNodeName, vmName, hostname)
+}
+
 func (s *Service) SetVMUserPasswordByName(cred Credential, proxmoxNodeName string, vmName string, username string, password string) error {
 	return s.client.SetVMUserPasswordByName(cred, proxmoxNodeName, vmName, username, password)
 }

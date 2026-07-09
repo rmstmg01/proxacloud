@@ -459,6 +459,59 @@ func (c *Client) RunVMGuestCommandByName(cred Credential, proxmoxNodeName string
 	return c.runQEMUAgentCommand(httpClient, base, cred, proxmoxNodeName, vm.VMID, command)
 }
 
+func (c *Client) SetVMHostnameByName(cred Credential, proxmoxNodeName string, vmName string, hostname string) error {
+	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
+	vmName = strings.TrimSpace(vmName)
+	hostname = strings.TrimSpace(hostname)
+	if proxmoxNodeName == "" {
+		return errors.New("proxmox node name is required")
+	}
+	if vmName == "" {
+		return errors.New("vm name is required")
+	}
+	if hostname == "" {
+		return errors.New("guest hostname is required")
+	}
+
+	base, err := url.Parse(strings.TrimSpace(cred.Endpoint))
+	if err != nil {
+		return fmt.Errorf("parse endpoint: %w", err)
+	}
+	httpClient := c.httpClient(cred)
+
+	vm, err := c.findQEMUVM(httpClient, base, cred, proxmoxNodeName, vmName)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(strings.ToLower(vm.Status)) != "running" {
+		return fmt.Errorf("vm %q must be running to set guest hostname", vmName)
+	}
+
+	form := url.Values{}
+	form.Set("hostname", hostname)
+
+	reqURL := *base
+	reqURL.Path = path.Join(reqURL.Path, "/api2/json/nodes", proxmoxNodeName, "qemu", strconv.Itoa(vm.VMID), "agent", "set-host-name")
+	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create guest hostname request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := c.authorizeRequest(httpClient, base, req, cred); err != nil {
+		return err
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request proxmox guest hostname update: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("proxmox guest hostname api returned status %d: %s", resp.StatusCode, responseErrorMessage(resp))
+	}
+	return nil
+}
+
 func (c *Client) SetVMUserPasswordByName(cred Credential, proxmoxNodeName string, vmName string, username string, password string) error {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)
