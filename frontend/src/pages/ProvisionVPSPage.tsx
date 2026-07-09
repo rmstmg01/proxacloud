@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus, Server } from 'lucide-react';
-import { createVPSInstance, discoverVPSCloudInitImages, getVPSCloudInitImages } from '../api/vps';
+import { createVPSInstance, discoverVPSCloudInitImages } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getCredentials, getNodes } from '../api/proxmox';
 import { createSSHKey, getSSHKeys } from '../api/sshKeys';
@@ -115,11 +115,11 @@ export function ProvisionVPSPage() {
   const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
-  const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
   const [showRootPassword, setShowRootPassword] = useState(false);
   const [passwordCopied, setPasswordCopied] = useState(false);
+  const [discoveredImages, setDiscoveredImages] = useState<VPSCloudInitImage[]>([]);
   const lastAutoDiscoveryKey = useRef('');
   const [sshForm, setSSHForm] = useState({
     name: '',
@@ -151,8 +151,8 @@ export function ProvisionVPSPage() {
     [proxmoxNodes, form.proxmox_credential_id],
   );
   const sharedImages = useMemo(
-    () => (images ?? []).filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
-    [images],
+    () => discoveredImages.filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
+    [discoveredImages],
   );
 
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
@@ -211,24 +211,34 @@ export function ProvisionVPSPage() {
   const discoverImagesMutation = useMutation({
     mutationFn: () => discoverVPSCloudInitImages(form.proxmox_credential_id, form.proxmox_node_name),
     onSuccess: (discovered) => {
-      queryClient.setQueryData<VPSCloudInitImage[]>(['vps-cloud-init-images'], (current = []) => {
-        const merged = new Map<number, VPSCloudInitImage>();
-        current
-          .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
-          .forEach((image) => merged.set(image.id, image));
-        discovered.forEach((image) => merged.set(image.id, image));
-        return Array.from(merged.values()).sort((a, b) => {
+      const cloudImages = discovered
+        .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
+        .sort((a, b) => {
           if (a.is_default !== b.is_default) {
             return a.is_default ? -1 : 1;
           }
           return a.name.localeCompare(b.name);
         });
+      setDiscoveredImages(cloudImages);
+      const preferred = cloudImages.find((image) => image.image_path.toLowerCase().includes('almalinux')) ?? cloudImages[0];
+      setForm((prev) => {
+        if (preferred) {
+          return applyImageDefaults(prev, preferred);
+        }
+        return {
+          ...prev,
+          cloud_init_image_id: 0,
+          cloud_init_image_path: '',
+        };
       });
-      queryClient.invalidateQueries({ queryKey: ['vps-cloud-init-images'] });
-      const preferred = discovered.find((image) => image.image_path.toLowerCase().includes('almalinux')) ?? discovered[0];
-      if (preferred) {
-        setForm((prev) => applyImageDefaults(prev, preferred));
-      }
+    },
+    onError: () => {
+      setDiscoveredImages([]);
+      setForm((prev) => ({
+        ...prev,
+        cloud_init_image_id: 0,
+        cloud_init_image_path: '',
+      }));
     },
   });
 
@@ -241,6 +251,12 @@ export function ProvisionVPSPage() {
       return;
     }
     lastAutoDiscoveryKey.current = discoveryKey;
+    setDiscoveredImages([]);
+    setForm((prev) => ({
+      ...prev,
+      cloud_init_image_id: 0,
+      cloud_init_image_path: '',
+    }));
     discoverImagesMutation.mutate();
   }, [discoverImagesMutation, form.proxmox_credential_id, form.proxmox_node_name]);
 
@@ -316,7 +332,11 @@ export function ProvisionVPSPage() {
                   ...prev,
                   proxmox_credential_id: Number(event.target.value),
                   proxmox_node_name: '',
+                  cloud_init_image_id: 0,
+                  cloud_init_image_path: '',
                 }));
+                setDiscoveredImages([]);
+                lastAutoDiscoveryKey.current = '';
               }}
               required
             >
@@ -330,7 +350,15 @@ export function ProvisionVPSPage() {
             <Select
               label="Proxmox node"
               value={form.proxmox_node_name}
-              onChange={(event) => setField('proxmox_node_name', event.target.value)}
+              onChange={(event) => {
+                setForm((prev) => ({
+                  ...prev,
+                  proxmox_node_name: event.target.value,
+                  cloud_init_image_id: 0,
+                  cloud_init_image_path: '',
+                }));
+                setDiscoveredImages([]);
+              }}
               required
             >
               <option value="">-- Select node --</option>
