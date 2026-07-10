@@ -558,7 +558,6 @@ export function VPSDetailPage() {
               ) : tunnel ? (
                 <div className="space-y-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge status={tunnel.status} />
                     <span className="text-sm text-slate-500">{tunnel.public_hostname}</span>
                   </div>
                   {tunnel.last_error && <Alert variant="error" title="Tunnel setup failed">{tunnel.last_error}</Alert>}

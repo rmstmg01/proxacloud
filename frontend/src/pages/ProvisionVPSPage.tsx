@@ -280,7 +280,7 @@ export function ProvisionVPSPage() {
     if (createDisabled) {
       return;
     }
-    createMutation.mutate(form);
+    createMutation.mutate({ ...form, apply: true });
   };
 
   const handleGenerateRootPassword = () => {
@@ -308,7 +308,7 @@ export function ProvisionVPSPage() {
     <Layout>
       <PageHeader
         title="Create VPS"
-        description="Deploy a standalone cloud-init VM on Proxmox"
+        description="Deploy a VPS"
         actions={
           <Link to="/vps" className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 text-sm">
             <ArrowLeft className="h-4 w-4" /> Back
@@ -572,20 +572,6 @@ export function ProvisionVPSPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardContent>
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.apply}
-                onChange={(event) => setField('apply', event.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-              />
-              <span className="text-sm text-slate-700">Deploy immediately with Terraform apply</span>
-            </label>
-          </CardContent>
-        </Card>
-
         {form.ssh_key_pair_id === 0 && form.root_password.trim() === '' && (
           <Alert variant="warning" title="Access method required">
             Select an SSH key or set a root password before creating the VPS.
@@ -600,7 +586,7 @@ export function ProvisionVPSPage() {
             loading={createMutation.isPending}
             disabled={createDisabled}
           >
-            {form.apply ? 'Create and Deploy VPS' : 'Create VPS'}
+            Create and Deploy VPS
           </Button>
           <Button type="button" variant="secondary" size="lg" onClick={() => navigate('/vps')}>
             Cancel
