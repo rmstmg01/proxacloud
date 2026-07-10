@@ -132,6 +132,7 @@ type CreateCloudInitImageRequest struct {
 type Instance struct {
 	ID                  int64     `json:"id"`
 	CustomerAccountID   int64     `json:"customer_account_id,omitempty"`
+	OwnerUsername       string    `json:"owner_username,omitempty"`
 	Name                string    `json:"name"`
 	Description         string    `json:"description"`
 	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
@@ -259,7 +260,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 }
 
 func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), COALESCE(owner.username, ''), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id LEFT JOIN customer_accounts ca ON ca.id = v.customer_account_id LEFT JOIN users owner ON owner.id = ca.owner_user_id`
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE v.customer_account_id = $1`
@@ -289,7 +290,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		scope = scopes[0]
 	}
 	var rec Instance
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), COALESCE(owner.username, ''), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id LEFT JOIN customer_accounts ca ON ca.id = v.customer_account_id LEFT JOIN users owner ON owner.id = ca.owner_user_id WHERE v.id = $1`
 	args := []any{id}
 	if scope.IsCustomer() {
 		query += ` AND v.customer_account_id = $2`
@@ -298,6 +299,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 	err := s.db.QueryRow(query, args...).Scan(
 		&rec.ID,
 		&rec.CustomerAccountID,
+		&rec.OwnerUsername,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
@@ -1600,6 +1602,7 @@ func scanInstance(rows interface {
 	return rows.Scan(
 		&rec.ID,
 		&rec.CustomerAccountID,
+		&rec.OwnerUsername,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,

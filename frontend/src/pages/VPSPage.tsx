@@ -18,10 +18,13 @@ import { Input } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
+import { useAuth } from '../context/AuthContext';
 import type { VPSInstance } from '../types';
 
 export function VPSPage() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const showAssignedTo = user?.role === 'super_user' || user?.role === 'super_admin';
   const [deleteTarget, setDeleteTarget] = useState<VPSInstance | null>(null);
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [editTarget, setEditTarget] = useState<VPSInstance | null>(null);
@@ -89,7 +92,7 @@ export function VPSPage() {
     <Layout>
       <PageHeader
         title="VPS"
-        description="Create and manage standalone cloud-init VMs on Proxmox"
+        description="Create and manage standalone cloud-init VMs"
         actions={
           <Link
             to="/vps/new"
@@ -132,6 +135,7 @@ export function VPSPage() {
                     <th className="text-left px-6 py-3 font-medium text-slate-600">IP</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Resources</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
+                    {showAssignedTo && <th className="text-left px-6 py-3 font-medium text-slate-600">Assigned To</th>}
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
                     <th className="px-6 py-3" />
                   </tr>
@@ -150,6 +154,11 @@ export function VPSPage() {
                       <td className="px-6 py-4">
                         <StatusBadge status={item.status} />
                       </td>
+                      {showAssignedTo && (
+                        <td className="px-6 py-4 text-slate-600">
+                          {item.owner_username || 'Unassigned'}
+                        </td>
+                      )}
                       <td className="px-6 py-4 text-slate-500">{new Date(item.created_at).toLocaleDateString()}</td>
                       <td className="px-6 py-4">
                         <div className="flex items-center justify-end gap-2">

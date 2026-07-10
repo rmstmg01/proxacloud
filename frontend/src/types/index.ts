@@ -375,6 +375,8 @@ export interface VPSCloudInitImage {
 
 export interface VPSInstance {
   id: number;
+  customer_account_id?: number;
+  owner_username?: string;
   name: string;
   description: string;
   proxmox_credential_id: number;
