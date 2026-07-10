@@ -380,6 +380,7 @@ export interface VPSInstance {
   proxmox_credential_id: number;
   proxmox_node_name: string;
   region_id?: number;
+  region_name?: string;
   network_profile_id: number;
   network_name?: string;
   cloud_init_image_id: number;

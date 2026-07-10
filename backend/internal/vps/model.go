@@ -137,6 +137,7 @@ type Instance struct {
 	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
 	ProxmoxNodeName     string    `json:"proxmox_node_name"`
 	RegionID            int64     `json:"region_id,omitempty"`
+	RegionName          string    `json:"region_name,omitempty"`
 	NetworkProfileID    int64     `json:"network_profile_id"`
 	NetworkName         string    `json:"network_name,omitempty"`
 	CloudInitImageID    int64     `json:"cloud_init_image_id"`
@@ -258,7 +259,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 }
 
 func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE v.customer_account_id = $1`
@@ -288,7 +289,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		scope = scopes[0]
 	}
 	var rec Instance
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
 	args := []any{id}
 	if scope.IsCustomer() {
 		query += ` AND v.customer_account_id = $2`
@@ -302,6 +303,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		&rec.ProxmoxCredentialID,
 		&rec.ProxmoxNodeName,
 		&rec.RegionID,
+		&rec.RegionName,
 		&rec.NetworkProfileID,
 		&rec.NetworkName,
 		&rec.CloudInitImageID,
@@ -1608,6 +1610,7 @@ func scanInstance(rows interface {
 		&rec.ProxmoxCredentialID,
 		&rec.ProxmoxNodeName,
 		&rec.RegionID,
+		&rec.RegionName,
 		&rec.NetworkProfileID,
 		&rec.NetworkName,
 		&rec.CloudInitImageID,

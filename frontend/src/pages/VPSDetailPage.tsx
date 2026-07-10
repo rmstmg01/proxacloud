@@ -421,6 +421,7 @@ export function VPSDetailPage() {
                 <Info label="Resources" value={`${vps.cpu} vCPU / ${vps.memory_mb} MB / ${vps.disk_gb} GB`} />
                 <Info label="SSH user" value={vps.ssh_user} />
                 <Info label="Cloud image" value={formatCloudImageName(vps.cloud_init_image_path)} />
+                <Info label="Location" value={vps.region_name || '-'} />
                 <Info label="Created" value={new Date(vps.created_at).toLocaleString()} />
               </dl>
             </CardContent>
