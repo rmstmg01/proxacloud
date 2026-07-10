@@ -61,11 +61,20 @@ export const discoverVPSCloudInitImages = (credentialID: number, nodeName: strin
     })
     .then((r) => r.data);
 
+export const discoverVPSCloudInitImagesForRegion = (regionID: number, storageID = 'cloud-images') =>
+  client
+    .post<VPSCloudInitImage[]>('/vps/cloud-init-images/discover', {
+      region_id: regionID,
+      storage_id: storageID,
+    })
+    .then((r) => r.data);
+
 export const createVPSInstance = (body: {
   name: string;
   description: string;
   proxmox_credential_id: number;
   proxmox_node_name: string;
+  region_id: number;
   network_profile_id: number;
   cloud_init_image_id: number;
   cloud_init_image_path: string;

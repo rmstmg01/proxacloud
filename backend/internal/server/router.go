@@ -28,6 +28,7 @@ import (
 	"proxacloud/backend/internal/proxacloudtunnels"
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/regions"
 	"proxacloud/backend/internal/secrets"
 	"proxacloud/backend/internal/sshkeys"
 	"proxacloud/backend/internal/sslcerts"
@@ -66,6 +67,7 @@ func NewApp() (*App, error) {
 	}
 
 	networkService := networks.NewService(database)
+	regionService := regions.NewService(database)
 	secretStore, err := secrets.NewDBStore(database, cfg.SecretEncryptionKey)
 	if err != nil {
 		_ = database.Close()
@@ -112,6 +114,7 @@ func NewApp() (*App, error) {
 		sshKeyService,
 		secretStore,
 		terraformRunner,
+		regionService,
 		cfg.TerraformAutoApply,
 	)
 	containerService := containers.NewService(
@@ -189,6 +192,7 @@ func NewApp() (*App, error) {
 	}, tunnelAPIClient, mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
+	regionHandler := regions.NewHandler(regionService)
 	proxmoxHandler := proxmox.NewHandler(proxmoxService)
 	sshKeyHandler := sshkeys.NewHandler(sshKeyService)
 	sslCertHandler := sslcerts.NewHandler(sslCertService)
@@ -296,6 +300,13 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/networks/node-tags", networkHandler.ListNodeTags)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/networks/node-tags/{nodeName}", networkHandler.UpsertNodeTag)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/networks/node-tags/{nodeName}", networkHandler.DeleteNodeTag)
+
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/regions", regionHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/regions", regionHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}", regionHandler.Update)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/regions/{id}", regionHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}/nodes", regionHandler.SetNodes)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}/networks", regionHandler.SetNetworks)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/proxmox/credentials", proxmoxHandler.CreateCredential)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/proxmox/credentials", proxmoxHandler.ListCredentials)

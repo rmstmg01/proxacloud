@@ -51,6 +51,11 @@ type NodeInventory interface {
 	ListEnabledNodes() ([]proxmox.Node, error)
 }
 
+type RegionStore interface {
+	PickNode(regionID int64) (int64, string, error)
+	NetworkAllowed(regionID int64, networkProfileID int64) (bool, error)
+}
+
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
@@ -77,6 +82,7 @@ type Service struct {
 	sshKeys            SSHKeyPairStore
 	secrets            secrets.Store
 	terraformRunner    *terraform.Runner
+	regions            RegionStore
 	autoApply          bool
 	tunnelConfig       TunnelConfig
 	tunnelClient       tunnelAPI
@@ -130,6 +136,7 @@ type Instance struct {
 	Description         string    `json:"description"`
 	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
 	ProxmoxNodeName     string    `json:"proxmox_node_name"`
+	RegionID            int64     `json:"region_id,omitempty"`
 	NetworkProfileID    int64     `json:"network_profile_id"`
 	NetworkName         string    `json:"network_name,omitempty"`
 	CloudInitImageID    int64     `json:"cloud_init_image_id"`
@@ -164,6 +171,7 @@ type CreateRequest struct {
 	Description         string `json:"description"`
 	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
 	ProxmoxNodeName     string `json:"proxmox_node_name"`
+	RegionID            int64  `json:"region_id"`
 	NetworkProfileID    int64  `json:"network_profile_id"`
 	CloudInitImageID    int64  `json:"cloud_init_image_id"`
 	CloudInitImagePath  string `json:"cloud_init_image_path"`
@@ -234,7 +242,7 @@ type ConsoleResponse struct {
 	Warnings      []string `json:"warnings"`
 }
 
-func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, autoApply bool) *Service {
+func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInventory, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, terraformRunner *terraform.Runner, regionStore RegionStore, autoApply bool) *Service {
 	return &Service{
 		db:                 db,
 		networks:           networkStore,
@@ -243,13 +251,14 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 		sshKeys:            sshKeys,
 		secrets:            secretStore,
 		terraformRunner:    terraformRunner,
+		regions:            regionStore,
 		autoApply:          autoApply,
 		consoleSessions:    make(map[string]consoleSessionRecord),
 	}
 }
 
 func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id`
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE v.customer_account_id = $1`
@@ -279,7 +288,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		scope = scopes[0]
 	}
 	var rec Instance
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
+	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN network_profiles n ON n.id = v.network_profile_id WHERE v.id = $1`
 	args := []any{id}
 	if scope.IsCustomer() {
 		query += ` AND v.customer_account_id = $2`
@@ -292,6 +301,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
 		&rec.ProxmoxNodeName,
+		&rec.RegionID,
 		&rec.NetworkProfileID,
 		&rec.NetworkName,
 		&rec.CloudInitImageID,
@@ -605,6 +615,25 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		return CreateResponse{}, err
 	}
 
+	if req.RegionID > 0 {
+		if s.regions == nil {
+			return CreateResponse{}, errors.New("regions are not configured")
+		}
+		credentialID, nodeName, err := s.regions.PickNode(req.RegionID)
+		if err != nil {
+			return CreateResponse{}, err
+		}
+		req.ProxmoxCredentialID = credentialID
+		req.ProxmoxNodeName = nodeName
+		allowed, err := s.regions.NetworkAllowed(req.RegionID, req.NetworkProfileID)
+		if err != nil {
+			return CreateResponse{}, err
+		}
+		if !allowed {
+			return CreateResponse{}, errors.New("selected network is not available in this location")
+		}
+	}
+
 	network, err := s.networks.GetByID(req.NetworkProfileID)
 	if err != nil {
 		return CreateResponse{}, fmt.Errorf("load network profile: %w", err)
@@ -664,14 +693,15 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	var vpsID int64
 	err = s.db.QueryRow(
-		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, NULLIF($7, 0), $8, NULLIF($9, 0), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, 'created')
+		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, region_id, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, NULLIF($10, 0), $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'created')
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
 		req.Description,
 		req.ProxmoxCredentialID,
 		req.ProxmoxNodeName,
+		req.RegionID,
 		req.NetworkProfileID,
 		req.CloudInitImageID,
 		req.CloudInitImagePath,
@@ -1112,6 +1142,20 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string, storageID 
 	return discovered, nil
 }
 
+func (s *Service) DiscoverImagesForRegion(regionID int64, storageID ...string) ([]CloudInitImage, error) {
+	if regionID <= 0 {
+		return nil, errors.New("region_id is required")
+	}
+	if s.regions == nil {
+		return nil, errors.New("regions are not configured")
+	}
+	credentialID, nodeName, err := s.regions.PickNode(regionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.DiscoverImages(credentialID, nodeName, storageID...)
+}
+
 func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	req.Name = sanitizeName(req.Name)
 	req.Description = strings.TrimSpace(req.Description)
@@ -1127,10 +1171,10 @@ func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	if req.Name == "" {
 		return errors.New("name is required")
 	}
-	if req.ProxmoxCredentialID <= 0 {
+	if req.RegionID <= 0 && req.ProxmoxCredentialID <= 0 {
 		return errors.New("proxmox_credential_id is required")
 	}
-	if req.ProxmoxNodeName == "" {
+	if req.RegionID <= 0 && req.ProxmoxNodeName == "" {
 		return errors.New("proxmox_node_name is required")
 	}
 	if req.NetworkProfileID <= 0 {
@@ -1563,6 +1607,7 @@ func scanInstance(rows interface {
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
 		&rec.ProxmoxNodeName,
+		&rec.RegionID,
 		&rec.NetworkProfileID,
 		&rec.NetworkName,
 		&rec.CloudInitImageID,

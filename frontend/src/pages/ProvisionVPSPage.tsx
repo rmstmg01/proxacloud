@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus, Server } from 'lucide-react';
-import { createVPSInstance, discoverVPSCloudInitImages } from '../api/vps';
+import { createVPSInstance, discoverVPSCloudInitImagesForRegion } from '../api/vps';
 import { getNetworks } from '../api/networks';
-import { getCredentials, getNodes } from '../api/proxmox';
+import { getRegions } from '../api/regions';
 import { createSSHKey, getSSHKeys } from '../api/sshKeys';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -112,8 +112,7 @@ export function ProvisionVPSPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
-  const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
-  const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
+  const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
@@ -132,6 +131,7 @@ export function ProvisionVPSPage() {
     description: '',
     proxmox_credential_id: 0,
     proxmox_node_name: '',
+    region_id: 0,
     network_profile_id: 0,
     cloud_init_image_id: 0,
     cloud_init_image_path: '',
@@ -146,10 +146,15 @@ export function ProvisionVPSPage() {
     apply: true,
   });
 
-  const enabledNodes = useMemo(
-    () => (proxmoxNodes ?? []).filter((node) => node.enabled && (!form.proxmox_credential_id || node.credential_id === form.proxmox_credential_id)),
-    [proxmoxNodes, form.proxmox_credential_id],
-  );
+  const enabledRegions = useMemo(() => (regions ?? []).filter((region) => region.enabled && region.nodes.some((node) => node.enabled)), [regions]);
+  const selectedRegion = useMemo(() => enabledRegions.find((region) => region.id === form.region_id), [enabledRegions, form.region_id]);
+  const availableNetworks = useMemo(() => {
+    if (!selectedRegion) {
+      return [];
+    }
+    const allowedIDs = new Set(selectedRegion.networks.map((network) => network.id));
+    return (networks ?? []).filter((network) => allowedIDs.has(network.id));
+  }, [networks, selectedRegion]);
   const sharedImages = useMemo(
     () => discoveredImages.filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
     [discoveredImages],
@@ -157,16 +162,29 @@ export function ProvisionVPSPage() {
 
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
   const createDisabled =
+    form.region_id === 0 ||
+    form.network_profile_id === 0 ||
     form.cloud_init_image_path.trim() === '' ||
     (form.ssh_key_pair_id === 0 && form.root_password.trim() === '') ||
     passwordError !== '';
 
   useEffect(() => {
-    const defaultNetwork = networks?.find((network) => network.is_default) ?? networks?.[0];
-    if (defaultNetwork && form.network_profile_id === 0) {
-      setForm((prev) => ({ ...prev, network_profile_id: defaultNetwork.id }));
+    const defaultRegion = enabledRegions.find((region) => region.is_default) ?? enabledRegions[0];
+    if (defaultRegion && form.region_id === 0) {
+      setForm((prev) => ({ ...prev, region_id: defaultRegion.id }));
     }
-  }, [networks, form.network_profile_id]);
+  }, [enabledRegions, form.region_id]);
+
+  useEffect(() => {
+    if (!selectedRegion) {
+      return;
+    }
+    const defaultNetwork = availableNetworks.find((network) => network.is_default) ?? availableNetworks[0];
+    if (form.network_profile_id !== 0 && availableNetworks.some((network) => network.id === form.network_profile_id)) {
+      return;
+    }
+    setForm((prev) => ({ ...prev, network_profile_id: defaultNetwork?.id ?? 0 }));
+  }, [availableNetworks, form.network_profile_id, selectedRegion]);
 
   useEffect(() => {
     const defaultImage = sharedImages.find((image) => image.is_default) ?? sharedImages[0];
@@ -174,21 +192,6 @@ export function ProvisionVPSPage() {
       setForm((prev) => applyImageDefaults(prev, defaultImage));
     }
   }, [sharedImages, form.cloud_init_image_id, form.cloud_init_image_path]);
-
-  useEffect(() => {
-    if (form.proxmox_credential_id === 0 && credentials && credentials.length > 0) {
-      setForm((prev) => ({ ...prev, proxmox_credential_id: credentials[0].id }));
-    }
-  }, [credentials, form.proxmox_credential_id]);
-
-  useEffect(() => {
-    if (form.proxmox_node_name !== '' && enabledNodes.some((node) => node.node_name === form.proxmox_node_name)) {
-      return;
-    }
-    if (enabledNodes[0]) {
-      setForm((prev) => ({ ...prev, proxmox_node_name: enabledNodes[0].node_name }));
-    }
-  }, [enabledNodes, form.proxmox_node_name]);
 
   const createMutation = useMutation({
     mutationFn: createVPSInstance,
@@ -209,7 +212,7 @@ export function ProvisionVPSPage() {
   });
 
   const discoverImagesMutation = useMutation({
-    mutationFn: () => discoverVPSCloudInitImages(form.proxmox_credential_id, form.proxmox_node_name),
+    mutationFn: () => discoverVPSCloudInitImagesForRegion(form.region_id),
     onSuccess: (discovered) => {
       const cloudImages = discovered
         .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
@@ -243,10 +246,10 @@ export function ProvisionVPSPage() {
   });
 
   useEffect(() => {
-    if (form.proxmox_credential_id === 0 || form.proxmox_node_name === '') {
+    if (form.region_id === 0) {
       return;
     }
-    const discoveryKey = `${form.proxmox_credential_id}:${form.proxmox_node_name}`;
+    const discoveryKey = `region:${form.region_id}`;
     if (lastAutoDiscoveryKey.current === discoveryKey || discoverImagesMutation.isPending) {
       return;
     }
@@ -258,7 +261,7 @@ export function ProvisionVPSPage() {
       cloud_init_image_path: '',
     }));
     discoverImagesMutation.mutate();
-  }, [discoverImagesMutation, form.proxmox_credential_id, form.proxmox_node_name]);
+  }, [discoverImagesMutation, form.region_id]);
 
   const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -325,13 +328,13 @@ export function ProvisionVPSPage() {
               placeholder="Production web VM"
             />
             <Select
-              label="Proxmox credential"
-              value={form.proxmox_credential_id}
+              label="Location"
+              value={form.region_id}
               onChange={(event) => {
                 setForm((prev) => ({
                   ...prev,
-                  proxmox_credential_id: Number(event.target.value),
-                  proxmox_node_name: '',
+                  region_id: Number(event.target.value),
+                  network_profile_id: 0,
                   cloud_init_image_id: 0,
                   cloud_init_image_path: '',
                 }));
@@ -340,31 +343,10 @@ export function ProvisionVPSPage() {
               }}
               required
             >
-              <option value={0}>-- Select credential --</option>
-              {credentials?.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.name} ({credential.endpoint})
-                </option>
-              ))}
-            </Select>
-            <Select
-              label="Proxmox node"
-              value={form.proxmox_node_name}
-              onChange={(event) => {
-                setForm((prev) => ({
-                  ...prev,
-                  proxmox_node_name: event.target.value,
-                  cloud_init_image_id: 0,
-                  cloud_init_image_path: '',
-                }));
-                setDiscoveredImages([]);
-              }}
-              required
-            >
-              <option value="">-- Select node --</option>
-              {enabledNodes.map((node) => (
-                <option key={`${node.credential_id}-${node.node_name}`} value={node.node_name}>
-                  {node.node_name}
+              <option value={0}>-- Select location --</option>
+              {enabledRegions.map((region) => (
+                <option key={region.id} value={region.id}>
+                  {region.name}
                 </option>
               ))}
             </Select>
@@ -416,7 +398,7 @@ export function ProvisionVPSPage() {
               required
             >
               <option value={0}>-- Select subnet --</option>
-              {networks?.map((network) => (
+              {availableNetworks.map((network) => (
                 <option key={network.id} value={network.id}>
                   {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr}) {network.is_default ? '(default)' : ''}
                 </option>

@@ -98,6 +98,38 @@ export interface NetworkReservedIP {
 
 // ─── Proxmox ──────────────────────────────────────────────────────────────────
 
+export interface RegionNode {
+  id: number;
+  credential_id: number;
+  credential_name?: string;
+  node_name: string;
+  enabled: boolean;
+  status: string;
+}
+
+export interface RegionNetwork {
+  id: number;
+  vpc_id: number;
+  vpc_name?: string;
+  name: string;
+  cidr: string;
+  bridge: string;
+  vlan: number;
+}
+
+export interface Region {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  enabled: boolean;
+  is_default: boolean;
+  nodes: RegionNode[];
+  networks: RegionNetwork[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface NetworkIPUsageEntry {
   ip_address: string;
   status: 'used' | 'reserved' | 'detected' | 'conflict' | string;
@@ -347,6 +379,7 @@ export interface VPSInstance {
   description: string;
   proxmox_credential_id: number;
   proxmox_node_name: string;
+  region_id?: number;
   network_profile_id: number;
   network_name?: string;
   cloud_init_image_id: number;
