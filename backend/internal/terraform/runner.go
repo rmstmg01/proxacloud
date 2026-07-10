@@ -233,9 +233,7 @@ func (r *Runner) PrepareStandaloneVPSWorkspace(spec StandaloneVPSSpec) (string, 
 	if spec.DiskGB <= 0 {
 		spec.DiskGB = 20
 	}
-	if strings.TrimSpace(spec.SSHUser) == "" {
-		spec.SSHUser = "ubuntu"
-	}
+	spec.SSHUser = "root"
 
 	workspaceKey := strings.TrimSpace(spec.WorkspaceKey)
 	if workspaceKey == "" {
@@ -1093,20 +1091,13 @@ ssh_pwauth: {{ if .RootPassword }}true{{ else }}false{{ end }}
 disable_root: false
 users:
   - name: {{ .SSHUser }}
+    lock_passwd: false
     shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: sudo
 {{- if .SSHPublicKey }}
     ssh_authorized_keys:
       - {{ .SSHPublicKey }}
 {{- end }}
 {{- if .RootPassword }}
-  - name: root
-    lock_passwd: false
-{{- if .SSHPublicKey }}
-    ssh_authorized_keys:
-      - {{ .SSHPublicKey }}
-{{- end }}
 chpasswd:
   expire: false
   list: |

@@ -22,7 +22,7 @@ function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_
     ...prev,
     cloud_init_image_id: image.id,
     cloud_init_image_path: image.image_path,
-    ssh_user: image.ssh_user || prev.ssh_user,
+    ssh_user: 'root',
     cpu: image.default_cpu || prev.cpu,
     memory_mb: image.default_memory_mb || prev.memory_mb,
     disk_gb: image.default_disk_gb || prev.disk_gb,
@@ -122,7 +122,7 @@ export function ProvisionVPSPage() {
   const lastAutoDiscoveryKey = useRef('');
   const [sshForm, setSSHForm] = useState({
     name: '',
-    ssh_user: 'ubuntu',
+    ssh_user: 'root',
     public_key: '',
     private_key: '',
   });
@@ -136,7 +136,7 @@ export function ProvisionVPSPage() {
     cloud_init_image_id: 0,
     cloud_init_image_path: '',
     ssh_key_pair_id: 0,
-    ssh_user: 'ubuntu',
+    ssh_user: 'root',
     ip_mode: 'auto' as 'dhcp' | 'manual' | 'auto',
     ip_address: '',
     cpu: 1,
@@ -158,6 +158,14 @@ export function ProvisionVPSPage() {
   const sharedImages = useMemo(
     () => discoveredImages.filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
     [discoveredImages],
+  );
+  const selectedNetwork = useMemo(
+    () => availableNetworks.find((network) => network.id === form.network_profile_id),
+    [availableNetworks, form.network_profile_id],
+  );
+  const selectedImage = useMemo(
+    () => sharedImages.find((image) => image.id === form.cloud_init_image_id || image.image_path === form.cloud_init_image_path),
+    [sharedImages, form.cloud_init_image_id, form.cloud_init_image_path],
   );
 
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
@@ -206,7 +214,7 @@ export function ProvisionVPSPage() {
     onSuccess: (key) => {
       queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
       setForm((prev) => ({ ...prev, ssh_key_pair_id: key.id }));
-      setSSHForm({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+      setSSHForm({ name: '', ssh_user: 'root', public_key: '', private_key: '' });
       setSSHModalOpen(false);
     },
   });
@@ -451,7 +459,9 @@ export function ProvisionVPSPage() {
             <Input
               label="SSH user"
               value={form.ssh_user}
-              onChange={(event) => setField('ssh_user', event.target.value)}
+              onChange={() => setField('ssh_user', 'root')}
+              helperText="VPS login details always use the root user."
+              readOnly
               required
             />
             <div className="space-y-2">
@@ -519,7 +529,7 @@ export function ProvisionVPSPage() {
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
                             <span>{meta.label}</span>
                             {image.is_default && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">default</span>}
-                            <span>{image.ssh_user || 'cloud-user'}</span>
+                            <span>root login</span>
                             <span>{image.default_cpu || 2} vCPU</span>
                             <span>{image.default_memory_mb || 2048} MB</span>
                             <span>{image.default_disk_gb || 20} GB</span>
@@ -538,6 +548,27 @@ export function ProvisionVPSPage() {
               </div>
             )}
             {discoverImagesMutation.error && <ErrorMessage error={discoverImagesMutation.error} />}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Deployment Plan</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {[
+              ['Location', selectedRegion?.name || 'Select location'],
+              ['Subnet', selectedNetwork ? `${selectedNetwork.vpc_name || 'default-vpc'} / ${selectedNetwork.name}` : 'Select subnet'],
+              ['Image', selectedImage?.name || imageFilename(form.cloud_init_image_path) || 'Select image'],
+              ['Access', `root via ${form.ssh_key_pair_id === 0 ? 'root password' : 'SSH key'}${form.root_password.trim() ? ' + password' : ''}`],
+              ['Resources', `${form.cpu} vCPU, ${form.memory_mb} MB RAM, ${form.disk_gb} GB disk`],
+              ['IP assignment', form.ip_mode === 'manual' ? form.ip_address || 'Manual IP required' : form.ip_mode === 'dhcp' ? 'DHCP' : 'Auto assign from network'],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-xs font-medium uppercase text-slate-500">{label}</p>
+                <p className="mt-1 truncate text-sm font-semibold text-slate-900">{value}</p>
+              </div>
+            ))}
           </CardContent>
         </Card>
 
@@ -580,7 +611,7 @@ export function ProvisionVPSPage() {
       <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add SSH Key Pair">
         <form onSubmit={handleCreateSSH} className="space-y-4">
           <Input label="Name" value={sshForm.name} onChange={(event) => setSSHForm({ ...sshForm, name: event.target.value })} required />
-          <Input label="SSH user" value={sshForm.ssh_user} onChange={(event) => setSSHForm({ ...sshForm, ssh_user: event.target.value })} required />
+          <Input label="SSH user" value={sshForm.ssh_user} onChange={() => setSSHForm({ ...sshForm, ssh_user: 'root' })} helperText="VPS access uses root." readOnly required />
           <Textarea label="Public key" value={sshForm.public_key} onChange={(event) => setSSHForm({ ...sshForm, public_key: event.target.value })} rows={3} required />
           <Textarea label="Private key" value={sshForm.private_key} onChange={(event) => setSSHForm({ ...sshForm, private_key: event.target.value })} rows={6} required />
           {createSSHMutation.error && <ErrorMessage error={createSSHMutation.error} />}

@@ -416,12 +416,19 @@ func (s *Service) EmailTunnelDetails(vpsID int64) error {
 			password = strings.TrimSpace(string(val))
 		}
 	}
+	passwordDisplay := password
+	passwordNotice := "Please change this password immediately after your first login."
+	if passwordDisplay == "" {
+		passwordDisplay = "Not stored (SSH key authentication only)"
+		passwordNotice = "If you enable password login later, change the initial password immediately."
+	}
 
-	body := fmt.Sprintf("Hello %s,\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nHostname: %s\nUsername: root\nPassword: %s\n\nSSH Port: %d\n\nProxaOps Cloud\n",
+	body := fmt.Sprintf("Hello %s,\n\n== ProxaOps Cloud VPS Access ==\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nLogin details\nHostname: %s\nSSH User: root\nPassword: %s\nSSH Port: %d\n\n%s\n\n--\nProxaOps Cloud\n",
 		name,
 		attachment.PublicHostname,
-		password,
+		passwordDisplay,
 		attachment.PublicPort,
+		passwordNotice,
 	)
 	if err := s.mailer.Send(email, subject, body); err != nil {
 		return fmt.Errorf("send vps tunnel access email: %w", err)

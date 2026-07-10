@@ -652,13 +652,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	req.CloudInitImageID = image.ID
 	req.CloudInitImagePath = image.ImagePath
 
-	sshUser := strings.TrimSpace(req.SSHUser)
-	if sshUser == "" {
-		sshUser = strings.TrimSpace(image.SSHUser)
-	}
-	if sshUser == "" {
-		sshUser = "ubuntu"
-	}
+	sshUser := "root"
 	sshPublicKey := ""
 	if req.SSHKeyPairID > 0 {
 		pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
