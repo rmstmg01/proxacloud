@@ -1,10 +1,9 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MapPin, Plus, Pencil, Star, Radar, RefreshCw, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Star, Radar, RefreshCw, Trash2 } from 'lucide-react';
 import { getNetworks, createNetwork, updateNetwork, deleteNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP, getVPCs, createVPC, updateVPC, deleteVPC, getNetworkIPUsage, scanNetworkIPUsage } from '../api/networks';
-import { createRegion, deleteRegion, getRegions, setRegionNetworks, setRegionNodes, updateRegion } from '../api/regions';
 import { getNodes } from '../api/proxmox';
-import type { NetworkIPUsageEntry, NetworkProfile, ProxmoxNode, Region, VPC } from '../types';
+import type { NetworkIPUsageEntry, NetworkProfile, VPC } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -25,15 +24,6 @@ type NetworkFormData = {
   is_default: boolean;
 };
 
-type RegionFormData = {
-  name: string;
-  description: string;
-  enabled: boolean;
-  is_default: boolean;
-  node_ids: number[];
-  network_profile_ids: number[];
-};
-
 const emptyForm: NetworkFormData = {
   vpc_id: 0,
   name: '',
@@ -43,15 +33,6 @@ const emptyForm: NetworkFormData = {
   bridge: 'vmbr0',
   vlan: 0,
   is_default: false,
-};
-
-const emptyRegionForm: RegionFormData = {
-  name: '',
-  description: '',
-  enabled: true,
-  is_default: false,
-  node_ids: [],
-  network_profile_ids: [],
 };
 
 function ipStatusVariant(status: string) {
@@ -140,96 +121,14 @@ function NetworkForm({
   );
 }
 
-function RegionForm({
-  initial,
-  nodes,
-  networks,
-  onSubmit,
-  loading,
-  error,
-  isEdit,
-}: {
-  initial: RegionFormData;
-  nodes: ProxmoxNode[];
-  networks: NetworkProfile[];
-  onSubmit: (data: RegionFormData) => void;
-  loading: boolean;
-  error: unknown;
-  isEdit: boolean;
-}) {
-  const [form, setForm] = useState<RegionFormData>(initial);
-  const set = <K extends keyof RegionFormData>(k: K, v: RegionFormData[K]) =>
-    setForm((f) => ({ ...f, [k]: v }));
-  const selectedNumbers = (options: HTMLCollectionOf<HTMLOptionElement>) =>
-    Array.from(options).filter((option) => option.selected).map((option) => Number(option.value));
-
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    onSubmit(form);
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <Input label="Location Name" value={form.name} onChange={(e) => set('name', e.target.value)} required placeholder="Kathmandu" />
-      <Input label="Description" value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Primary location" />
-      <label className="block">
-        <span className="block text-sm font-medium text-slate-700 mb-1">Nodes</span>
-        <select
-          multiple
-          className="h-32 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-          value={form.node_ids.map(String)}
-          onChange={(e) => set('node_ids', selectedNumbers(e.currentTarget.selectedOptions))}
-        >
-          {nodes.map((node) => (
-            <option key={node.id} value={node.id}>
-              {node.node_name} {node.enabled ? '' : '(disabled)'}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block">
-        <span className="block text-sm font-medium text-slate-700 mb-1">Subnets</span>
-        <select
-          multiple
-          className="h-36 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-          value={form.network_profile_ids.map(String)}
-          onChange={(e) => set('network_profile_ids', selectedNumbers(e.currentTarget.selectedOptions))}
-        >
-          {networks.map((network) => (
-            <option key={network.id} value={network.id}>
-              {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr})
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center gap-3">
-          <input type="checkbox" checked={form.enabled} onChange={(e) => set('enabled', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
-          <span className="text-sm text-slate-700">Enabled</span>
-        </label>
-        <label className="flex items-center gap-3">
-          <input type="checkbox" checked={form.is_default} onChange={(e) => set('is_default', e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-indigo-600" />
-          <span className="text-sm text-slate-700">Default location</span>
-        </label>
-      </div>
-      {!!error && <ErrorMessage error={error} />}
-      <Button type="submit" loading={loading}>{isEdit ? 'Save Location' : 'Create Location'}</Button>
-    </form>
-  );
-}
-
 export function NetworksPage() {
   const qc = useQueryClient();
   const { data: vpcs } = useQuery({ queryKey: ['vpcs'], queryFn: getVPCs });
   const { data: networks, isLoading, error: networksError } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
-  const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const { data: nodeTags, error: nodeTagsError } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
   const [createOpen, setCreateOpen] = useState(false);
   const [createVPCOpen, setCreateVPCOpen] = useState(false);
-  const [createRegionOpen, setCreateRegionOpen] = useState(false);
-  const [editRegion, setEditRegion] = useState<Region | null>(null);
-  const [deleteRegionTarget, setDeleteRegionTarget] = useState<Region | null>(null);
   const [editVPC, setEditVPC] = useState<VPC | null>(null);
   const [deleteVPCTarget, setDeleteVPCTarget] = useState<VPC | null>(null);
   const [editNetwork, setEditNetwork] = useState<NetworkProfile | null>(null);
@@ -346,78 +245,14 @@ export function NetworksPage() {
     },
   });
 
-  const saveRegionAssignments = async (regionID: number, form: RegionFormData) => {
-    await setRegionNodes(regionID, form.node_ids);
-    await setRegionNetworks(regionID, form.network_profile_ids);
-  };
-
-  const createRegionMut = useMutation({
-    mutationFn: async (form: RegionFormData) => {
-      const region = await createRegion({
-        name: form.name,
-        description: form.description,
-        enabled: form.enabled,
-        is_default: form.is_default,
-      });
-      await saveRegionAssignments(region.id, form);
-      return region;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['regions'] });
-      setCreateRegionOpen(false);
-    },
-  });
-
-  const updateRegionMut = useMutation({
-    mutationFn: async ({ id, form }: { id: number; form: RegionFormData }) => {
-      const region = await updateRegion(id, {
-        name: form.name,
-        description: form.description,
-        enabled: form.enabled,
-        is_default: form.is_default,
-      });
-      await saveRegionAssignments(id, form);
-      return region;
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['regions'] });
-      setEditRegion(null);
-    },
-  });
-
-  const deleteRegionMut = useMutation({
-    mutationFn: deleteRegion,
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['regions'] });
-      setDeleteRegionTarget(null);
-    },
-  });
-
   const enabledNodesByName = Array.from(
     new Map((proxmoxNodes ?? []).filter((n) => n.enabled).map((n) => [n.node_name, n])).values(),
   );
 
   const tagMap = new Map((nodeTags ?? []).map((tag) => [tag.proxmox_node_name, tag]));
   const vpcList = vpcs ?? [];
-  const regionList = regions ?? [];
-  const nodeList = proxmoxNodes ?? [];
   const defaultVPCID = vpcList.find((vpc) => vpc.is_default)?.id ?? vpcList[0]?.id ?? 0;
   const createInitialForm = { ...emptyForm, vpc_id: defaultVPCID };
-  const regionInitialForm = (region: Region | null): RegionFormData =>
-    region
-      ? {
-          name: region.name,
-          description: region.description,
-          enabled: region.enabled,
-          is_default: region.is_default,
-          node_ids: region.nodes.map((node) => node.id),
-          network_profile_ids: region.networks.map((network) => network.id),
-        }
-      : {
-          ...emptyRegionForm,
-          node_ids: nodeList.filter((node) => node.enabled).map((node) => node.id),
-          network_profile_ids: (networks ?? []).map((network) => network.id),
-        };
 
   return (
     <Layout>
@@ -426,9 +261,6 @@ export function NetworksPage() {
         description="Manage VPCs, private subnets, reserved IPs, and node network mapping."
         actions={
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setCreateRegionOpen(true)}>
-              <MapPin className="h-4 w-4" /> New Location
-            </Button>
             <Button variant="secondary" onClick={() => setCreateVPCOpen(true)}>
               <Plus className="h-4 w-4" /> New VPC
             </Button>
@@ -470,43 +302,6 @@ export function NetworksPage() {
             </Card>
           ))}
         </div>
-      )}
-      {regionList.length > 0 && (
-        <Card className="mb-6">
-          <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
-            <h3 className="text-base font-semibold text-slate-800">Locations</h3>
-          </div>
-          <div className="grid gap-4 p-6 md:grid-cols-2 xl:grid-cols-3">
-            {regionList.map((region) => (
-              <div key={region.id} className="rounded-lg border border-slate-200 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{region.name}</p>
-                    <p className="mt-1 text-xs text-slate-500">{region.description || 'Proxmox location'}</p>
-                  </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    {region.is_default && <Badge variant="success">default</Badge>}
-                    {!region.enabled && <Badge variant="warning">disabled</Badge>}
-                  </div>
-                </div>
-                <div className="mt-4 space-y-2 text-sm text-slate-600">
-                  <p>{region.nodes.length} nodes</p>
-                  <p>{region.networks.length} subnets</p>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button variant="secondary" size="sm" onClick={() => setEditRegion(region)}>
-                    <Pencil className="h-4 w-4" />
-                    Edit
-                  </Button>
-                  <Button variant="danger" size="sm" onClick={() => setDeleteRegionTarget(region)}>
-                    <Trash2 className="h-4 w-4" />
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
       )}
       {networks?.length ? (
         <Card className="mb-6">
@@ -756,54 +551,6 @@ export function NetworksPage() {
           </div>
         </Card>
       </div>
-
-      <Modal open={createRegionOpen} onClose={() => setCreateRegionOpen(false)} title="New Location">
-        <RegionForm
-          key={`create-region-${nodeList.length}-${networks?.length ?? 0}`}
-          initial={regionInitialForm(null)}
-          nodes={nodeList}
-          networks={networks ?? []}
-          onSubmit={(form) => createRegionMut.mutate(form)}
-          loading={createRegionMut.isPending}
-          error={createRegionMut.error}
-          isEdit={false}
-        />
-      </Modal>
-
-      <Modal open={!!editRegion} onClose={() => setEditRegion(null)} title="Edit Location">
-        {editRegion && (
-          <RegionForm
-            key={`edit-region-${editRegion.id}`}
-            initial={regionInitialForm(editRegion)}
-            nodes={nodeList}
-            networks={networks ?? []}
-            onSubmit={(form) => updateRegionMut.mutate({ id: editRegion.id, form })}
-            loading={updateRegionMut.isPending}
-            error={updateRegionMut.error}
-            isEdit
-          />
-        )}
-      </Modal>
-
-      <Modal open={!!deleteRegionTarget} onClose={() => setDeleteRegionTarget(null)} title="Delete Location">
-        {deleteRegionTarget && (
-          <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Delete location <span className="font-semibold text-slate-900">{deleteRegionTarget.name}</span>? This will fail if VPS records still reference it.
-            </p>
-            {deleteRegionMut.error && <ErrorMessage error={deleteRegionMut.error} />}
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setDeleteRegionTarget(null)} disabled={deleteRegionMut.isPending}>
-                Cancel
-              </Button>
-              <Button variant="danger" onClick={() => deleteRegionMut.mutate(deleteRegionTarget.id)} loading={deleteRegionMut.isPending}>
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
 
       <Modal open={createVPCOpen} onClose={() => setCreateVPCOpen(false)} title="New VPC">
         <form

@@ -22,6 +22,7 @@ import {
   Shield,
   HardDrive,
   LockKeyhole,
+  MapPin,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { Role } from '../types';
@@ -59,6 +60,7 @@ const navGroups: NavGroup[] = [
   {
     label: 'Network & Access',
     items: [
+      { to: '/regions', icon: MapPin, label: 'Region', roles: adminRoles },
       { to: '/networks', icon: Network, label: 'VPC Networks', roles: adminRoles },
       { to: '/firewalls', icon: Shield, label: 'Firewalls', roles: adminRoles },
       { to: '/ssl-certificates', icon: ShieldCheck, label: 'SSL Certs', roles: adminRoles },

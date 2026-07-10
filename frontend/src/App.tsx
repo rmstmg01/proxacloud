@@ -12,6 +12,7 @@ import { ClustersPage } from './pages/ClustersPage';
 import { ClusterDetailPage } from './pages/ClusterDetailPage';
 import { ProvisionClusterPage } from './pages/ProvisionClusterPage';
 import { NetworksPage } from './pages/NetworksPage';
+import { RegionsPage } from './pages/RegionsPage';
 import { ProxmoxPage } from './pages/ProxmoxPage';
 import { UsersPage } from './pages/UsersPage';
 import { TopologyPage } from './pages/TopologyPage';
@@ -208,6 +209,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <CommandCenterPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/regions"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <RegionsPage />
                 </ProtectedRoute>
               }
             />
