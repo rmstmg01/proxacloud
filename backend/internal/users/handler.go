@@ -124,6 +124,46 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	result, found, err := h.users.RequestPasswordReset(req.Email, h.publicAppURL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if found && h.mailer != nil {
+		body := "We received a request to reset your ProxaCloud password.\n\nUse this link to set a new password:\n\n" + result.ResetURL + "\n\nThis link expires in 1 hour. If you did not request this, you can ignore this email."
+		_ = h.mailer.Send(result.Email, "Reset your ProxaCloud password", body)
+	}
+	payload := map[string]any{"message": "If an account exists for that email, a password reset link has been sent."}
+	if found && (h.mailer == nil || !h.mailer.Enabled()) {
+		payload["reset_url"] = result.ResetURL
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token       string `json:"token"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	if err := h.users.ResetPassword(req.Token, req.NewPassword); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Password has been reset. You can sign in now."})
+}
+
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	ctxUser, ok := auth.UserFromContext(r.Context())
 	if !ok {

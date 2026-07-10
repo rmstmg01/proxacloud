@@ -145,6 +145,11 @@ type RegistrationResult struct {
 	VerificationURL string `json:"verification_url,omitempty"`
 }
 
+type PasswordResetRequestResult struct {
+	Email    string
+	ResetURL string
+}
+
 func (s *Service) RegisterClient(username, password string, profile ProfileInput, publicAppURL string) (RegistrationResult, error) {
 	username = strings.TrimSpace(strings.ToLower(username))
 	profile = normalizeProfileInput(profile)
@@ -388,6 +393,90 @@ func (s *Service) ChangeOwnPassword(username, currentPassword, newPassword strin
 	}
 	_, err = s.db.Exec(`UPDATE users SET password_hash = $2 WHERE id = $1`, user.ID, string(hash))
 	return err
+}
+
+func (s *Service) RequestPasswordReset(identifier string, publicAppURL string) (PasswordResetRequestResult, bool, error) {
+	identifier = strings.TrimSpace(strings.ToLower(identifier))
+	if identifier == "" {
+		return PasswordResetRequestResult{}, false, nil
+	}
+	var userID int64
+	var email string
+	err := s.db.QueryRow(
+		`SELECT id, email
+		   FROM users
+		  WHERE lower(username) = $1
+		     OR lower(email) = $1
+		  LIMIT 1`,
+		identifier,
+	).Scan(&userID, &email)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PasswordResetRequestResult{}, false, nil
+	}
+	if err != nil {
+		return PasswordResetRequestResult{}, false, fmt.Errorf("load user for password reset: %w", err)
+	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" {
+		return PasswordResetRequestResult{}, false, nil
+	}
+	token, tokenHash, err := newVerificationToken()
+	if err != nil {
+		return PasswordResetRequestResult{}, false, err
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+		 VALUES ($1, $2, NOW() + INTERVAL '1 hour')`,
+		userID, tokenHash,
+	); err != nil {
+		return PasswordResetRequestResult{}, false, fmt.Errorf("store password reset token: %w", err)
+	}
+	return PasswordResetRequestResult{Email: email, ResetURL: passwordResetURL(publicAppURL, token)}, true, nil
+}
+
+func (s *Service) ResetPassword(token string, newPassword string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("reset token is required")
+	}
+	if len(newPassword) < 8 {
+		return errors.New("new password must have at least 8 characters")
+	}
+	tokenHash := hashToken(token)
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var userID int64
+	err = tx.QueryRow(
+		`SELECT user_id
+		   FROM password_reset_tokens
+		  WHERE token_hash = $1
+		    AND used_at IS NULL
+		    AND expires_at > NOW()
+		  FOR UPDATE`,
+		tokenHash,
+	).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("password reset link is invalid or expired")
+	}
+	if err != nil {
+		return fmt.Errorf("load password reset token: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE users SET password_hash = $2 WHERE id = $1`, userID, string(hash)); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE password_reset_tokens SET used_at = NOW() WHERE token_hash = $1`, tokenHash); err != nil {
+		return fmt.Errorf("mark password reset token used: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Service) SetStatus(id int64, status Status, actorUsername string, reason string) (User, error) {
@@ -679,6 +768,21 @@ func verificationURL(publicAppURL, token string) string {
 	u, err := url.Parse(base + "/verify-email")
 	if err != nil {
 		return base + "/verify-email?token=" + url.QueryEscape(token)
+	}
+	q := u.Query()
+	q.Set("token", token)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func passwordResetURL(publicAppURL, token string) string {
+	base := strings.TrimRight(strings.TrimSpace(publicAppURL), "/")
+	if base == "" {
+		base = "http://localhost:3000"
+	}
+	u, err := url.Parse(base + "/reset-password")
+	if err != nil {
+		return base + "/reset-password?token=" + url.QueryEscape(token)
 	}
 	q := u.Query()
 	q.Set("token", token)

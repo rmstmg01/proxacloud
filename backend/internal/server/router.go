@@ -243,6 +243,8 @@ func NewApp() (*App, error) {
 		api.Post("/auth/register", userHandler.Register)
 		api.Get("/auth/verify-email", userHandler.VerifyEmail)
 		api.Post("/auth/verify-email", userHandler.VerifyEmail)
+		api.Post("/auth/password-reset/request", userHandler.RequestPasswordReset)
+		api.Post("/auth/password-reset/confirm", userHandler.ResetPassword)
 		api.Post("/billing/webhooks/stripe", billingHandler.StripeWebhook)
 
 		api.Group(func(console chi.Router) {

@@ -97,6 +97,9 @@ export function LoginPage() {
                   required
                   placeholder="Password"
                 />
+                <Link className="block text-right text-sm font-medium text-indigo-600 hover:text-indigo-700" to="/reset-password">
+                  Forgot password?
+                </Link>
               </>
             ) : (
               <>
@@ -149,9 +152,6 @@ export function LoginPage() {
           </form>
         </div>
 
-        <p className="text-center text-xs text-slate-500 mt-6">
-          Default credentials: <span className="text-slate-300">k8s-admin</span>
-        </p>
       </div>
     </div>
   );

@@ -40,6 +40,12 @@ export const register = (body: {
 export const verifyEmail = (token: string) =>
   client.post<{ user: User; message: string }>('/auth/verify-email', { token }).then((r) => r.data);
 
+export const requestPasswordReset = (email: string) =>
+  client.post<{ message: string; reset_url?: string }>('/auth/password-reset/request', { email }).then((r) => r.data);
+
+export const resetPassword = (token: string, new_password: string) =>
+  client.post<{ message: string }>('/auth/password-reset/confirm', { token, new_password }).then((r) => r.data);
+
 export const getTwoFactorStatus = () =>
   client.get<TwoFactorStatus>('/profile/2fa/status').then((r) => r.data);
 
