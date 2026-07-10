@@ -23,11 +23,12 @@ import { StatusBadge } from '../components/ui/Badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
+import { useAuth } from '../context/AuthContext';
 import type { ClusterSummary } from '../types';
 import type { DatabaseCluster } from '../api/databaseClusters';
 
 type Tone = 'blue' | 'green' | 'red' | 'amber' | 'slate' | 'cyan' | 'violet';
-type OverviewPanel = 'health' | 'compute' | 'infrastructure' | 'alerts';
+type OverviewPanel = 'health' | 'compute' | 'infrastructure' | 'alerts' | 'vps' | 'clusters' | 'databases';
 
 type AttentionItem = {
   key: string;
@@ -276,6 +277,8 @@ function DetailList({ items, emptyMessage }: { items: DetailItem[]; emptyMessage
 
 export function DashboardPage() {
   const [activePanel, setActivePanel] = useState<OverviewPanel | null>(null);
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const { data: clusters, isLoading: loadingClusters } = useQuery({
     queryKey: ['clusters'],
     queryFn: getClusters,
@@ -291,13 +294,15 @@ export function DashboardPage() {
   const { data: networks, isLoading: loadingNetworks } = useQuery({
     queryKey: ['networks'],
     queryFn: getNetworks,
+    enabled: isAdmin,
   });
   const { data: nodes, isLoading: loadingNodes } = useQuery({
     queryKey: ['proxmox-nodes'],
     queryFn: getNodes,
+    enabled: isAdmin,
   });
 
-  if (loadingClusters || loadingVPS || loadingDatabaseClusters || loadingNetworks || loadingNodes) {
+  if (loadingClusters || loadingVPS || loadingDatabaseClusters || (isAdmin && (loadingNetworks || loadingNodes))) {
     return (
       <Layout>
         <PageSpinner />
@@ -370,43 +375,44 @@ export function DashboardPage() {
       detail: `${cluster.engine} ${cluster.mariadb_version}`,
       to: '/database-clusters',
     })),
-    ...unavailableNodes.map((node) => ({
-      key: `node-${node.id}`,
-      name: node.node_name,
-      type: 'Proxmox node',
-      status: node.enabled ? node.status : 'disabled',
-      detail: `${node.cpu_count} CPU / ${formatBytes(node.memory_total_bytes)}`,
-      to: '/nodes',
-    })),
+    ...(isAdmin
+      ? unavailableNodes.map((node) => ({
+          key: `node-${node.id}`,
+          name: node.node_name,
+          type: 'Proxmox node',
+          status: node.enabled ? node.status : 'disabled',
+          detail: `${node.cpu_count} CPU / ${formatBytes(node.memory_total_bytes)}`,
+          to: '/nodes',
+        }))
+      : []),
   ];
   const alertCount = attentionItems.length;
-  const totalResources = clusterList.length + vpsList.length + databaseClusterList.length + nodeList.length;
-  const computeItems: DetailItem[] = [
-    ...clusterList.map((cluster) => ({
-      key: `cluster-${cluster.id}`,
-      name: cluster.name,
-      type: 'Kubernetes',
-      detail: `${cluster.control_plane_count + cluster.worker_count} nodes / ${cluster.kubernetes_version}`,
-      status: cluster.health_status || cluster.status,
-      to: `/clusters/${cluster.id}`,
-    })),
-    ...vpsList.map((vps) => ({
-      key: `vps-${vps.id}`,
-      name: vps.name,
-      type: 'VPS',
-      detail: `${vps.cpu} vCPU / ${Math.round(vps.memory_mb / 1024)} GB RAM / ${vps.disk_gb} GB disk`,
-      status: vps.status,
-      to: `/vps/${vps.id}`,
-    })),
-    ...databaseClusterList.map((cluster) => ({
-      key: `database-${cluster.id}`,
-      name: cluster.name,
-      type: 'Database',
-      detail: `${cluster.nodes?.length ?? 0} nodes / ${cluster.engine} ${cluster.mariadb_version}`,
-      status: cluster.status,
-      to: '/database-clusters',
-    })),
-  ];
+  const totalResources = clusterList.length + vpsList.length + databaseClusterList.length + (isAdmin ? nodeList.length : 0);
+  const clusterItems: DetailItem[] = clusterList.map((cluster) => ({
+    key: `cluster-${cluster.id}`,
+    name: cluster.name,
+    type: 'Kubernetes',
+    detail: `${cluster.control_plane_count + cluster.worker_count} nodes / ${cluster.kubernetes_version}`,
+    status: cluster.health_status || cluster.status,
+    to: `/clusters/${cluster.id}`,
+  }));
+  const vpsItems: DetailItem[] = vpsList.map((vps) => ({
+    key: `vps-${vps.id}`,
+    name: vps.name,
+    type: 'VPS',
+    detail: `${vps.cpu} vCPU / ${Math.round(vps.memory_mb / 1024)} GB RAM / ${vps.disk_gb} GB disk`,
+    status: vps.status,
+    to: `/vps/${vps.id}`,
+  }));
+  const databaseItems: DetailItem[] = databaseClusterList.map((cluster) => ({
+    key: `database-${cluster.id}`,
+    name: cluster.name,
+    type: 'Database',
+    detail: `${cluster.nodes?.length ?? 0} nodes / ${cluster.engine} ${cluster.mariadb_version}`,
+    status: cluster.status,
+    to: '/database-clusters',
+  }));
+  const computeItems: DetailItem[] = [...clusterItems, ...vpsItems, ...databaseItems];
   const infrastructureItems: DetailItem[] = [
     ...nodeList.map((node) => ({
       key: `node-${node.id}`,
@@ -425,7 +431,7 @@ export function DashboardPage() {
     })),
   ];
   const alertItems: DetailItem[] = attentionItems.map((item) => ({ ...item }));
-  const healthItems = alertItems.length > 0 ? alertItems : [...computeItems, ...infrastructureItems];
+  const healthItems = alertItems.length > 0 ? alertItems : [...computeItems, ...(isAdmin ? infrastructureItems : [])];
 
   const panelTitle = activePanel === 'health'
     ? 'Overall Health'
@@ -433,14 +439,26 @@ export function DashboardPage() {
       ? 'Compute Resources'
       : activePanel === 'infrastructure'
         ? 'Infrastructure'
-        : 'Open Alerts';
+        : activePanel === 'vps'
+          ? 'VPS'
+          : activePanel === 'clusters'
+            ? 'Kubernetes Clusters'
+            : activePanel === 'databases'
+              ? 'Databases'
+              : 'Open Alerts';
   const panelItems = activePanel === 'health'
     ? healthItems
     : activePanel === 'compute'
       ? computeItems
       : activePanel === 'infrastructure'
         ? infrastructureItems
-        : alertItems;
+        : activePanel === 'vps'
+          ? vpsItems
+          : activePanel === 'clusters'
+            ? clusterItems
+            : activePanel === 'databases'
+              ? databaseItems
+              : alertItems;
   const panelEmptyMessage = activePanel === 'alerts'
     ? 'No failed or unavailable resources.'
     : 'No resources found for this view.';
@@ -449,7 +467,7 @@ export function DashboardPage() {
     <Layout>
       <PageHeader
         title="ProxaCloud Dashboard"
-        description="A focused cloud overview for health, compute, networking, and infrastructure capacity."
+        description={isAdmin ? 'A focused cloud overview for health, compute, networking, and infrastructure capacity.' : 'A focused overview of your VPS, databases, clusters, and resource health.'}
       />
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -461,30 +479,61 @@ export function DashboardPage() {
           tone={alertCount === 0 ? 'green' : 'red'}
           onClick={() => setActivePanel('health')}
         />
-        <OverviewCard
-          label="Compute Resources"
-          value={clusterList.length + vpsList.length + databaseClusterList.length}
-          detail={`${totalClusterNodes(clusterList) + vpsList.length + totalDatabaseNodes(databaseClusterList)} workload nodes`}
-          icon={ServerCog}
-          tone="blue"
-          onClick={() => setActivePanel('compute')}
-        />
-        <OverviewCard
-          label="Infrastructure"
-          value={nodeList.length}
-          detail={`${networkList.length} networks / ${unavailableNodes.length} node issues`}
-          icon={Network}
-          tone="slate"
-          onClick={() => setActivePanel('infrastructure')}
-        />
-        <OverviewCard
-          label="Open Alerts"
-          value={alertCount}
-          detail="Failed or unavailable resources"
-          icon={AlertTriangle}
-          tone="red"
-          onClick={() => setActivePanel('alerts')}
-        />
+        {isAdmin ? (
+          <>
+            <OverviewCard
+              label="Compute Resources"
+              value={clusterList.length + vpsList.length + databaseClusterList.length}
+              detail={`${totalClusterNodes(clusterList) + vpsList.length + totalDatabaseNodes(databaseClusterList)} workload nodes`}
+              icon={ServerCog}
+              tone="blue"
+              onClick={() => setActivePanel('compute')}
+            />
+            <OverviewCard
+              label="Infrastructure"
+              value={nodeList.length}
+              detail={`${networkList.length} networks / ${unavailableNodes.length} node issues`}
+              icon={Network}
+              tone="slate"
+              onClick={() => setActivePanel('infrastructure')}
+            />
+            <OverviewCard
+              label="Open Alerts"
+              value={alertCount}
+              detail="Failed or unavailable resources"
+              icon={AlertTriangle}
+              tone="red"
+              onClick={() => setActivePanel('alerts')}
+            />
+          </>
+        ) : (
+          <>
+            <OverviewCard
+              label="VPS"
+              value={vpsList.length}
+              detail={`${runningVPS.length} healthy`}
+              icon={HardDrive}
+              tone="cyan"
+              onClick={() => setActivePanel('vps')}
+            />
+            <OverviewCard
+              label="Kubernetes"
+              value={clusterList.length}
+              detail={`${readyClusters.length} healthy`}
+              icon={Server}
+              tone="blue"
+              onClick={() => setActivePanel('clusters')}
+            />
+            <OverviewCard
+              label="Databases"
+              value={databaseClusterList.length}
+              detail={`${readyDatabaseClusters.length} healthy`}
+              icon={Database}
+              tone="violet"
+              onClick={() => setActivePanel('databases')}
+            />
+          </>
+        )}
       </div>
 
       <div className="mb-6">
@@ -492,16 +541,18 @@ export function DashboardPage() {
           <h2 className="text-base font-semibold text-slate-950">Cloud Resources</h2>
           <p className="text-sm text-slate-500">Open a resource area for details and creation actions.</p>
         </div>
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <ResourceDashboardCard
-            title="Nodes"
-            description="Host capacity, enabled nodes, and infrastructure inventory."
-            to="/nodes"
-            icon={Cpu}
-            tone="slate"
-            primary={String(nodeList.length)}
-            secondary={String(nodeList.length - unavailableNodes.length)}
-          />
+        <div className={`grid grid-cols-1 gap-4 md:grid-cols-2 ${isAdmin ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
+          {isAdmin && (
+            <ResourceDashboardCard
+              title="Nodes"
+              description="Host capacity, enabled nodes, and infrastructure inventory."
+              to="/nodes"
+              icon={Cpu}
+              tone="slate"
+              primary={String(nodeList.length)}
+              secondary={String(nodeList.length - unavailableNodes.length)}
+            />
+          )}
           <ResourceDashboardCard
             title="VPS"
             description="Virtual servers, power state, IPs, and allocated resources."
@@ -549,13 +600,13 @@ export function DashboardPage() {
               icon={Cpu}
               label="Allocated CPU"
               value={`${allocatedCPU} vCPU`}
-              detail={`${hostCPU} host CPU`}
+              detail={isAdmin ? `${hostCPU} host CPU` : 'across your resources'}
             />
             <CapacityItem
               icon={MemoryStick}
               label="Allocated Memory"
               value={formatMemory(allocatedMemoryGB)}
-              detail={`${formatBytes(hostMemory)} host memory`}
+              detail={isAdmin ? `${formatBytes(hostMemory)} host memory` : 'across your resources'}
             />
             <CapacityItem
               icon={HardDrive}
@@ -563,12 +614,14 @@ export function DashboardPage() {
               value={`${allocatedDiskGB} GB`}
               detail={`${clusterDiskGB} K8s / ${vpsDiskGB} VPS / ${databaseDiskGB} DB`}
             />
-            <CapacityItem
-              icon={Network}
-              label="Networks"
-              value={String(networkList.length)}
-              detail="profiles available"
-            />
+            {isAdmin && (
+              <CapacityItem
+                icon={Network}
+                label="Networks"
+                value={String(networkList.length)}
+                detail="profiles available"
+              />
+            )}
           </CardContent>
         </Card>
       </div>
