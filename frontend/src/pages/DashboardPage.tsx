@@ -536,13 +536,13 @@ export function DashboardPage() {
         )}
       </div>
 
-      <div className="mb-6">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold text-slate-950">Cloud Resources</h2>
-          <p className="text-sm text-slate-500">Open a resource area for details and creation actions.</p>
-        </div>
-        <div className={`grid grid-cols-1 gap-4 md:grid-cols-2 ${isAdmin ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
-          {isAdmin && (
+      {isAdmin && (
+        <div className="mb-6">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold text-slate-950">Cloud Resources</h2>
+            <p className="text-sm text-slate-500">Open a resource area for details and creation actions.</p>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
             <ResourceDashboardCard
               title="Nodes"
               description="Host capacity, enabled nodes, and infrastructure inventory."
@@ -552,78 +552,78 @@ export function DashboardPage() {
               primary={String(nodeList.length)}
               secondary={String(nodeList.length - unavailableNodes.length)}
             />
-          )}
-          <ResourceDashboardCard
-            title="VPS"
-            description="Virtual servers, power state, IPs, and allocated resources."
-            to="/vps"
-            icon={HardDrive}
-            tone="cyan"
-            primary={String(vpsList.length)}
-            secondary={String(runningVPS.length)}
-          />
-          <ResourceDashboardCard
-            title="Kubernetes"
-            description="Cluster health, versions, topology, and lifecycle operations."
-            to="/clusters"
-            icon={Server}
-            tone="blue"
-            primary={String(clusterList.length)}
-            secondary={String(readyClusters.length)}
-          />
-          <ResourceDashboardCard
-            title="Databases"
-            description="MariaDB Galera clusters, bootstrap state, and database nodes."
-            to="/database-clusters"
-            icon={Database}
-            tone="violet"
-            primary={String(databaseClusterList.length)}
-            secondary={String(readyDatabaseClusters.length)}
-          />
+            <ResourceDashboardCard
+              title="VPS"
+              description="Virtual servers, power state, IPs, and allocated resources."
+              to="/vps"
+              icon={HardDrive}
+              tone="cyan"
+              primary={String(vpsList.length)}
+              secondary={String(runningVPS.length)}
+            />
+            <ResourceDashboardCard
+              title="Kubernetes"
+              description="Cluster health, versions, topology, and lifecycle operations."
+              to="/clusters"
+              icon={Server}
+              tone="blue"
+              primary={String(clusterList.length)}
+              secondary={String(readyClusters.length)}
+            />
+            <ResourceDashboardCard
+              title="Databases"
+              description="MariaDB Galera clusters, bootstrap state, and database nodes."
+              to="/database-clusters"
+              icon={Database}
+              tone="violet"
+              primary={String(databaseClusterList.length)}
+              secondary={String(readyDatabaseClusters.length)}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
-        <Card className="xl:col-span-3">
+      <div className={`grid grid-cols-1 gap-6 ${isAdmin ? 'xl:grid-cols-5' : ''}`}>
+        <Card className={isAdmin ? 'xl:col-span-3' : ''}>
           <CardHeader>
             <CardTitle>Needs Attention</CardTitle>
           </CardHeader>
           <AttentionList items={attentionItems} />
         </Card>
 
-        <Card className="xl:col-span-2">
-          <CardHeader>
-            <CardTitle>Capacity Snapshot</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3">
-            <CapacityItem
-              icon={Cpu}
-              label="Allocated CPU"
-              value={`${allocatedCPU} vCPU`}
-              detail={isAdmin ? `${hostCPU} host CPU` : 'across your resources'}
-            />
-            <CapacityItem
-              icon={MemoryStick}
-              label="Allocated Memory"
-              value={formatMemory(allocatedMemoryGB)}
-              detail={isAdmin ? `${formatBytes(hostMemory)} host memory` : 'across your resources'}
-            />
-            <CapacityItem
-              icon={HardDrive}
-              label="Allocated Disk"
-              value={`${allocatedDiskGB} GB`}
-              detail={`${clusterDiskGB} K8s / ${vpsDiskGB} VPS / ${databaseDiskGB} DB`}
-            />
-            {isAdmin && (
+        {isAdmin && (
+          <Card className="xl:col-span-2">
+            <CardHeader>
+              <CardTitle>Capacity Snapshot</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <CapacityItem
+                icon={Cpu}
+                label="Allocated CPU"
+                value={`${allocatedCPU} vCPU`}
+                detail={`${hostCPU} host CPU`}
+              />
+              <CapacityItem
+                icon={MemoryStick}
+                label="Allocated Memory"
+                value={formatMemory(allocatedMemoryGB)}
+                detail={`${formatBytes(hostMemory)} host memory`}
+              />
+              <CapacityItem
+                icon={HardDrive}
+                label="Allocated Disk"
+                value={`${allocatedDiskGB} GB`}
+                detail={`${clusterDiskGB} K8s / ${vpsDiskGB} VPS / ${databaseDiskGB} DB`}
+              />
               <CapacityItem
                 icon={Network}
                 label="Networks"
                 value={String(networkList.length)}
                 detail="profiles available"
               />
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <Modal open={activePanel !== null} onClose={() => setActivePanel(null)} title={panelTitle} maxWidth="2xl">
