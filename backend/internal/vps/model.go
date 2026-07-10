@@ -730,7 +730,8 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	var tunnelAttachment *TunnelAttachment
 	if s.tunnelConfig.Enabled {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		installCommand, attachment, tunnelErr := s.configureTunnelForCreate(ctx, vpsID, req, sshUser)
+		// Use `root` as the SSH user for tunnel access commands
+		installCommand, attachment, tunnelErr := s.configureTunnelForCreate(ctx, vpsID, req, "root")
 		cancel()
 		if tunnelErr != nil {
 			warnings = append(warnings, "Proxacloud tunnel setup failed: "+tunnelErr.Error())

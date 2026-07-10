@@ -408,13 +408,20 @@ func (s *Service) EmailTunnelDetails(vpsID int64) error {
 	}
 
 	subject := "Your ProxaCloud VPS access details"
-	body := fmt.Sprintf("Hello %s,\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nWeb URL: %s\nSSH: %s\n\nHTTP traffic is routed to %s on the VPS. SSH traffic is routed to %s:%d.\n\nProxaOps Cloud\n",
+
+	// Try to load the stored root password for the VPS (if any)
+	password := ""
+	if ref, _ := s.rootPasswordSecretRef(vpsID); strings.TrimSpace(ref) != "" && s.secrets != nil {
+		if val, err := s.secrets.Get(context.Background(), ref); err == nil {
+			password = strings.TrimSpace(string(val))
+		}
+	}
+
+	body := fmt.Sprintf("Hello %s,\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nHostname: %s\nUsername: root\nPassword: %s\n\nSSH Port: %d\n\nProxaOps Cloud\n",
 		name,
-		attachment.WebURL,
-		attachment.SSHCommand,
-		attachment.HTTPTargetURL,
-		attachment.TCPTargetHost,
-		attachment.TCPTargetPort,
+		attachment.PublicHostname,
+		password,
+		attachment.PublicPort,
 	)
 	if err := s.mailer.Send(email, subject, body); err != nil {
 		return fmt.Errorf("send vps tunnel access email: %w", err)

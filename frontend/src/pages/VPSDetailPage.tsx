@@ -560,7 +560,6 @@ export function VPSDetailPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge status={tunnel.status} />
                     <span className="text-sm text-slate-500">{tunnel.public_hostname}</span>
-                    {tunnel.emailed_at && <span className="text-sm text-slate-500">Emailed {new Date(tunnel.emailed_at).toLocaleString()}</span>}
                   </div>
                   {tunnel.last_error && <Alert variant="error" title="Tunnel setup failed">{tunnel.last_error}</Alert>}
                   <dl className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
