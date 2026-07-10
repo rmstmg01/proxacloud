@@ -33,6 +33,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
+import { useAuth } from '../context/AuthContext';
 import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule, VPSTunnelAttachment } from '../types';
 
 const defaultFirewallRuleForm = {
@@ -61,7 +62,9 @@ export function VPSDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const vpsID = Number(id);
+  const canViewEvents = user?.role === 'super_user' || user?.role === 'super_admin';
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployConfirmationName, setRedeployConfirmationName] = useState('');
   const [showEvents, setShowEvents] = useState(false);
@@ -83,8 +86,8 @@ export function VPSDetailPage() {
   const { data: events, error: eventsError, isFetching: eventsFetching } = useQuery({
     queryKey: ['vps', vpsID, 'events'],
     queryFn: () => getVPSEvents(vpsID),
-    enabled: Number.isFinite(vpsID) && vpsID > 0 && showEvents,
-    refetchInterval: showEvents ? 15_000 : false,
+    enabled: Number.isFinite(vpsID) && vpsID > 0 && canViewEvents && showEvents,
+    refetchInterval: canViewEvents && showEvents ? 15_000 : false,
   });
   const { data: tunnel, error: tunnelError, isFetching: tunnelFetching } = useQuery<VPSTunnelAttachment | null>({
     queryKey: ['vps', vpsID, 'tunnel'],
@@ -349,7 +352,7 @@ export function VPSDetailPage() {
       {loginDetailsError && <ErrorMessage error={loginDetailsError} />}
       {resetRootPasswordMutation.error && <ErrorMessage error={resetRootPasswordMutation.error} />}
       {firewallMutation.error && <ErrorMessage error={firewallMutation.error} />}
-      {showEvents && eventsError && <ErrorMessage error={eventsError} />}
+      {canViewEvents && showEvents && eventsError && <ErrorMessage error={eventsError} />}
 
       {vps && (
         <div className="space-y-6">
@@ -381,10 +384,12 @@ export function VPSDetailPage() {
               <RefreshCw className="h-4 w-4" />
               Redeploy
             </Button>
-            <Button variant={showEvents ? 'primary' : 'secondary'} onClick={() => setShowEvents((current) => !current)}>
-              <History className="h-4 w-4" />
-              Events
-            </Button>
+            {canViewEvents && (
+              <Button variant={showEvents ? 'primary' : 'secondary'} onClick={() => setShowEvents((current) => !current)}>
+                <History className="h-4 w-4" />
+                Events
+              </Button>
+            )}
             <Button variant={showFirewallRules ? 'primary' : 'secondary'} onClick={() => setShowFirewallRules((current) => !current)}>
               <Shield className="h-4 w-4" />
               Firewall
@@ -687,7 +692,7 @@ export function VPSDetailPage() {
             </Card>
           )}
 
-          {showEvents && (
+          {canViewEvents && showEvents && (
             <Card>
               <CardHeader>
                 <CardTitle>Events</CardTitle>
