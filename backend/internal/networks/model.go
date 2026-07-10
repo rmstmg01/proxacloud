@@ -21,6 +21,8 @@ var (
 	ErrNetworkNotFound    = errors.New("network profile not found")
 	ErrVPCNotFound        = errors.New("vpc not found")
 	ErrReservedIPNotFound = errors.New("reserved ip not found")
+	ErrNetworkInUse       = errors.New("network profile is in use")
+	ErrVPCInUse           = errors.New("vpc has subnets")
 )
 
 type VPC struct {
@@ -168,6 +170,68 @@ func (s *Service) ListVPCs() []VPC {
 	}
 
 	return out
+}
+
+func (s *Service) UpdateVPC(id int64, updates VPC) (VPC, error) {
+	if id <= 0 {
+		return VPC{}, ErrVPCNotFound
+	}
+	if err := validateVPC(updates); err != nil {
+		return VPC{}, err
+	}
+	var updated VPC
+	err := s.db.QueryRow(
+		`UPDATE vpcs
+		    SET name = $2,
+		        cidr = $3,
+		        description = $4,
+		        updated_at = NOW()
+		  WHERE id = $1
+		  RETURNING id, name, cidr, description, is_default, created_at, updated_at`,
+		id,
+		strings.TrimSpace(updates.Name),
+		strings.TrimSpace(updates.CIDR),
+		strings.TrimSpace(updates.Description),
+	).Scan(&updated.ID, &updated.Name, &updated.CIDR, &updated.Description, &updated.IsDefault, &updated.CreatedAt, &updated.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return VPC{}, ErrVPCNotFound
+		}
+		return VPC{}, fmt.Errorf("update vpc: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *Service) DeleteVPC(id int64) error {
+	if id <= 0 {
+		return ErrVPCNotFound
+	}
+	var subnetCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM network_profiles WHERE vpc_id = $1`, id).Scan(&subnetCount); err != nil {
+		return fmt.Errorf("count vpc subnets: %w", err)
+	}
+	if subnetCount > 0 {
+		return ErrVPCInUse
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var wasDefault bool
+	res := tx.QueryRow(`DELETE FROM vpcs WHERE id = $1 RETURNING is_default`, id)
+	if err := res.Scan(&wasDefault); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrVPCNotFound
+		}
+		return fmt.Errorf("delete vpc: %w", err)
+	}
+	if wasDefault {
+		_, _ = tx.Exec(`UPDATE vpcs SET is_default = TRUE WHERE id = (SELECT id FROM vpcs ORDER BY id ASC LIMIT 1)`)
+	}
+	return tx.Commit()
 }
 
 func (s *Service) Create(profile Profile) (Profile, error) {
@@ -353,6 +417,62 @@ func (s *Service) Update(id int64, updates Profile) (Profile, error) {
 	}
 
 	return updated, nil
+}
+
+func (s *Service) Delete(id int64) error {
+	if id <= 0 {
+		return ErrNetworkNotFound
+	}
+	if err := s.ensureNetworkNotInUse(id); err != nil {
+		return err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var wasDefault bool
+	err = tx.QueryRow(`DELETE FROM network_profiles WHERE id = $1 RETURNING is_default`, id).Scan(&wasDefault)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNetworkNotFound
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "foreign key") {
+			return ErrNetworkInUse
+		}
+		return fmt.Errorf("delete network profile: %w", err)
+	}
+	if wasDefault {
+		_, _ = tx.Exec(`UPDATE network_profiles SET is_default = TRUE WHERE id = (SELECT id FROM network_profiles ORDER BY id ASC LIMIT 1)`)
+	}
+	return tx.Commit()
+}
+
+func (s *Service) ensureNetworkNotInUse(id int64) error {
+	checks := []struct {
+		label string
+		query string
+	}{
+		{"clusters", `SELECT COUNT(*) FROM clusters WHERE network_profile_id = $1`},
+		{"database clusters", `SELECT COUNT(*) FROM database_clusters WHERE network_profile_id = $1`},
+		{"VPS instances", `SELECT COUNT(*) FROM vps_instances WHERE network_profile_id = $1`},
+		{"containers", `SELECT COUNT(*) FROM container_instances WHERE network_profile_id = $1`},
+	}
+	for _, check := range checks {
+		var count int
+		if err := s.db.QueryRow(check.query, id).Scan(&count); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+				continue
+			}
+			return fmt.Errorf("check %s usage: %w", check.label, err)
+		}
+		if count > 0 {
+			return fmt.Errorf("%w by %d %s", ErrNetworkInUse, count, check.label)
+		}
+	}
+	return nil
 }
 
 func (s *Service) GetVPCByID(id int64) (VPC, error) {

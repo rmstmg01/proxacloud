@@ -47,6 +47,53 @@ func (h *Handler) CreateVPC(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+func (h *Handler) UpdateVPC(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid vpc id"})
+		return
+	}
+	var req struct {
+		Name        string `json:"name"`
+		CIDR        string `json:"cidr"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	updated, err := h.service.UpdateVPC(id, VPC{Name: req.Name, CIDR: req.CIDR, Description: req.Description})
+	if err != nil {
+		if errors.Is(err, ErrVPCNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *Handler) DeleteVPC(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid vpc id"})
+		return
+	}
+	if err := h.service.DeleteVPC(id); err != nil {
+		switch {
+		case errors.Is(err, ErrVPCNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrVPCInUse):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "delete subnets before deleting this VPC"})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+}
+
 func (h *Handler) List(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.service.List())
 }
@@ -148,6 +195,26 @@ func (h *Handler) SetDefault(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid network profile id"})
+		return
+	}
+	if err := h.service.Delete(id); err != nil {
+		switch {
+		case errors.Is(err, ErrNetworkNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrNetworkInUse):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
 }
 
 func (h *Handler) GetIPUsage(w http.ResponseWriter, r *http.Request) {

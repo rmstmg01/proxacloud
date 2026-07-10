@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Star, Radar, RefreshCw } from 'lucide-react';
-import { getNetworks, createNetwork, updateNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP, getVPCs, createVPC, getNetworkIPUsage, scanNetworkIPUsage } from '../api/networks';
+import { Plus, Pencil, Star, Radar, RefreshCw, Trash2 } from 'lucide-react';
+import { getNetworks, createNetwork, updateNetwork, deleteNetwork, setDefaultNetwork, getNodeNetworkTags, upsertNodeNetworkTag, deleteNodeNetworkTag, getReservedIPs, createReservedIP, deleteReservedIP, getVPCs, createVPC, updateVPC, deleteVPC, getNetworkIPUsage, scanNetworkIPUsage } from '../api/networks';
 import { getNodes } from '../api/proxmox';
 import type { NetworkIPUsageEntry, NetworkProfile, VPC } from '../types';
 import { Layout, PageHeader } from '../components/Layout';
@@ -129,7 +129,10 @@ export function NetworksPage() {
   const { data: nodeTags, error: nodeTagsError } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
   const [createOpen, setCreateOpen] = useState(false);
   const [createVPCOpen, setCreateVPCOpen] = useState(false);
+  const [editVPC, setEditVPC] = useState<VPC | null>(null);
+  const [deleteVPCTarget, setDeleteVPCTarget] = useState<VPC | null>(null);
   const [editNetwork, setEditNetwork] = useState<NetworkProfile | null>(null);
+  const [deleteNetworkTarget, setDeleteNetworkTarget] = useState<NetworkProfile | null>(null);
   const [reservedOpenFor, setReservedOpenFor] = useState<NetworkProfile | null>(null);
   const [usageNetworkID, setUsageNetworkID] = useState(0);
   const [reservedForm, setReservedForm] = useState({ hostname: '', ip_address: '', description: '' });
@@ -162,6 +165,25 @@ export function NetworksPage() {
       qc.invalidateQueries({ queryKey: ['vpcs'] });
       setCreateVPCOpen(false);
       setVPCForm({ name: '', cidr: '10.0.0.0/16', description: '', is_default: false });
+    },
+  });
+
+  const updateVPCMut = useMutation({
+    mutationFn: ({ id, form }: { id: number; form: { name: string; cidr: string; description: string } }) =>
+      updateVPC(id, form),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['vpcs'] });
+      qc.invalidateQueries({ queryKey: ['networks'] });
+      setEditVPC(null);
+    },
+  });
+
+  const deleteVPCMut = useMutation({
+    mutationFn: deleteVPC,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['vpcs'] });
+      qc.invalidateQueries({ queryKey: ['networks'] });
+      setDeleteVPCTarget(null);
     },
   });
 
@@ -204,6 +226,15 @@ export function NetworksPage() {
     mutationFn: ({ networkID, reservedID }: { networkID: number; reservedID: number }) =>
       deleteReservedIP(networkID, reservedID),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['network-reserved-ips', reservedOpenFor?.id] }),
+  });
+
+  const deleteNetworkMut = useMutation({
+    mutationFn: deleteNetwork,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['networks'] });
+      qc.invalidateQueries({ queryKey: ['vpcs'] });
+      setDeleteNetworkTarget(null);
+    },
   });
 
   const scanUsageMut = useMutation({
@@ -257,6 +288,16 @@ export function NetworksPage() {
                 <p className="mt-3 text-xs text-slate-500">
                   {(networks ?? []).filter((network) => network.vpc_id === vpc.id).length} subnets
                 </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setEditVPC(vpc)}>
+                    <Pencil className="h-4 w-4" />
+                    Edit
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => setDeleteVPCTarget(vpc)}>
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}
@@ -444,6 +485,13 @@ export function NetworksPage() {
                           >
                             IP Reservations
                           </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => setDeleteNetworkTarget(n)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -524,6 +572,58 @@ export function NetworksPage() {
         </form>
       </Modal>
 
+      <Modal open={!!editVPC} onClose={() => setEditVPC(null)} title="Edit VPC">
+        {editVPC && (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              updateVPCMut.mutate({
+                id: editVPC.id,
+                form: {
+                  name: editVPC.name,
+                  cidr: editVPC.cidr,
+                  description: editVPC.description,
+                },
+              });
+            }}
+            className="space-y-4"
+          >
+            <Input label="VPC Name" value={editVPC.name} onChange={(e) => setEditVPC({ ...editVPC, name: e.target.value })} required />
+            <Input label="CIDR" value={editVPC.cidr} onChange={(e) => setEditVPC({ ...editVPC, cidr: e.target.value })} required />
+            <Input label="Description" value={editVPC.description} onChange={(e) => setEditVPC({ ...editVPC, description: e.target.value })} />
+            {updateVPCMut.error && <ErrorMessage error={updateVPCMut.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setEditVPC(null)} disabled={updateVPCMut.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={updateVPCMut.isPending}>
+                Save
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal open={!!deleteVPCTarget} onClose={() => setDeleteVPCTarget(null)} title="Delete VPC">
+        {deleteVPCTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Delete <span className="font-semibold text-slate-900">{deleteVPCTarget.name}</span>? This only works after all subnets are removed.
+            </p>
+            {deleteVPCMut.error && <ErrorMessage error={deleteVPCMut.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setDeleteVPCTarget(null)} disabled={deleteVPCMut.isPending}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => deleteVPCMut.mutate(deleteVPCTarget.id)} loading={deleteVPCMut.isPending}>
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* Create modal */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Subnet">
         <NetworkForm
@@ -557,6 +657,26 @@ export function NetworksPage() {
             error={updateMut.error}
             isEdit
           />
+        )}
+      </Modal>
+
+      <Modal open={!!deleteNetworkTarget} onClose={() => setDeleteNetworkTarget(null)} title="Delete Subnet">
+        {deleteNetworkTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Delete subnet <span className="font-semibold text-slate-900">{deleteNetworkTarget.name}</span>? This will fail if any workloads still use it.
+            </p>
+            {deleteNetworkMut.error && <ErrorMessage error={deleteNetworkMut.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setDeleteNetworkTarget(null)} disabled={deleteNetworkMut.isPending}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={() => deleteNetworkMut.mutate(deleteNetworkTarget.id)} loading={deleteNetworkMut.isPending}>
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </Button>
+            </div>
+          </div>
         )}
       </Modal>
 

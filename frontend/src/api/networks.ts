@@ -7,6 +7,12 @@ export const getVPCs = () =>
 export const createVPC = (body: { name: string; cidr: string; description: string; is_default: boolean }) =>
   client.post<VPC>('/vpcs', body).then((r) => r.data);
 
+export const updateVPC = (id: number, body: { name: string; cidr: string; description: string }) =>
+  client.put<VPC>(`/vpcs/${id}`, body).then((r) => r.data);
+
+export const deleteVPC = (id: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/vpcs/${id}`).then((r) => r.data);
+
 export const getNetworks = () =>
   client.get<NetworkProfile[]>('/networks').then((r) => r.data);
 
@@ -15,6 +21,9 @@ export const createNetwork = (body: Omit<NetworkProfile, 'id' | 'created_at' | '
 
 export const updateNetwork = (id: number, body: Partial<Omit<NetworkProfile, 'id' | 'created_at' | 'updated_at' | 'is_default'>>) =>
   client.put<NetworkProfile>(`/networks/${id}`, body).then((r) => r.data);
+
+export const deleteNetwork = (id: number) =>
+  client.delete<{ id: number; deleted: boolean }>(`/networks/${id}`).then((r) => r.data);
 
 export const setDefaultNetwork = (id: number) =>
   client.post<NetworkProfile>(`/networks/${id}/set-default`).then((r) => r.data);
