@@ -25,6 +25,8 @@ import (
 	"proxacloud/backend/internal/sshkeys"
 	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -374,12 +376,18 @@ func (s *Service) UpdateHostname(id int64, req UpdateHostnameRequest, scopes ...
 		}
 		stdout, stderr, guestExecErr := s.proxmoxCredentials.RunVMGuestCommandByName(cred, rec.ProxmoxNodeName, rec.VMName, hostnameGuestExecCommand(hostname))
 		if guestExecErr != nil {
-			message := fmt.Sprintf("Proxmox guest hostname API is not available on this node, and guest-exec hostname update failed: %v", guestExecErr)
-			_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", message)
-			return LoginDetails{}, errors.New(message)
+			sshOutput, sshErr := s.updateHostnameBySSH(rec, hostname)
+			if sshErr != nil {
+				message := fmt.Sprintf("Proxmox guest hostname API is not available on this node, guest-exec failed: %v, and SSH fallback failed: %v", guestExecErr, sshErr)
+				_ = s.insertEvent(id, "hostname-update", "error", "Hostname update failed", message)
+				return LoginDetails{}, errors.New(message)
+			}
+			outputParts = append(outputParts, "Guest hostname updated through SSH fallback.")
+			outputParts = append(outputParts, strings.TrimSpace(sshOutput))
+		} else {
+			outputParts = append(outputParts, "Guest hostname updated through QEMU guest-exec fallback.")
+			outputParts = append(outputParts, strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n")))
 		}
-		outputParts = append(outputParts, "Guest hostname updated through QEMU guest-exec fallback.")
-		outputParts = append(outputParts, strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n")))
 	} else {
 		outputParts = append(outputParts, "Guest hostname updated through Proxmox QEMU guest agent.")
 	}
@@ -457,6 +465,57 @@ func isUnsupportedNativeHostnameAPI(err error) bool {
 	return strings.Contains(message, "status 501") ||
 		strings.Contains(message, "not implemented") ||
 		strings.Contains(message, "set-host-name")
+}
+
+func (s *Service) updateHostnameBySSH(rec Instance, hostname string) (string, error) {
+	if strings.TrimSpace(rec.IPAddress) == "" {
+		return "", errors.New("vps ip address is not available")
+	}
+	ref, err := s.rootPasswordSecretRef(rec.ID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(ref) == "" {
+		return "", errors.New("root password is not stored for this vps")
+	}
+	if s.secrets == nil {
+		return "", errors.New("secret store is not configured")
+	}
+	value, err := s.secrets.Get(context.Background(), ref)
+	if err != nil {
+		return "", fmt.Errorf("load root password secret: %w", err)
+	}
+	password := strings.TrimSpace(string(value))
+	if password == "" {
+		return "", errors.New("stored root password is empty")
+	}
+
+	clientConfig := &ssh.ClientConfig{
+		User: "root",
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         12 * time.Second,
+	}
+	address := net.JoinHostPort(strings.TrimSpace(rec.IPAddress), "22")
+	client, err := ssh.Dial("tcp", address, clientConfig)
+	if err != nil {
+		return "", fmt.Errorf("connect to %s: %w", address, err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("create ssh session: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput("bash -lc " + shellQuote(hostnameUpdateScript(hostname)))
+	if err != nil {
+		return string(output), fmt.Errorf("run hostname command over ssh: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
 }
 
 func (s *Service) ResetRootPassword(id int64, req ResetRootPasswordRequest) (ResetRootPasswordResponse, error) {
@@ -1201,14 +1260,7 @@ func rootPasswordSSHEnableCommand() []string {
 }
 
 func hostnameGuestExecCommand(hostname string) []string {
-	script := strings.Join([]string{
-		"set -e",
-		fmt.Sprintf("hostnamectl set-hostname %s", shellQuote(hostname)),
-		fmt.Sprintf("printf '%%s\\n' %s > /etc/hostname", shellQuote(hostname)),
-		"install -d -m 0755 /etc/cloud/cloud.cfg.d",
-		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",
-	}, "; ")
-	return []string{"bash", "-lc", script}
+	return []string{"bash", "-lc", hostnameUpdateScript(hostname)}
 }
 
 func hostnamePersistenceCommand(hostname string) []string {
@@ -1219,6 +1271,16 @@ func hostnamePersistenceCommand(hostname string) []string {
 		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",
 	}, "; ")
 	return []string{"bash", "-lc", script}
+}
+
+func hostnameUpdateScript(hostname string) string {
+	return strings.Join([]string{
+		"set -e",
+		fmt.Sprintf("hostnamectl set-hostname %s", shellQuote(hostname)),
+		fmt.Sprintf("printf '%%s\\n' %s > /etc/hostname", shellQuote(hostname)),
+		"install -d -m 0755 /etc/cloud/cloud.cfg.d",
+		"printf 'preserve_hostname: true\\n' > /etc/cloud/cloud.cfg.d/99-proxacloud-hostname.cfg",
+	}, "; ")
 }
 
 func sanitizeHostname(hostname string) string {
