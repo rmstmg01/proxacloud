@@ -68,6 +68,7 @@ type StandaloneVPSSpec struct {
 	Bridge              string   `json:"bridge"`
 	VLAN                int      `json:"vlan"`
 	CloudInitImage      string   `json:"cloud_init_image"`
+	OSType              string   `json:"os_type"`
 	SSHPublicKey        string   `json:"ssh_public_key"`
 	SSHUser             string   `json:"ssh_user"`
 	RootPassword        string   `json:"-"`
@@ -232,6 +233,10 @@ func (r *Runner) PrepareStandaloneVPSWorkspace(spec StandaloneVPSSpec) (string, 
 	}
 	if spec.DiskGB <= 0 {
 		spec.DiskGB = 20
+	}
+	spec.OSType = strings.ToLower(strings.TrimSpace(spec.OSType))
+	if spec.OSType == "" {
+		spec.OSType = "generic"
 	}
 	spec.SSHUser = "root"
 
@@ -915,6 +920,10 @@ variable "dns" { type = list(string) }
 variable "bridge" {}
 variable "vlan" { type = number }
 variable "cloud_init_image" {}
+variable "os_type" {
+  type    = string
+  default = "generic"
+}
 variable "ssh_public_key" {}
 variable "ssh_user" {}
 variable "ip_address" {
@@ -924,6 +933,7 @@ variable "ip_address" {
 
 locals {
   cloud_init_image_is_import = can(regex(":import/", var.cloud_init_image))
+  is_debian                  = lower(trimspace(var.os_type)) == "debian"
 }
 
 resource "proxmox_virtual_environment_file" "cloud_init" {
@@ -948,6 +958,7 @@ resource "proxmox_virtual_environment_vm" "vps" {
   }
 
   initialization {
+    interface         = local.is_debian ? "scsi1" : null
     user_data_file_id = proxmox_virtual_environment_file.cloud_init.id
 
     ip_config {
@@ -961,6 +972,18 @@ resource "proxmox_virtual_environment_vm" "vps" {
   cpu {
     cores = var.cpu
     type  = "host"
+  }
+
+  dynamic "serial_device" {
+    for_each = local.is_debian ? [1] : []
+    content {}
+  }
+
+  dynamic "vga" {
+    for_each = local.is_debian ? [1] : []
+    content {
+      type = "serial0"
+    }
   }
 
   memory {

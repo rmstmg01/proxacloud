@@ -752,6 +752,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		Bridge:              network.Bridge,
 		VLAN:                network.VLAN,
 		CloudInitImage:      req.CloudInitImagePath,
+		OSType:              image.OSType,
 		SSHPublicKey:        sshPublicKey,
 		SSHUser:             sshUser,
 		RootPassword:        rootPassword,
