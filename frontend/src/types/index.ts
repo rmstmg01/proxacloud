@@ -385,6 +385,8 @@ export interface VPSCloudInitImage {
   architecture: string;
   display_name: string;
   logo_key: string;
+  available: boolean;
+  last_seen_at: string;
   created_at: string;
   updated_at: string;
 }

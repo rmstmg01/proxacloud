@@ -12,7 +12,7 @@ import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
-import { DistributionLogo } from '../components/DistributionLogo';
+import { architectureLabel, DistributionLogo } from '../components/DistributionLogo';
 import type { VPSCloudInitImage } from '../types';
 
 function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_image_path: string; ssh_user: string; cpu: number; memory_mb: number; disk_gb: number }>(
@@ -428,13 +428,7 @@ export function ProvisionVPSPage() {
                             {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                            {image.version && <span>Version {image.version}</span>}
-                            <span>{image.architecture || 'amd64'}</span>
-                            {image.is_default && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">default</span>}
-                            <span>root login</span>
-                            <span>{image.default_cpu || 2} vCPU</span>
-                            <span>{image.default_memory_mb || 2048} MB</span>
-                            <span>{image.default_disk_gb || 20} GB</span>
+                            <span>{architectureLabel(image.architecture)}</span>
                           </div>
                         </div>
                       </div>

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -423,6 +424,8 @@ func (h *Handler) DiscoverImages(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if req.RegionID > 0 {
 		resp, err = h.service.DiscoverImagesForRegion(req.RegionID, req.StorageID)
+	} else if req.CredentialID <= 0 && strings.TrimSpace(req.NodeName) == "" {
+		resp, err = h.service.DiscoverImagesAutomatically(req.StorageID)
 	} else {
 		resp, err = h.service.DiscoverImages(req.CredentialID, req.NodeName, req.StorageID)
 	}

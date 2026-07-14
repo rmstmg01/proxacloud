@@ -30,3 +30,24 @@ func TestInferCloudImageMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSupportedCloudImageVolID(t *testing.T) {
+	for _, volumeID := range []string{
+		"cloud-images:import/ubuntu-24.04.img",
+		"cloud-images:import/debian-12.qcow2",
+		"cloud-images:import/fedora-42.raw",
+	} {
+		if !isSupportedCloudImageVolID(volumeID) {
+			t.Fatalf("expected %q to be discoverable", volumeID)
+		}
+	}
+	for _, volumeID := range []string{
+		"cloud-images:iso/ubuntu-24.04.img",
+		"cloud-images:import/readme.txt",
+		"ubuntu-24.04.img",
+	} {
+		if isSupportedCloudImageVolID(volumeID) {
+			t.Fatalf("expected %q to be ignored", volumeID)
+		}
+	}
+}

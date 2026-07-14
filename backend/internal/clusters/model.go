@@ -53,6 +53,7 @@ type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ListEnabledNodes() ([]proxmox.Node, error)
 	ListStorageInventory() (proxmox.StorageInventory, error)
+	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 }
@@ -8021,7 +8022,8 @@ func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
 	if req.CloudInitImageID > 0 {
 		var imagePath string
 		var distribution string
-		if err := s.db.QueryRow(`SELECT image_path, distribution FROM vps_cloud_init_images WHERE id = $1`, req.CloudInitImageID).Scan(&imagePath, &distribution); err != nil {
+		var available bool
+		if err := s.db.QueryRow(`SELECT image_path, distribution, available FROM vps_cloud_init_images WHERE id = $1`, req.CloudInitImageID).Scan(&imagePath, &distribution, &available); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errors.New("selected shared cloud image not found")
 			}
@@ -8029,6 +8031,9 @@ func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
 		}
 		if !strings.EqualFold(strings.TrimSpace(distribution), "ubuntu") {
 			return errors.New("Kubernetes clusters require an Ubuntu cloud image")
+		}
+		if !available {
+			return errors.New("selected OS image is no longer available on shared NFS storage; refresh and select another image")
 		}
 		req.UbuntuImage = imagePath
 	}
@@ -8039,7 +8044,69 @@ func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
 	if req.CloudInitImageID <= 0 && !strings.Contains(strings.ToLower(req.UbuntuImage), "ubuntu") {
 		return errors.New("Kubernetes clusters require an Ubuntu cloud image")
 	}
-	return nil
+	return s.verifyProvisionImageOnNFS(req.CloudInitImageID, req.UbuntuImage)
+}
+
+func (s *Service) verifyProvisionImageOnNFS(imageID int64, imagePath string) error {
+	separator := strings.Index(imagePath, ":")
+	if separator <= 0 {
+		return errors.New("selected OS image has an invalid shared storage volume ID")
+	}
+	storageID := imagePath[:separator]
+	storage, err := s.proxmoxSvc.ListStorageInventory()
+	if err != nil {
+		return fmt.Errorf("list shared storage inventory while verifying OS image: %w", err)
+	}
+	sharedNodes := make(map[string]bool)
+	for _, item := range storage.Items {
+		if strings.EqualFold(strings.TrimSpace(item.StorageID), storageID) && item.Enabled && item.Active && item.Shared {
+			sharedNodes[strings.ToLower(strings.TrimSpace(item.NodeName))] = true
+		}
+	}
+	nodes, err := s.proxmoxSvc.ListEnabledNodes()
+	if err != nil {
+		return fmt.Errorf("list enabled Proxmox nodes while verifying OS image: %w", err)
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		left := nodes[i].MemoryTotalBytes - nodes[i].MemoryUsedBytes
+		right := nodes[j].MemoryTotalBytes - nodes[j].MemoryUsedBytes
+		return left > right
+	})
+	verifiedStorage := false
+	for _, node := range nodes {
+		if node.CredentialID <= 0 || !sharedNodes[strings.ToLower(strings.TrimSpace(node.NodeName))] || (strings.TrimSpace(node.Status) != "" && !strings.EqualFold(node.Status, "online")) {
+			continue
+		}
+		cred, credentialErr := s.proxmoxSvc.GetCredentialWithSecrets(node.CredentialID)
+		if credentialErr != nil {
+			continue
+		}
+		content, contentErr := s.proxmoxSvc.ListStorageContent(cred, node.NodeName, storageID, "import")
+		if contentErr != nil {
+			continue
+		}
+		verifiedStorage = true
+		if storageContainsVolume(content, imagePath) {
+			return nil
+		}
+	}
+	if !verifiedStorage {
+		return errors.New("could not verify the selected OS image because shared NFS storage is unavailable on eligible Proxmox nodes")
+	}
+	if imageID > 0 {
+		_, _ = s.db.Exec(`UPDATE vps_cloud_init_images SET available = FALSE, is_default = FALSE, updated_at = NOW() WHERE id = $1`, imageID)
+	}
+	return errors.New("selected OS image was removed from shared NFS storage; refresh and select another image")
+}
+
+func storageContainsVolume(content []proxmox.StorageContent, imagePath string) bool {
+	wanted := strings.TrimSpace(imagePath)
+	for _, item := range content {
+		if strings.EqualFold(strings.TrimSpace(item.VolID), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {

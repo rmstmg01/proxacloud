@@ -20,3 +20,16 @@ export function DistributionLogo({ distribution, className = 'h-6 w-6' }: { dist
     </svg>
   );
 }
+
+export function architectureLabel(architecture: string) {
+  switch (architecture.trim().toLowerCase()) {
+    case 'amd64':
+    case 'x86_64':
+      return 'AMD64';
+    case 'arm64':
+    case 'aarch64':
+      return 'ARM64';
+    default:
+      return architecture.trim().toUpperCase() || 'AMD64';
+  }
+}

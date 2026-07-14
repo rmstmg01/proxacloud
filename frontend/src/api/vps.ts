@@ -69,6 +69,11 @@ export const discoverVPSCloudInitImagesForRegion = (regionID: number, storageID 
     })
     .then((r) => r.data);
 
+export const discoverVPSCloudInitImagesAutomatically = (storageID = 'cloud-images') =>
+  client
+    .post<VPSCloudInitImage[]>('/vps/cloud-init-images/discover', { storage_id: storageID })
+    .then((r) => r.data);
+
 export const createVPSInstance = (body: {
   name: string;
   description: string;

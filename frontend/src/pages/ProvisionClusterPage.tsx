@@ -4,20 +4,25 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Plus } from 'lucide-react';
 import { checkClusterName, provisionAndBootstrapCluster } from '../api/clusters';
 import { createCustomerSSHKey, getCustomerSSHKeys } from '../api/customerSshKeys';
-import { getVPSCloudInitImages } from '../api/vps';
+import { discoverVPSCloudInitImagesAutomatically } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
-import { DistributionLogo } from '../components/DistributionLogo';
+import { architectureLabel, DistributionLogo } from '../components/DistributionLogo';
 
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
-  const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
+  const { data: images, error: imageDiscoveryError, isLoading: imagesLoading } = useQuery({
+    queryKey: ['cluster-provision-images'],
+    queryFn: () => discoverVPSCloudInitImagesAutomatically(),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const sharedImages = useMemo(
     () => (images ?? [])
       .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
@@ -37,8 +42,9 @@ export function ProvisionClusterPage() {
 
   useEffect(() => {
     const preferred = sharedImages.find((image) => image.is_default) ?? sharedImages[0];
-    if (preferred && form.cloud_init_image_id === 0) {
-      setForm((prev) => ({ ...prev, cloud_init_image_id: preferred.id }));
+    const selectionStillExists = sharedImages.some((image) => image.id === form.cloud_init_image_id);
+    if (!selectionStillExists) {
+      setForm((prev) => ({ ...prev, cloud_init_image_id: preferred?.id ?? 0 }));
     }
   }, [sharedImages, form.cloud_init_image_id]);
   useEffect(() => {
@@ -119,12 +125,14 @@ export function ProvisionClusterPage() {
         <Card>
           <CardHeader><CardTitle>Shared NFS OS Image</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            {sharedImages.length === 0 ? <Alert variant="warning" title="No shared images">Discover or upload an image to the cloud-images NFS import storage first.</Alert> :
+            {imageDiscoveryError && <ErrorMessage error={imageDiscoveryError} />}
+            {sharedImages.length === 0 && !imageDiscoveryError ? <Alert variant="warning" title={imagesLoading ? 'Checking shared images' : 'No shared images'}>{imagesLoading ? 'Synchronizing the OS image catalog with shared NFS storage.' : 'Upload an Ubuntu image to the cloud-images NFS import storage first.'}</Alert> :
+              sharedImages.length > 0 &&
               <><div className="flex items-center gap-2 border-b border-slate-200 pb-2"><DistributionLogo distribution="ubuntu" className="h-6 w-6" /><h3 className="font-semibold text-slate-900">Ubuntu</h3><span className="text-xs text-slate-500">supported cluster images</span></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{sharedImages.map((image) => {
                 const selected = image.id === form.cloud_init_image_id;
                 return <button key={image.id} type="button" onClick={() => setField('cloud_init_image_id', image.id)} className={`rounded-md border p-4 text-left ${selected ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}</div><p className="mt-1 text-xs text-slate-500">Version {image.version || 'detected'} · {image.architecture || 'amd64'} · root login</p></div></div>
+                  <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}</div><p className="mt-1 text-xs text-slate-500">{architectureLabel(image.architecture)}</p></div></div>
                 </button>;
               })}</div></>}
           </CardContent>

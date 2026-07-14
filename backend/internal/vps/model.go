@@ -28,6 +28,7 @@ import (
 	"proxacloud/backend/internal/terraform"
 	"proxacloud/backend/internal/tunnelinfra"
 
+	"github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -70,6 +71,7 @@ type ProxmoxCredentialStore interface {
 	ProxyVMConsoleSession(cred proxmox.Credential, session proxmox.VMConsoleSession, w http.ResponseWriter, r *http.Request) error
 	ProxyVMConsoleByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, w http.ResponseWriter, r *http.Request) error
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
+	ListStorageInventory() (proxmox.StorageInventory, error)
 }
 
 type SSHKeyPairStore interface {
@@ -121,6 +123,8 @@ type CloudInitImage struct {
 	Architecture     string    `json:"architecture"`
 	DisplayName      string    `json:"display_name"`
 	LogoKey          string    `json:"logo_key"`
+	Available        bool      `json:"available"`
+	LastSeenAt       time.Time `json:"last_seen_at"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -1040,7 +1044,7 @@ func (s *Service) ListEvents(id int64) ([]Event, error) {
 }
 
 func (s *Service) ListImages() ([]CloudInitImage, error) {
-	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at FROM vps_cloud_init_images ORDER BY distribution ASC, version ASC, is_default DESC, name ASC`)
+	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, available, last_seen_at, created_at, updated_at FROM vps_cloud_init_images WHERE available = TRUE ORDER BY distribution ASC, version ASC, is_default DESC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list cloud-init images: %w", err)
 	}
@@ -1098,12 +1102,12 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	}
 	var image CloudInitImage
 	err := s.db.QueryRow(
-		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-		 ON CONFLICT (image_path) DO UPDATE SET name = EXCLUDED.name, os_type = EXCLUDED.os_type, description = EXCLUDED.description, is_default = EXCLUDED.is_default, ssh_user = EXCLUDED.ssh_user, default_cpu = EXCLUDED.default_cpu, default_memory_mb = EXCLUDED.default_memory_mb, default_disk_gb = EXCLUDED.default_disk_gb, source_path = EXCLUDED.source_path, detected_node_name = EXCLUDED.detected_node_name, distribution = EXCLUDED.distribution, version = EXCLUDED.version, architecture = EXCLUDED.architecture, display_name = EXCLUDED.display_name, logo_key = EXCLUDED.logo_key, updated_at = NOW()
-		 RETURNING id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at`,
+		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, available, last_seen_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, TRUE, NOW())
+		 ON CONFLICT (image_path) DO UPDATE SET name = EXCLUDED.name, os_type = EXCLUDED.os_type, description = EXCLUDED.description, is_default = EXCLUDED.is_default, ssh_user = EXCLUDED.ssh_user, default_cpu = EXCLUDED.default_cpu, default_memory_mb = EXCLUDED.default_memory_mb, default_disk_gb = EXCLUDED.default_disk_gb, source_path = EXCLUDED.source_path, detected_node_name = EXCLUDED.detected_node_name, distribution = EXCLUDED.distribution, version = EXCLUDED.version, architecture = EXCLUDED.architecture, display_name = EXCLUDED.display_name, logo_key = EXCLUDED.logo_key, available = TRUE, last_seen_at = NOW(), updated_at = NOW()
+		 RETURNING id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, available, last_seen_at, created_at, updated_at`,
 		req.Name, req.ImagePath, req.OSType, req.Description, req.IsDefault, req.SSHUser, req.DefaultCPU, req.DefaultMemoryMB, req.DefaultDiskGB, req.SourcePath, req.DetectedNodeName, req.Distribution, req.Version, req.Architecture, req.DisplayName, req.LogoKey,
-	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.CreatedAt, &image.UpdatedAt)
+	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.Available, &image.LastSeenAt, &image.CreatedAt, &image.UpdatedAt)
 	if err != nil {
 		return CloudInitImage{}, fmt.Errorf("create cloud-init image: %w", err)
 	}
@@ -1134,6 +1138,7 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string, storageID 
 		return nil, fmt.Errorf("list Proxmox %s:%s content on node %s: %w", selectedStorageID, defaultCloudImageContentType, nodeName, err)
 	}
 	discovered := make([]CloudInitImage, 0)
+	seen := make([]string, 0, len(content))
 	for _, item := range content {
 		volID := strings.TrimSpace(item.VolID)
 		if !isSupportedCloudImageVolID(volID) {
@@ -1158,14 +1163,76 @@ func (s *Service) DiscoverImages(credentialID int64, nodeName string, storageID 
 			return nil, err
 		}
 		discovered = append(discovered, image)
+		seen = append(seen, volID)
 	}
-	if len(discovered) == 0 {
-		return nil, fmt.Errorf("no cloud image files (.qcow2, .img, .raw) found in Proxmox storage %s:%s on node %s. Upload the image under /mnt/pve/%s/import, then discover again", selectedStorageID, defaultCloudImageContentType, nodeName, selectedStorageID)
+	if err := s.reconcileDiscoveredImages(selectedStorageID, seen); err != nil {
+		return nil, err
 	}
 	sort.Slice(discovered, func(i, j int) bool {
 		return strings.ToLower(discovered[i].Name) < strings.ToLower(discovered[j].Name)
 	})
 	return discovered, nil
+}
+
+func (s *Service) DiscoverImagesAutomatically(storageID ...string) ([]CloudInitImage, error) {
+	selectedStorageID := defaultCloudImageStorageID
+	if len(storageID) > 0 && strings.TrimSpace(storageID[0]) != "" {
+		selectedStorageID = strings.TrimSpace(storageID[0])
+	}
+	nodes, err := s.nodes.ListEnabledNodes()
+	if err != nil {
+		return nil, fmt.Errorf("list enabled Proxmox nodes: %w", err)
+	}
+	storage, err := s.proxmoxCredentials.ListStorageInventory()
+	if err != nil {
+		return nil, fmt.Errorf("list Proxmox storage inventory: %w", err)
+	}
+	sharedNodes := make(map[string]bool)
+	for _, item := range storage.Items {
+		if strings.EqualFold(strings.TrimSpace(item.StorageID), selectedStorageID) && item.Enabled && item.Active && item.Shared {
+			sharedNodes[strings.ToLower(strings.TrimSpace(item.NodeName))] = true
+		}
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		left := nodes[i].MemoryTotalBytes - nodes[i].MemoryUsedBytes
+		right := nodes[j].MemoryTotalBytes - nodes[j].MemoryUsedBytes
+		return left > right
+	})
+	var lastErr error
+	for _, node := range nodes {
+		if node.CredentialID <= 0 || !sharedNodes[strings.ToLower(strings.TrimSpace(node.NodeName))] || (strings.TrimSpace(node.Status) != "" && !strings.EqualFold(node.Status, "online")) {
+			continue
+		}
+		images, discoverErr := s.DiscoverImages(node.CredentialID, node.NodeName, selectedStorageID)
+		if discoverErr == nil {
+			return images, nil
+		}
+		lastErr = discoverErr
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("discover shared cloud images from eligible Proxmox nodes: %w", lastErr)
+	}
+	return nil, errors.New("no eligible online Proxmox node can access shared cloud-images storage")
+}
+
+func (s *Service) reconcileDiscoveredImages(storageID string, seen []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin cloud image reconciliation: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec(`UPDATE vps_cloud_init_images SET available = FALSE, is_default = FALSE, updated_at = NOW() WHERE image_path LIKE $1`, strings.TrimSpace(storageID)+":%"); err != nil {
+		return fmt.Errorf("mark cloud images unavailable: %w", err)
+	}
+	if len(seen) > 0 {
+		if _, err = tx.Exec(`UPDATE vps_cloud_init_images SET available = TRUE, last_seen_at = NOW(), updated_at = NOW() WHERE image_path = ANY($1)`, pq.Array(seen)); err != nil {
+			return fmt.Errorf("mark discovered cloud images available: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit cloud image reconciliation: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) DiscoverImagesForRegion(regionID int64, storageID ...string) ([]CloudInitImage, error) {
@@ -1424,8 +1491,8 @@ func (s *Service) validateNode(credentialID int64, nodeName string) error {
 func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, error) {
 	if id > 0 {
 		var image CloudInitImage
-		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1`, id).
-			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.CreatedAt, &image.UpdatedAt)
+		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, available, last_seen_at, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1 AND available = TRUE`, id).
+			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.Available, &image.LastSeenAt, &image.CreatedAt, &image.UpdatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return CloudInitImage{}, errors.New("selected cloud-init image not found")
 		}
@@ -1677,6 +1744,8 @@ func scanCloudInitImage(rows interface {
 		&image.Architecture,
 		&image.DisplayName,
 		&image.LogoKey,
+		&image.Available,
+		&image.LastSeenAt,
 		&image.CreatedAt,
 		&image.UpdatedAt,
 	)
