@@ -221,6 +221,29 @@ type ClusterNodeRecord struct {
 	SSHCommand          string `json:"ssh_command,omitempty"`
 }
 
+type ClusterAccessNode struct {
+	Role             string `json:"role"`
+	RoleIndex        int    `json:"role_index"`
+	VMName           string `json:"vm_name"`
+	IPAddress        string `json:"ip_address"`
+	Hostname         string `json:"hostname"`
+	FQDN             string `json:"fqdn"`
+	TunnelPublicPort int    `json:"tunnel_public_port,omitempty"`
+	SSHCommand       string `json:"ssh_command,omitempty"`
+}
+
+type ClusterAccessDetails struct {
+	ClusterID         int64               `json:"cluster_id"`
+	ClusterName       string              `json:"cluster_name"`
+	KubernetesVersion string              `json:"kubernetes_version"`
+	TopologyType      string              `json:"topology_type"`
+	Status            string              `json:"status"`
+	APIEndpoint       string              `json:"api_endpoint,omitempty"`
+	SSHUser           string              `json:"ssh_user"`
+	Authentication    string              `json:"authentication"`
+	Nodes             []ClusterAccessNode `json:"nodes"`
+}
+
 type ClusterSummary struct {
 	ID                int64      `json:"id"`
 	CustomerAccountID int64      `json:"customer_account_id,omitempty"`
@@ -1694,6 +1717,63 @@ func (s *Service) ListClusterNodes(clusterID int64) ([]ClusterNodeRecord, error)
 		return nil, err
 	}
 	return s.getClusterNodes(clusterID)
+}
+
+func (s *Service) GetClusterAccessDetails(clusterID int64) (ClusterAccessDetails, error) {
+	summary, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return ClusterAccessDetails{}, err
+	}
+	nodes, err := s.getClusterNodes(clusterID)
+	if err != nil {
+		return ClusterAccessDetails{}, err
+	}
+	controlPlaneVIP := ""
+	if bootstrap, bootstrapErr := s.getBootstrapConfig(clusterID); bootstrapErr == nil {
+		controlPlaneVIP = bootstrap.ControlPlaneVIP
+	}
+	return buildClusterAccessDetails(summary, nodes, controlPlaneVIP), nil
+}
+
+func buildClusterAccessDetails(summary ClusterSummary, nodes []ClusterNodeRecord, controlPlaneVIP string) ClusterAccessDetails {
+	endpoint := strings.TrimSpace(controlPlaneVIP)
+	if endpoint == "" {
+		for _, node := range nodes {
+			if node.Role == "control-plane" && strings.TrimSpace(node.IPAddress) != "" {
+				endpoint = strings.TrimSpace(node.IPAddress)
+				break
+			}
+		}
+	}
+	if endpoint != "" {
+		endpoint = fmt.Sprintf("https://%s:6443", endpoint)
+	}
+
+	accessNodes := make([]ClusterAccessNode, 0, len(nodes))
+	for _, node := range nodes {
+		accessNodes = append(accessNodes, ClusterAccessNode{
+			Role:             node.Role,
+			RoleIndex:        node.RoleIndex,
+			VMName:           node.VMName,
+			IPAddress:        node.IPAddress,
+			Hostname:         node.Hostname,
+			FQDN:             node.FQDN,
+			TunnelPublicPort: node.TunnelPublicPort,
+			SSHCommand:       node.SSHCommand,
+		})
+	}
+
+	return ClusterAccessDetails{
+		ClusterID:         summary.ID,
+		ClusterName:       summary.Name,
+		KubernetesVersion: summary.KubernetesVersion,
+		TopologyType:      summary.TopologyType,
+		Status:            summary.Status,
+		APIEndpoint:       endpoint,
+		SSHUser:           "root",
+		Authentication:    "Selected SSH public key",
+		Nodes:             accessNodes,
+	}
 }
 
 func (s *Service) GetBootstrapConfig(clusterID int64) (BootstrapConfigRecord, error) {

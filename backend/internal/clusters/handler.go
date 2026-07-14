@@ -279,6 +279,24 @@ func (h *Handler) ListClusterNodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) GetClusterAccessDetails(w http.ResponseWriter, r *http.Request) {
+	clusterID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
+		return
+	}
+	if _, ok := h.authorizeCluster(w, r, clusterID); !ok {
+		return
+	}
+
+	resp, err := h.service.GetClusterAccessDetails(clusterID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) authorizeCluster(w http.ResponseWriter, r *http.Request, clusterID int64) (tenant.Scope, bool) {
 	scope, ok := h.scope(w, r)
 	if !ok {

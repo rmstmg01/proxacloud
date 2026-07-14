@@ -23,3 +23,24 @@
     display: none;
   }
 }
+
+@keyframes deployment-progress-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(310%);
+  }
+}
+
+.deployment-progress-bar {
+  width: 32%;
+  animation: deployment-progress-indeterminate 1.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deployment-progress-bar {
+    animation-duration: 3s;
+  }
+}

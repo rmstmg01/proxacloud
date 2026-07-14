@@ -638,6 +638,29 @@ export interface ClusterNodeRecord {
   ssh_command?: string;
 }
 
+export interface ClusterAccessNode {
+  role: string;
+  role_index: number;
+  vm_name: string;
+  ip_address: string;
+  hostname: string;
+  fqdn: string;
+  tunnel_public_port?: number;
+  ssh_command?: string;
+}
+
+export interface ClusterAccessDetails {
+  cluster_id: number;
+  cluster_name: string;
+  kubernetes_version: string;
+  topology_type: string;
+  status: string;
+  api_endpoint?: string;
+  ssh_user: string;
+  authentication: string;
+  nodes: ClusterAccessNode[];
+}
+
 export interface ProvisionRunRecord {
   id: number;
   action: string;

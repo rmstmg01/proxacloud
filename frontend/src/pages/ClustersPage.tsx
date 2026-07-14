@@ -260,8 +260,8 @@ function DeleteClusterModal({
     <Modal open={!!cluster} onClose={onClose} title="Delete Kubernetes Cluster" maxWidth="lg">
       {cluster && (
         <form onSubmit={onSubmit} className="space-y-5">
-          <Alert variant="warning" title="This deletes infrastructure">
-            Terraform destroy will be attempted for the Kubernetes cluster VMs before portal metadata is removed. Type the exact cluster name to continue.
+          <Alert variant="warning" title="This permanently deletes the cluster">
+            All cluster nodes and associated infrastructure will be removed before the cluster record is deleted. This action cannot be undone. Type the exact cluster name to continue.
           </Alert>
           <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
             Type <span className="font-semibold text-slate-900">{cluster.name}</span> to confirm deletion.

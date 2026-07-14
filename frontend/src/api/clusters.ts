@@ -5,6 +5,7 @@ import type {
   ClusterOperation,
   ClusterOperationEvent,
   ClusterNodeRecord,
+  ClusterAccessDetails,
   ProvisionResponse,
   BootstrapResponse,
   BootstrapConfigRecord,
@@ -96,6 +97,9 @@ export const getClusterOperationEvents = (
 
 export const getClusterNodes = (id: number) =>
   client.get<ClusterNodeRecord[]>(`/clusters/${id}/nodes`).then((r) => r.data);
+
+export const getClusterAccessDetails = (id: number) =>
+  client.get<ClusterAccessDetails>(`/clusters/${id}/access-details`).then((r) => r.data);
 
 export const getBootstrapConfig = (id: number) =>
   client.get<BootstrapConfigRecord>(`/clusters/${id}/bootstrap-config`).then((r) => r.data);

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Clipboard, Play, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Check, Clipboard, Play, RefreshCw, Server, Terminal } from 'lucide-react';
 import {
   getCluster,
   getClusterRuns,
@@ -29,6 +29,7 @@ import {
   getEtcdSnapshots,
   restoreEtcdSnapshot,
   getClusterNodes,
+  getClusterAccessDetails,
   getBootstrapConfig,
   getBootstrapKeys,
   getClusterSecrets,
@@ -72,10 +73,11 @@ import { Modal } from '../components/ui/Modal';
 import { useAuth } from '../context/AuthContext';
 import type { ClusterConfigMapRecord, ClusterImagePullSecretRecord, ClusterOperation, ClusterSavedManifestRecord, ClusterSecretProvider, ClusterSecretRecord } from '../types';
 
-type Tab = 'overview' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'pullsecrets' | 'manifests' | 'applications' | 'observability' | 'etcd';
+type Tab = 'overview' | 'access' | 'runs' | 'bootstrap' | 'day2' | 'metallb' | 'storage' | 'secrets' | 'configmaps' | 'pullsecrets' | 'manifests' | 'applications' | 'observability' | 'etcd';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
+  { key: 'access', label: 'Nodes & Access' },
   { key: 'runs', label: 'Run History' },
   { key: 'bootstrap', label: 'Bootstrap' },
   { key: 'metallb', label: 'MetalLB' },
@@ -223,11 +225,29 @@ function OverviewTab({ id, customerView = false }: { id: number; customerView?: 
     ['Updated', new Date(cluster.updated_at).toLocaleString()],
   ];
   const deploymentStatus = customerDeploymentStatus(cluster.status);
+  const deploymentActive = isClusterDeploymentActive(cluster.status);
   return (
     <div className="space-y-4">
       {customerView && (
         <Alert variant={deploymentStatus.variant} title={deploymentStatus.title}>
-          {deploymentStatus.message}
+          <p>{deploymentStatus.message}</p>
+          {deploymentActive && (
+            <div className="mt-3" aria-live="polite">
+              <div className="mb-2 flex items-center gap-2 text-xs font-medium">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                <span>Deployment is active and this page updates automatically.</span>
+              </div>
+              <div
+                className="h-2 w-full overflow-hidden rounded-full bg-blue-100"
+                role="progressbar"
+                aria-label={deploymentStatus.title}
+                aria-valuetext="In progress"
+              >
+                <div className="deployment-progress-bar h-full rounded-full bg-blue-600" />
+              </div>
+              <p className="mt-2 text-xs opacity-80">Last status update: {new Date(cluster.updated_at).toLocaleString()}</p>
+            </div>
+          )}
         </Alert>
       )}
       <Card>
@@ -244,6 +264,136 @@ function OverviewTab({ id, customerView = false }: { id: number; customerView?: 
             </div>
           ))}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+function CopyableCommand({ value, label = 'Copy command' }: { value: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-950 px-3 py-2 text-slate-100">
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all text-xs leading-5">{value}</code>
+      <button
+        type="button"
+        onClick={copy}
+        className="flex-shrink-0 rounded p-1 text-slate-300 hover:bg-slate-800 hover:text-white"
+        title={label}
+        aria-label={label}
+      >
+        {copied ? <Check className="h-4 w-4" /> : <Clipboard className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
+
+function AccessTab({ id }: { id: number }) {
+  const { data, error, isLoading } = useQuery({
+    queryKey: ['cluster-access-details', id],
+    queryFn: () => getClusterAccessDetails(id),
+    refetchInterval: (query) => isClusterDeploymentActive(query.state.data?.status) ? 3000 : false,
+  });
+
+  if (isLoading) return <PageSpinner />;
+  if (error) return <ErrorMessage error={error} />;
+  if (!data) return null;
+
+  const controlPlanes = data.nodes.filter((node) => node.role === 'control-plane');
+  const workers = data.nodes.filter((node) => node.role !== 'control-plane');
+  const kubeconfigOnce = `mkdir -p /root/.kube\ncp /etc/kubernetes/admin.conf /root/.kube/config\nchmod 600 /root/.kube/config\nexport KUBECONFIG=/root/.kube/config`;
+  const kubeconfigPersistent = `grep -qxF 'export KUBECONFIG=/root/.kube/config' /root/.bashrc || echo 'export KUBECONFIG=/root/.kube/config' >> /root/.bashrc\nsource /root/.bashrc`;
+  const statusCommands = `kubectl cluster-info\nkubectl get nodes -o wide\nkubectl get pods -A\nkubectl get --raw='/readyz?verbose'\nkubectl get events -A --sort-by=.lastTimestamp`;
+
+  const renderNodeGroup = (title: string, nodes: typeof data.nodes) => (
+    <Card>
+      <CardHeader><CardTitle>{title}</CardTitle></CardHeader>
+      <CardContent>
+        {nodes.length === 0 ? (
+          <p className="text-sm text-slate-500">Node details are being configured.</p>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {nodes.map((node) => (
+              <div key={`${node.role}-${node.role_index}-${node.vm_name}`} className="rounded-lg border border-slate-200 p-4">
+                <div className="mb-3 flex items-center gap-2">
+                  <Server className="h-4 w-4 text-indigo-600" />
+                  <h3 className="font-semibold text-slate-900">{node.vm_name}</h3>
+                  <span className="ml-auto rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                    {node.role === 'control-plane' ? 'Control plane' : 'Worker'} {node.role_index}
+                  </span>
+                </div>
+                <dl className="mb-4 grid grid-cols-[7rem_1fr] gap-x-3 gap-y-2 text-sm">
+                  <dt className="text-slate-500">Hostname</dt>
+                  <dd className="break-all font-medium text-slate-900">{node.fqdn || node.hostname || 'Being configured'}</dd>
+                  <dt className="text-slate-500">Private IP</dt>
+                  <dd className="font-mono text-xs text-slate-800">{node.ip_address || 'Being configured'}</dd>
+                  <dt className="text-slate-500">SSH user</dt>
+                  <dd className="font-mono text-xs text-slate-800">{data.ssh_user}</dd>
+                  <dt className="text-slate-500">Tunnel port</dt>
+                  <dd className="font-mono text-xs text-slate-800">{node.tunnel_public_port || 'Being configured'}</dd>
+                </dl>
+                {node.ssh_command ? (
+                  <CopyableCommand value={node.ssh_command} label={`Copy SSH command for ${node.vm_name}`} />
+                ) : (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">SSH tunnel route is being configured.</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader><CardTitle>Cluster Access</CardTitle></CardHeader>
+        <CardContent>
+          <dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div><dt className="text-slate-500">Cluster</dt><dd className="mt-1 font-medium text-slate-900">{data.cluster_name}</dd></div>
+            <div><dt className="text-slate-500">Kubernetes</dt><dd className="mt-1 font-medium text-slate-900">{data.kubernetes_version}</dd></div>
+            <div><dt className="text-slate-500">API endpoint</dt><dd className="mt-1 break-all font-mono text-xs text-slate-900">{data.api_endpoint || 'Being configured'}</dd></div>
+            <div><dt className="text-slate-500">Authentication</dt><dd className="mt-1 font-medium text-slate-900">{data.authentication}</dd></div>
+          </dl>
+        </CardContent>
+      </Card>
+
+      {renderNodeGroup('Control-plane Nodes', controlPlanes)}
+      {renderNodeGroup('Worker Nodes', workers)}
+
+      <Card>
+        <CardHeader><CardTitle>Kubeconfig Profile</CardTitle></CardHeader>
+        <CardContent className="space-y-5">
+          <Alert variant="info" title="Run these commands on a control-plane node">
+            Kubernetes stores the administrator kubeconfig at <code>/etc/kubernetes/admin.conf</code> on control-plane nodes. It is intentionally not copied to workers.
+          </Alert>
+          <div>
+            <div className="mb-2 flex items-center gap-2"><Terminal className="h-4 w-4 text-indigo-600" /><h3 className="text-sm font-semibold text-slate-900">Set up the root kubeconfig</h3></div>
+            <CopyableCommand value={kubeconfigOnce} label="Copy kubeconfig setup commands" />
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-semibold text-slate-900">Make the profile persistent</h3>
+            <CopyableCommand value={kubeconfigPersistent} label="Copy persistent profile commands" />
+          </div>
+          <Alert variant="warning" title="When connected to a worker node">
+            Worker nodes do not hold the unrestricted administrator kubeconfig. Connect to one of the control-plane nodes above to administer the cluster.
+          </Alert>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Check Cluster Status</CardTitle></CardHeader>
+        <CardContent>
+          <p className="mb-3 text-sm text-slate-600">After setting up the kubeconfig on a control-plane node, run these read-only checks:</p>
+          <CopyableCommand value={statusCommands} label="Copy cluster status commands" />
+        </CardContent>
       </Card>
     </div>
   );
@@ -1088,6 +1238,7 @@ const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
 
 const CUSTOMER_TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
+  { key: 'access', label: 'Nodes & Access' },
 ];
 
 function parseSecretData(raw: string): Record<string, string> {
@@ -3185,6 +3336,7 @@ export function ClusterDetailPage() {
       )}
 
       {activeTab === 'overview' && <OverviewTab id={clusterId} customerView={!isAdmin} />}
+      {activeTab === 'access' && <AccessTab id={clusterId} />}
       {isAdmin && activeTab === 'runs' && <RunsTab id={clusterId} />}
       {isAdmin && activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
       {isAdmin && activeTab === 'day2' && <ClusterMaintenanceTab id={clusterId} />}
