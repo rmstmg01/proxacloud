@@ -3,6 +3,7 @@ package clusters
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -405,10 +406,22 @@ func (h *Handler) DeleteCluster(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
+	scope, ok := h.authorizeCluster(w, r, clusterID)
+	if !ok {
+		return
+	}
 
 	if err := h.service.DeleteCluster(clusterID, req.ConfirmationName); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, ErrClusterDeleteConfirmation) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if scope.IsCustomer() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to delete the cluster; please contact support"})
 			return
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -436,6 +449,10 @@ func (h *Handler) RedeployCluster(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
 		return
 	}
+	scope, ok := h.authorizeCluster(w, r, clusterID)
+	if !ok {
+		return
+	}
 
 	resp, err := h.service.RedeployCluster(clusterID)
 	if err != nil {
@@ -443,10 +460,22 @@ func (h *Handler) RedeployCluster(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 			return
 		}
+		if scope.IsCustomer() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unable to redeploy the cluster; please contact support"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
+	if scope.IsCustomer() {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"cluster_id": resp.ClusterID,
+			"action":     resp.Action,
+			"status":     resp.Status,
+		})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
@@ -456,11 +485,19 @@ func (h *Handler) powerActionCluster(w http.ResponseWriter, r *http.Request, act
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cluster id"})
 		return
 	}
+	scope, ok := h.authorizeCluster(w, r, clusterID)
+	if !ok {
+		return
+	}
 
 	resp, err := h.service.PowerActionCluster(clusterID, action)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		if scope.IsCustomer() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unable to %s the cluster; please try again or contact support", action)})
 			return
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

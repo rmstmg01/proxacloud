@@ -195,7 +195,7 @@ export function ClustersPage() {
                             variant="secondary"
                             size="sm"
                             onClick={() => {
-                              if (window.confirm(`Redeploy cluster \"${c.name}\" using the same generated Terraform configuration?`)) {
+                              if (window.confirm(`Redeploy cluster \"${c.name}\" using its saved configuration? Cluster services may be temporarily unavailable.`)) {
                                 redeployMutation.mutate(c.id);
                               }
                             }}
