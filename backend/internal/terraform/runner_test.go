@@ -43,6 +43,14 @@ func TestImgImportVolumeParts(t *testing.T) {
 	}
 }
 
+func TestRedactTerraformSecrets(t *testing.T) {
+	output := "install --token pct_2y-T6Jpp2vuvkp0-LgATRXl8C7CKDCOC5uskwMVIHoI --done"
+	got := redactTerraformSecrets(output)
+	if strings.Contains(got, "2y-T6Jpp") || got != "install --token pct_[REDACTED] --done" {
+		t.Fatalf("redactTerraformSecrets() = %q", got)
+	}
+}
+
 func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 	runner := NewRunner("terraform", t.TempDir(), "")
 
@@ -117,6 +125,9 @@ func TestPrepareClusterWorkspaceImportsSharedImageAndInstallsTunnelAgent(t *test
 	mainTF := readTestFile(t, filepath.Join(workDir, "main.tf"))
 	if !strings.Contains(mainTF, `import_from  = local.ubuntu_image_is_import ? var.ubuntu_image : null`) {
 		t.Fatalf("main.tf does not import shared images")
+	}
+	if !strings.Contains(mainTF, `data      = sensitive(file("${path.module}/cloud-init/${each.value.vm_name}.yaml"))`) {
+		t.Fatalf("main.tf does not redact cloud-init secrets from Terraform output")
 	}
 	cloudInit := readTestFile(t, filepath.Join(workDir, "cloud-init", "demo-cp-1.yaml"))
 	if !strings.Contains(cloudInit, "install-agent --token secret") {

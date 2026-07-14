@@ -377,6 +377,11 @@ func (r *Runner) applyPreparedWorkspace(workDir string, auth ProxmoxAuth) (RunRe
 
 func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth ProxmoxAuth, onProgress func(string)) (RunResult, error) {
 	output := strings.Builder{}
+	if snippetMessage, err := prepareCloudInitSnippetStorage(workDir, auth); err != nil {
+		return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, err
+	} else if snippetMessage != "" && onProgress != nil {
+		onProgress(snippetMessage)
+	}
 	if aliasMessage, err := prepareCloudImageImportAlias(workDir, auth); err != nil {
 		return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, err
 	} else if aliasMessage != "" && onProgress != nil {
@@ -411,6 +416,81 @@ func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth Proxmox
 }
 
 var safeProxmoxImportComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var proxacloudEnrollmentTokenPattern = regexp.MustCompile(`pct_[A-Za-z0-9_-]+`)
+
+func prepareCloudInitSnippetStorage(workDir string, auth ProxmoxAuth) (string, error) {
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
+	raw, err := os.ReadFile(tfvarsPath)
+	if err != nil {
+		return "", fmt.Errorf("read terraform workspace variables: %w", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return "", fmt.Errorf("read terraform workspace variables: %w", err)
+	}
+
+	defaultHost := proxmoxSSHAddress(auth.Endpoint)
+	hosts := make([]string, 0, 1)
+	seen := map[string]struct{}{}
+	addHost := func(host string) {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return
+		}
+		if _, exists := seen[host]; exists {
+			return
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	if nodes, ok := values["nodes"].([]any); ok {
+		for _, rawNode := range nodes {
+			node, ok := rawNode.(map[string]any)
+			if !ok {
+				continue
+			}
+			address, _ := node["proxmox_node_address"].(string)
+			if strings.TrimSpace(address) == "" {
+				address = defaultHost
+			}
+			addHost(address)
+		}
+	}
+	if len(hosts) == 0 {
+		addHost(defaultHost)
+	}
+	if len(hosts) == 0 {
+		return "", errors.New("cannot determine a Proxmox SSH address for cloud-init snippet preparation")
+	}
+
+	for _, host := range hosts {
+		client, err := dialProxmoxSSH(host, auth)
+		if err != nil {
+			return "", fmt.Errorf("connect to Proxmox host %s to prepare cloud-init snippets: %w", host, err)
+		}
+		session, err := client.NewSession()
+		if err != nil {
+			client.Close()
+			return "", fmt.Errorf("open Proxmox SSH session on %s to prepare cloud-init snippets: %w", host, err)
+		}
+		command := `set -eu
+base=$(pvesm config local | awk '$1 == "path" { print $2; exit }')
+content=$(pvesm config local | awk '$1 == "content" { print $2; exit }')
+test -n "$base"
+mkdir -p "$base/snippets"
+case ",$content," in
+  *,snippets,*) ;;
+  *) pvesm set local --content "${content:+$content,}snippets" >/dev/null ;;
+esac`
+		commandOutput, runErr := session.CombinedOutput(command)
+		_ = session.Close()
+		_ = client.Close()
+		if runErr != nil {
+			return "", fmt.Errorf("prepare cloud-init snippet storage on Proxmox host %s: %w: %s", host, runErr, strings.TrimSpace(string(commandOutput)))
+		}
+	}
+	return "Prepared Proxmox local snippet storage for cloud-init", nil
+}
 
 // prepareCloudImageImportAlias handles Ubuntu-style cloud images whose file
 // name ends in .img. Proxmox can list those files as import content, but its
@@ -465,13 +545,7 @@ func prepareCloudImageImportAlias(workDir string, auth ProxmoxAuth) (string, err
 		"set -eu; source=%s; test -r \"$source\"; format=$(qemu-img info \"$source\" | sed -n 's/^file format: //p' | head -n 1); case \"$format\" in qcow2|raw|vmdk) ;; *) echo \"unsupported image format: $format\" >&2; exit 1 ;; esac; target=\"${source%%.img}.$format\"; if [ ! -e \"$target\" ]; then ln \"$source\" \"$target\" 2>/dev/null || ln -s \"$source\" \"$target\"; fi; test -r \"$target\"; printf '%%s' \"$format\"",
 		shellQuote(sourcePath),
 	)
-	clientConfig := &ssh.ClientConfig{
-		User:            strings.TrimSpace(auth.SSHUsername),
-		Auth:            []ssh.AuthMethod{ssh.Password(auth.SSHPassword)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Matches the provider's current SSH behavior.
-		Timeout:         20 * time.Second,
-	}
-	client, err := ssh.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", defaultProxmoxSSHPort)), clientConfig)
+	client, err := dialProxmoxSSH(host, auth)
 	if err != nil {
 		return "", fmt.Errorf("connect to Proxmox over SSH to prepare shared cloud image: %w", err)
 	}
@@ -502,6 +576,19 @@ func prepareCloudImageImportAlias(workDir string, auth ProxmoxAuth) (string, err
 		return "", fmt.Errorf("update terraform workspace image alias: %w", err)
 	}
 	return fmt.Sprintf("Prepared shared NFS cloud image alias %s for Proxmox import", aliasID), nil
+}
+
+func dialProxmoxSSH(host string, auth ProxmoxAuth) (*ssh.Client, error) {
+	if strings.TrimSpace(auth.SSHUsername) == "" || strings.TrimSpace(auth.SSHPassword) == "" {
+		return nil, errors.New("Proxmox SSH username and password are required")
+	}
+	clientConfig := &ssh.ClientConfig{
+		User:            strings.TrimSpace(auth.SSHUsername),
+		Auth:            []ssh.AuthMethod{ssh.Password(auth.SSHPassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Matches the provider's current SSH behavior.
+		Timeout:         20 * time.Second,
+	}
+	return ssh.Dial("tcp", net.JoinHostPort(strings.TrimSpace(host), fmt.Sprintf("%d", defaultProxmoxSSHPort)), clientConfig)
 }
 
 func imgImportVolumeParts(volumeID string) (string, string, bool) {
@@ -607,7 +694,7 @@ func (r *Runner) execTerraformWithProgress(workDir string, env []string, onProgr
 		}
 		chunk := snapshot[lastOutputLength:]
 		lastOutputLength = len(snapshot)
-		onProgress(compactTerraformProgressOutput(chunk))
+		onProgress(compactTerraformProgressOutput(redactTerraformSecrets(chunk)))
 	}
 
 	ticker := time.NewTicker(terraformProgressInterval)
@@ -616,7 +703,7 @@ func (r *Runner) execTerraformWithProgress(workDir string, env []string, onProgr
 		select {
 		case err := <-done:
 			emitProgress(false)
-			combined := output.String()
+			combined := redactTerraformSecrets(output.String())
 			if err != nil {
 				return combined, fmt.Errorf("terraform %s failed: %w", strings.Join(args, " "), err)
 			}
@@ -625,6 +712,10 @@ func (r *Runner) execTerraformWithProgress(workDir string, env []string, onProgr
 			emitProgress(true)
 		}
 	}
+}
+
+func redactTerraformSecrets(output string) string {
+	return proxacloudEnrollmentTokenPattern.ReplaceAllString(output, "pct_[REDACTED]")
 }
 
 type synchronizedBuffer struct {
@@ -940,7 +1031,7 @@ resource "proxmox_virtual_environment_file" "cloud_init" {
   node_name    = each.value.proxmox_node_name
 
   source_raw {
-    data      = file("${path.module}/cloud-init/${each.value.vm_name}.yaml")
+    data      = sensitive(file("${path.module}/cloud-init/${each.value.vm_name}.yaml"))
     file_name = "${each.value.vm_name}.yaml"
   }
 }
@@ -1069,7 +1160,7 @@ resource "proxmox_virtual_environment_file" "cloud_init" {
   node_name    = var.proxmox_node_name
 
   source_raw {
-    data      = file("${path.module}/cloud-init/user-data.yaml")
+    data      = sensitive(file("${path.module}/cloud-init/user-data.yaml"))
     file_name = "${var.name}-user-data.yaml"
   }
 }
