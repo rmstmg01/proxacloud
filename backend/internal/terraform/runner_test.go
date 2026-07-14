@@ -51,6 +51,17 @@ func TestRedactTerraformSecrets(t *testing.T) {
 	}
 }
 
+func TestPrepareSnippetStorageCommandSupportsOlderPVE(t *testing.T) {
+	if strings.Contains(prepareSnippetStorageCommand, "pvesm config") {
+		t.Fatal("snippet preflight uses unsupported pvesm config command")
+	}
+	for _, want := range []string{"pvesh get /storage/local", "mkdir -p", "pvesm set local --content"} {
+		if !strings.Contains(prepareSnippetStorageCommand, want) {
+			t.Fatalf("snippet preflight missing %q", want)
+		}
+	}
+}
+
 func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 	runner := NewRunner("terraform", t.TempDir(), "")
 

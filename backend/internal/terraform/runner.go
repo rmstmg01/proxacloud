@@ -418,6 +418,17 @@ func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth Proxmox
 var safeProxmoxImportComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var proxacloudEnrollmentTokenPattern = regexp.MustCompile(`pct_[A-Za-z0-9_-]+`)
 
+const prepareSnippetStorageCommand = `set -eu
+storage_json=$(pvesh get /storage/local --output-format json)
+base=$(printf '%s' "$storage_json" | sed -n 's/.*"path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+content=$(printf '%s' "$storage_json" | sed -n 's/.*"content"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+test -n "$base"
+mkdir -p "$base/snippets"
+case ",$content," in
+  *,snippets,*) ;;
+  *) pvesm set local --content "${content:+$content,}snippets" >/dev/null ;;
+esac`
+
 func prepareCloudInitSnippetStorage(workDir string, auth ProxmoxAuth) (string, error) {
 	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
 	raw, err := os.ReadFile(tfvarsPath)
@@ -473,16 +484,7 @@ func prepareCloudInitSnippetStorage(workDir string, auth ProxmoxAuth) (string, e
 			client.Close()
 			return "", fmt.Errorf("open Proxmox SSH session on %s to prepare cloud-init snippets: %w", host, err)
 		}
-		command := `set -eu
-base=$(pvesm config local | awk '$1 == "path" { print $2; exit }')
-content=$(pvesm config local | awk '$1 == "content" { print $2; exit }')
-test -n "$base"
-mkdir -p "$base/snippets"
-case ",$content," in
-  *,snippets,*) ;;
-  *) pvesm set local --content "${content:+$content,}snippets" >/dev/null ;;
-esac`
-		commandOutput, runErr := session.CombinedOutput(command)
+		commandOutput, runErr := session.CombinedOutput(prepareSnippetStorageCommand)
 		_ = session.Close()
 		_ = client.Close()
 		if runErr != nil {
