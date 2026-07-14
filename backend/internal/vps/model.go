@@ -25,6 +25,7 @@ import (
 	"proxacloud/backend/internal/sshkeys"
 	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
+	"proxacloud/backend/internal/tunnelinfra"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -86,6 +87,7 @@ type Service struct {
 	autoApply          bool
 	tunnelConfig       TunnelConfig
 	tunnelClient       tunnelAPI
+	tunnelInfra        *tunnelinfra.Service
 	mailer             tunnelMailer
 	consoleSessionsMu  sync.Mutex
 	consoleSessions    map[string]consoleSessionRecord

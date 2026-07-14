@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"proxacloud/backend/internal/proxacloudtunnelapi"
+	"proxacloud/backend/internal/tunnelinfra"
 )
 
 var ErrTunnelAttachmentNotFound = errors.New("vps tunnel attachment not found")
@@ -126,7 +127,19 @@ func (s *Service) SetTunnelIntegration(cfg TunnelConfig, client tunnelAPI, maile
 	s.tunnelConfig = cfg
 	s.tunnelClient = client
 	s.mailer = mailer
+	s.tunnelInfra = tunnelinfra.New(tunnelinfra.Config{
+		Enabled: cfg.Enabled, APIURL: cfg.APIURL, GatewayURL: cfg.GatewayURL,
+		HostnameSuffix: cfg.HostnameSuffix, AgentBinaryURL: cfg.AgentBinaryURL,
+		Cloudflare: tunnelinfra.CloudflareConfig{
+			Enabled: cfg.CloudflareDNS.Enabled, APIToken: cfg.CloudflareDNS.APIToken,
+			ZoneID: cfg.CloudflareDNS.ZoneID, Domain: cfg.CloudflareDNS.Domain,
+			Target: cfg.CloudflareDNS.Target, RecordType: cfg.CloudflareDNS.RecordType,
+			Proxied: cfg.CloudflareDNS.Proxied,
+		},
+	}, client)
 }
+
+func (s *Service) TunnelInfrastructure() *tunnelinfra.Service { return s.tunnelInfra }
 
 func (s *Service) configureTunnelForCreate(ctx context.Context, vpsID int64, req CreateRequest, sshUser string) (string, *TunnelAttachment, error) {
 	if !s.tunnelConfigured() {
@@ -258,43 +271,30 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 }
 
 func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment TunnelAttachment, vpsName string) (string, TunnelAttachment, error) {
-	tunnelName := fmt.Sprintf("VPS %s", vpsName)
-	tunnel, err := s.tunnelClient.CreateTunnel(ctx, proxacloudtunnelapi.CreateTunnelRequest{
-		Name:        tunnelName,
-		Slug:        "vps-" + sanitizeName(vpsName),
-		Description: fmt.Sprintf("Managed VPS tunnel for %s", vpsName),
-	})
-	if err != nil {
-		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud tunnel: %w", err)
+	if s.tunnelInfra == nil {
+		return "", TunnelAttachment{}, errors.New("shared tunnel infrastructure service is not configured")
 	}
-	httpRoute, err := s.tunnelClient.CreateHTTPRoute(ctx, tunnel.ID, proxacloudtunnelapi.CreateHTTPRouteRequest{
-		Hostname:  attachment.PublicHostname,
-		TargetURL: attachment.HTTPTargetURL,
-		TLSMode:   "edge",
-		Enabled:   true,
-	})
-	if err != nil {
-		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud HTTP route: %w", err)
-	}
-	tcpRoute, selectedPort, err := s.createTCPRouteWithPortRetry(ctx, tunnel.ID, attachment)
-	if err != nil {
-		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud TCP route: %w", err)
-	}
-	attachment.PublicPort = selectedPort
-	token, err := s.tunnelClient.CreateToken(ctx, tunnel.ID, proxacloudtunnelapi.CreateTokenRequest{
-		Name:  "VPS agent token",
-		Scope: "all",
-	})
-	if err != nil {
-		return "", TunnelAttachment{}, fmt.Errorf("create proxacloud agent token: %w", err)
-	}
-	dnsResult, err := s.ensureCloudflareDNSRecord(ctx, attachment)
+	ports, err := s.candidateTunnelPorts(ctx, attachment.PublicPort)
 	if err != nil {
 		return "", TunnelAttachment{}, err
 	}
-
-	installCommand := s.agentInstallCommand(tunnel.ID, token.Token)
-	redactedCommand := strings.ReplaceAll(installCommand, token.Token, "REDACTED")
+	provisioned, err := s.tunnelInfra.Provision(ctx, tunnelinfra.ProvisionRequest{
+		Name: fmt.Sprintf("VPS %s", vpsName), Slug: "vps-" + sanitizeName(vpsName),
+		Description: fmt.Sprintf("Managed VPS tunnel for %s", vpsName),
+		Hostname:    attachment.PublicHostname, PublicPorts: ports,
+		TCPTargetHost: attachment.TCPTargetHost, TCPTargetPort: attachment.TCPTargetPort,
+		CreateHTTPRoute: true, HTTPTargetURL: attachment.HTTPTargetURL,
+		AgentTargetURL: attachment.HTTPTargetURL, TokenName: "VPS agent token",
+	})
+	if err != nil {
+		return "", TunnelAttachment{}, err
+	}
+	attachment.PublicPort = provisioned.PublicPort
+	installCommand := provisioned.InstallCommand
+	redactedCommand := installCommand
+	if marker := strings.Index(redactedCommand, "--token"); marker >= 0 {
+		redactedCommand = redactedCommand[:marker] + "--token 'REDACTED'"
+	}
 	var out TunnelAttachment
 	err = s.db.QueryRowContext(ctx, `
 		UPDATE vps_tunnel_attachments
@@ -318,8 +318,8 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 		          install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
 		          status, last_error, emailed_at, created_at, updated_at
-	`, attachment.ID, tunnel.ID, httpRoute.ID, tcpRoute.ID, token.Item.ID, redactedCommand,
-		dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status, attachment.PublicPort).Scan(
+	`, attachment.ID, provisioned.TunnelID, provisioned.HTTPRouteID, provisioned.TCPRouteID, provisioned.TokenID, redactedCommand,
+		provisioned.DNS.RecordID, provisioned.DNS.RecordType, provisioned.DNS.Content, provisioned.DNS.Proxied, provisioned.DNS.Status, attachment.PublicPort).Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
 		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
@@ -558,6 +558,7 @@ func (s *Service) hostnameForVPS(name string) (string, error) {
 	if base == "" {
 		base = "vps"
 	}
+	if s.tunnelInfra != nil { return s.tunnelInfra.Hostname(base) }
 	if suffix := strings.TrimSpace(s.tunnelConfig.HostnameSuffix); suffix != "" {
 		suffix = strings.TrimPrefix(suffix, ".")
 		return base + "." + suffix, nil

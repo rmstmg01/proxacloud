@@ -63,6 +63,13 @@ type cloudflareDNSListResponse struct {
 }
 
 func (s *Service) ensureCloudflareDNSRecord(ctx context.Context, attachment TunnelAttachment) (cloudflareDNSResult, error) {
+	if s.tunnelInfra != nil {
+		result, err := s.tunnelInfra.EnsureDNS(ctx, attachment.PublicHostname)
+		if err != nil {
+			return cloudflareDNSResult{}, err
+		}
+		return cloudflareDNSResult{RecordID: result.RecordID, RecordType: result.RecordType, Content: result.Content, Proxied: result.Proxied, Status: result.Status}, nil
+	}
 	cfg := s.tunnelConfig.CloudflareDNS
 	if !cfg.Enabled {
 		return cloudflareDNSResult{Status: "disabled"}, nil
@@ -264,6 +271,9 @@ func (s *Service) findCloudflareDNSRecord(ctx context.Context, fqdn, recordType 
 }
 
 func (s *Service) deleteCloudflareDNSRecord(ctx context.Context, recordID string) error {
+	if s.tunnelInfra != nil {
+		return s.tunnelInfra.DeleteDNS(ctx, recordID)
+	}
 	cfg := s.tunnelConfig.CloudflareDNS
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, cloudflareAPIBaseURL+"/zones/"+cfg.ZoneID+"/dns_records/"+recordID, nil)
 	if err != nil {

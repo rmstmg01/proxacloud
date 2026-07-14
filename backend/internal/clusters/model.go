@@ -32,6 +32,7 @@ import (
 	"proxacloud/backend/internal/tenant"
 	"proxacloud/backend/internal/terraform"
 	"proxacloud/backend/internal/topology"
+	"proxacloud/backend/internal/tunnelinfra"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -50,6 +51,8 @@ type NetworkStore interface {
 // up stored credentials when running Terraform.
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+	ListEnabledNodes() ([]proxmox.Node, error)
+	ListStorageInventory() (proxmox.StorageInventory, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 	GetVMStatusByName(cred proxmox.Credential, proxmoxNodeName string, vmName string) (string, error)
 }
@@ -79,6 +82,9 @@ type Service struct {
 	kubectlRuns     map[string]*kubectlCommandRunState
 	nodeRunsMu      sync.RWMutex
 	nodeRuns        map[string]*NodeCommandRunState
+	tunnelInfra     *tunnelinfra.Service
+	tunnelPortStart int
+	tunnelPortEnd   int
 }
 
 var ErrClusterExists = errors.New("cluster already exists")
@@ -98,6 +104,7 @@ type ProvisionRequest struct {
 	NetworkProfileID    int64  `json:"network_profile_id"`
 	KubernetesVersion   string `json:"kubernetes_version"`
 	UbuntuImage         string `json:"ubuntu_image"`
+	CloudInitImageID    int64  `json:"cloud_init_image_id"`
 	SSHPublicKey        string `json:"ssh_public_key"`
 	ControlPlaneCPU     int    `json:"control_plane_cpu"`
 	ControlPlaneRAMMB   int    `json:"control_plane_ram_mb"`
@@ -198,6 +205,10 @@ type ClusterNodeRecord struct {
 	IPAddress           string `json:"ip_address"`
 	ProxmoxNodeName     string `json:"proxmox_node_name"`
 	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
+	Hostname            string `json:"hostname"`
+	FQDN                string `json:"fqdn"`
+	TunnelPublicPort    int    `json:"tunnel_public_port,omitempty"`
+	SSHCommand          string `json:"ssh_command,omitempty"`
 }
 
 type ClusterSummary struct {
@@ -903,18 +914,28 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	if err := s.resolveProvisionSSHKey(&req); err != nil {
 		return ProvisionResponse{}, err
 	}
+	if err := s.resolveProvisionImage(&req); err != nil {
+		return ProvisionResponse{}, err
+	}
+	if err := s.resolveAutomaticInfrastructure(&req); err != nil {
+		return ProvisionResponse{}, err
+	}
 
 	if err := validateProvisionRequest(req); err != nil {
 		return ProvisionResponse{}, err
 	}
 
-	plan, err := s.planner.Plan(topology.PlanRequest{
+	plan, automaticNetworkProfileID, err := s.planAutomaticInfrastructure(topology.PlanRequest{
 		TopologyType:      req.TopologyType,
 		ControlPlaneCount: req.ControlPlaneCount,
 		WorkerCount:       req.WorkerCount,
-	})
+	}, req.ControlPlaneRAMMB, req.WorkerRAMMB)
 	if err != nil {
 		return ProvisionResponse{}, err
+	}
+	req.NetworkProfileID = automaticNetworkProfileID
+	if len(plan.SelectedProxmoxNode) > 0 {
+		req.ProxmoxCredentialID = req.NodeCredentialIDs[plan.SelectedProxmoxNode[0]]
 	}
 
 	nodeCredentialIDs, clusterCredentialID, err := resolveProvisionNodeCredentials(req, plan)
@@ -967,6 +988,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, err
 	}
 
+	applyNow := req.Apply || s.autoApply
 	vms := make([]terraform.VMNode, 0, len(plan.Placements))
 	iteratorsByNode := make(map[string]*ipIterator)
 	assignedIPs := make(map[string]struct{})
@@ -1034,8 +1056,16 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			VLAN:            networkCfg.VLAN,
 		})
 
-		if err := s.insertClusterNode(clusterID, placement, vmName, assignedIP, credentialID); err != nil {
+		clusterNodeID, err := s.insertClusterNode(clusterID, placement, vmName, assignedIP, credentialID)
+		if err != nil {
 			return ProvisionResponse{}, err
+		}
+		if applyNow {
+			if command, tunnelWarning := s.provisionClusterNodeTunnel(clusterNodeID, clusterID, vmName); tunnelWarning != "" {
+				poolWarnings = append(poolWarnings, tunnelWarning)
+			} else {
+				vms[len(vms)-1].AgentInstallCommand = command
+			}
 		}
 	}
 
@@ -1054,7 +1084,6 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		return ProvisionResponse{}, errors.New("unable to resolve credential groups for provisioning")
 	}
 
-	applyNow := req.Apply || s.autoApply
 	if applyNow {
 		operationID, opErr := s.startClusterOperation(clusterID, "provision", "prepare-workspaces", 5)
 		if opErr != nil {
@@ -1182,6 +1211,16 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 	provisionResp, err := s.Provision(provisionReq)
 	if err != nil {
 		return ProvisionAndBootstrapResponse{}, err
+	}
+	if provisionResp.Topology.ControlPlaneCount > 1 {
+		bootstrapReq.DeployKubeVIP = true
+		if strings.TrimSpace(bootstrapReq.ControlPlaneVIP) == "" {
+			vip, vipErr := s.allocateAutomaticControlPlaneVIP(provisionResp.ClusterID)
+			if vipErr != nil {
+				return ProvisionAndBootstrapResponse{}, vipErr
+			}
+			bootstrapReq.ControlPlaneVIP = vip
+		}
 	}
 
 	if err := s.saveBootstrapSettingsForDeferredStart(provisionResp.ClusterID, bootstrapReq); err != nil {
@@ -1958,6 +1997,10 @@ func (s *Service) DeleteCluster(clusterID int64, confirmationName string) error 
 		}
 	}
 
+	if err := s.cleanupClusterTunnels(clusterID); err != nil {
+		return fmt.Errorf("delete cluster tunnel resources: %w", err)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin cluster metadata delete: %w", err)
@@ -2214,8 +2257,8 @@ func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error
 				return ScaleResponse{}, credErr
 			}
 			_, execErr := s.db.Exec(
-				`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, proxmox_credential_id)
-				 VALUES ($1, 'worker', $2, $3, $4, $5)`,
+				`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, hostname, proxmox_credential_id)
+				 VALUES ($1, 'worker', $2, $3, $4, $4, $5)`,
 				clusterID,
 				nextIndex,
 				selectedNode,
@@ -2232,6 +2275,9 @@ func (s *Service) Scale(clusterID int64, req ScaleRequest) (ScaleResponse, error
 		toRemove := len(currentWorkers) - req.TargetWorkerCount
 		for i := len(currentWorkers) - 1; i >= 0 && toRemove > 0; i-- {
 			n := currentWorkers[i]
+			if err := s.cleanupClusterNodeTunnel(n.ID); err != nil {
+				return ScaleResponse{}, fmt.Errorf("delete worker tunnel resources: %w", err)
+			}
 			_, execErr := s.db.Exec(`DELETE FROM cluster_nodes WHERE id = $1`, n.ID)
 			if execErr != nil {
 				return ScaleResponse{}, fmt.Errorf("delete worker node: %w", execErr)
@@ -2336,6 +2382,9 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 	}
 
 	newVMName := existing.VMName + "-r"
+	if err := s.cleanupClusterNodeTunnel(existing.ID); err != nil {
+		return ReplaceNodeResponse{}, fmt.Errorf("delete replaced node tunnel resources: %w", err)
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return ReplaceNodeResponse{}, fmt.Errorf("begin replace node transaction: %w", err)
@@ -2347,8 +2396,8 @@ func (s *Service) ReplaceNode(clusterID int64, req ReplaceNodeRequest) (ReplaceN
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address, proxmox_credential_id)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, hostname, ip_address, proxmox_credential_id)
+		 VALUES ($1, $2, $3, $4, $5, $5, NULLIF($6, ''), $7)`,
 		clusterID,
 		existing.Role,
 		existing.RoleIndex,
@@ -6788,6 +6837,49 @@ func alignIPToCIDR(start string, cidr string) (string, error) {
 	return "", fmt.Errorf("ip %s cannot be aligned to usable host in cidr %s", ip.String(), cidrNet.String())
 }
 
+func (s *Service) allocateAutomaticControlPlaneVIP(clusterID int64) (string, error) {
+	summary, err := s.getClusterSummary(clusterID)
+	if err != nil {
+		return "", err
+	}
+	profile, err := s.networks.GetByID(summary.NetworkProfileID)
+	if err != nil {
+		return "", fmt.Errorf("load subnet for automatic control-plane VIP: %w", err)
+	}
+	start, err := alignIPToCIDR("0.0.0.5", profile.CIDR)
+	if err != nil {
+		return "", err
+	}
+	assigned := map[string]struct{}{}
+	reserved, err := s.networks.GetReservedIPsByNetworkProfileID(profile.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range reserved {
+		if ip := strings.TrimSpace(item.IPAddress); ip != "" {
+			assigned[ip] = struct{}{}
+		}
+	}
+	nodes, err := s.getClusterNodes(clusterID)
+	if err != nil {
+		return "", err
+	}
+	for _, node := range nodes {
+		if ip := strings.TrimSpace(node.IPAddress); ip != "" {
+			assigned[ip] = struct{}{}
+		}
+	}
+	iterator, err := newIPIterator(start, profile.CIDR, profile.Gateway, assigned)
+	if err != nil {
+		return "", err
+	}
+	vip, err := iterator.nextAvailable()
+	if err != nil {
+		return "", fmt.Errorf("allocate automatic control-plane VIP: %w", err)
+	}
+	return vip, nil
+}
+
 // nextAvailable advances until it finds an IP that does not respond to ping,
 // then returns that IP. It tries up to 64 addresses before giving up.
 func (it *ipIterator) nextAvailable() (string, error) {
@@ -7029,10 +7121,11 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 	return clusterID, nil
 }
 
-func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string, ipAddress string, proxmoxCredentialID int64) error {
-	_, err := s.db.Exec(
-		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, ip_address, proxmox_credential_id)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+func (s *Service) insertClusterNode(clusterID int64, placement topology.Placement, vmName string, ipAddress string, proxmoxCredentialID int64) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(
+		`INSERT INTO cluster_nodes (cluster_id, role, role_index, proxmox_node_name, vm_name, hostname, ip_address, proxmox_credential_id)
+		 VALUES ($1, $2, $3, $4, $5, $5, NULLIF($6, ''), $7) RETURNING id`,
 		clusterID,
 		placement.Role,
 		placement.Index,
@@ -7040,11 +7133,11 @@ func (s *Service) insertClusterNode(clusterID int64, placement topology.Placemen
 		vmName,
 		strings.TrimSpace(ipAddress),
 		proxmoxCredentialID,
-	)
+	).Scan(&id)
 	if err != nil {
-		return fmt.Errorf("insert cluster node: %w", err)
+		return 0, fmt.Errorf("insert cluster node: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 func (s *Service) insertProvisionRun(clusterID int64, action, status, workDir, output string) error {
@@ -7600,10 +7693,10 @@ func (s *Service) latestProvisionWorkDir(clusterID int64) (string, error) {
 
 func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) {
 	rows, err := s.db.Query(
-		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name, COALESCE(proxmox_credential_id, 0)
-		 FROM cluster_nodes
-		 WHERE cluster_id = $1
-		 ORDER BY role, role_index`,
+		`SELECT n.id, n.role, n.role_index, n.vm_name, COALESCE(n.ip_address, ''), n.proxmox_node_name, COALESCE(n.proxmox_credential_id, 0), COALESCE(NULLIF(n.hostname,''),n.vm_name), COALESCE(n.fqdn,''), COALESCE(t.public_port,0)
+		 FROM cluster_nodes n LEFT JOIN cluster_node_tunnel_attachments t ON t.cluster_node_id=n.id
+		 WHERE n.cluster_id = $1
+		 ORDER BY n.role, n.role_index`,
 		clusterID,
 	)
 	if err != nil {
@@ -7614,8 +7707,11 @@ func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) 
 	out := make([]ClusterNodeRecord, 0)
 	for rows.Next() {
 		var n ClusterNodeRecord
-		if scanErr := rows.Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID); scanErr != nil {
+		if scanErr := rows.Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID, &n.Hostname, &n.FQDN, &n.TunnelPublicPort); scanErr != nil {
 			continue
+		}
+		if n.FQDN != "" && n.TunnelPublicPort > 0 {
+			n.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", n.FQDN, n.TunnelPublicPort)
 		}
 		out = append(out, n)
 	}
@@ -7626,17 +7722,20 @@ func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) 
 func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (ClusterNodeRecord, error) {
 	var n ClusterNodeRecord
 	err := s.db.QueryRow(
-		`SELECT id, role, role_index, vm_name, COALESCE(ip_address, ''), proxmox_node_name, COALESCE(proxmox_credential_id, 0)
-		 FROM cluster_nodes
-		 WHERE cluster_id = $1 AND vm_name = $2`,
+		`SELECT n.id, n.role, n.role_index, n.vm_name, COALESCE(n.ip_address, ''), n.proxmox_node_name, COALESCE(n.proxmox_credential_id, 0), COALESCE(NULLIF(n.hostname,''),n.vm_name), COALESCE(n.fqdn,''), COALESCE(t.public_port,0)
+		 FROM cluster_nodes n LEFT JOIN cluster_node_tunnel_attachments t ON t.cluster_node_id=n.id
+		 WHERE n.cluster_id = $1 AND n.vm_name = $2`,
 		clusterID,
 		strings.TrimSpace(nodeName),
-	).Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID)
+	).Scan(&n.ID, &n.Role, &n.RoleIndex, &n.VMName, &n.IPAddress, &n.ProxmoxNodeName, &n.ProxmoxCredentialID, &n.Hostname, &n.FQDN, &n.TunnelPublicPort)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ClusterNodeRecord{}, errors.New("cluster node not found")
 		}
 		return ClusterNodeRecord{}, fmt.Errorf("query cluster node: %w", err)
+	}
+	if n.FQDN != "" && n.TunnelPublicPort > 0 {
+		n.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", n.FQDN, n.TunnelPublicPort)
 	}
 	return n, nil
 }
@@ -7906,6 +8005,64 @@ func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
 	req.SSHPublicKey = strings.TrimSpace(pair.PublicKey)
 	if req.SSHPublicKey == "" {
 		return errors.New("selected ssh key pair has empty public key")
+	}
+	return nil
+}
+
+func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
+	if req.CloudInitImageID > 0 {
+		var imagePath string
+		if err := s.db.QueryRow(`SELECT image_path FROM vps_cloud_init_images WHERE id = $1`, req.CloudInitImageID).Scan(&imagePath); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("selected shared cloud image not found")
+			}
+			return fmt.Errorf("load shared cloud image: %w", err)
+		}
+		req.UbuntuImage = imagePath
+	}
+	req.UbuntuImage = strings.TrimSpace(req.UbuntuImage)
+	if !strings.HasPrefix(strings.ToLower(req.UbuntuImage), "cloud-images:import/") {
+		return errors.New("select an OS image from the shared cloud-images NFS import storage")
+	}
+	return nil
+}
+
+func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {
+	nodes, err := s.proxmoxSvc.ListEnabledNodes()
+	if err != nil {
+		return fmt.Errorf("list enabled proxmox nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return errors.New("no enabled proxmox nodes discovered")
+	}
+	req.NodeCredentialIDs = make(map[string]int64, len(nodes))
+	req.ProxmoxCredentialID = 0
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Status) != "" && !strings.EqualFold(node.Status, "online") {
+			continue
+		}
+		if node.CredentialID > 0 {
+			req.NodeCredentialIDs[node.NodeName] = node.CredentialID
+		}
+	}
+	tags, err := s.networks.ListNodeTagMap()
+	if err != nil {
+		return fmt.Errorf("load node network tags: %w", err)
+	}
+	req.NodeNetworkProfileIDs = tags
+	if len(tags) == 0 {
+		return errors.New("no subnet is mapped to any enabled Proxmox node; configure node network tags first")
+	}
+	if req.ProxmoxCredentialID <= 0 {
+		for _, node := range nodes {
+			if id := req.NodeCredentialIDs[node.NodeName]; id > 0 {
+				req.ProxmoxCredentialID = id
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(req.NodeIPPoolStart) == "" {
+		req.NodeIPPoolStart = "0.0.0.10"
 	}
 	return nil
 }

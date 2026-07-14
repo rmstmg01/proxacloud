@@ -1,704 +1,163 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
-import { checkClusterName, provisionAndBootstrapCluster, provisionCluster } from '../api/clusters';
-import { getNetworks, getNodeNetworkTags } from '../api/networks';
-import { getCredentials, getNodes } from '../api/proxmox';
-import { getSSHKeys } from '../api/sshKeys';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, Plus, Server } from 'lucide-react';
+import { checkClusterName, provisionAndBootstrapCluster } from '../api/clusters';
+import { createSSHKey, getSSHKeys } from '../api/sshKeys';
+import { getVPSCloudInitImages } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
-import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card';
-import { Input, Select, Textarea } from '../components/ui/Input';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { Input, Select, Textarea } from '../components/ui/Input';
+import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
-  const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
-  const { data: nodeTags } = useQuery({ queryKey: ['network-node-tags'], queryFn: getNodeNetworkTags });
-  const { data: credentials } = useQuery({ queryKey: ['proxmox-credentials'], queryFn: getCredentials });
-  const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
+  const queryClient = useQueryClient();
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
-  const [debouncedName, setDebouncedName] = useState('');
-
-  const [form, setForm] = useState({
-    name: '',
-    topology_type: 'tri',
-    control_plane_count: 3,
-    worker_count: 3,
-    network_profile_id: 0,
-    proxmox_credential_id: 0,
-    node_ip_pool_start: '192.168.8.100',
-    kubernetes_version: 'v1.31.4',
-    ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
-    ssh_public_key: '',
-    control_plane_cpu: 2,
-    control_plane_ram_mb: 2048,
-    control_plane_disk_gb: 80,
-    worker_cpu: 2,
-    worker_ram_mb: 2048,
-    worker_disk_gb: 120,
-    ssh_key_pair_id: 0,
-    node_credential_ids: {} as Record<string, number>,
-    node_network_profile_ids: {} as Record<string, number>,
-    node_ip_pool_start_by_node: {} as Record<string, string>,
-    bootstrap_after_provision: false,
-    bootstrap_ssh_user: 'ubuntu',
-    bootstrap_deploy_kube_vip: true,
-    bootstrap_control_plane_vip: '',
-    bootstrap_pod_cidr: '10.244.0.0/16',
-    bootstrap_service_cidr: '10.96.0.0/12',
-    bootstrap_cni: 'calico',
-    metallb_after_bootstrap: false,
-    metallb_namespace: 'metallb-system',
-    metallb_version: 'v0.14.9',
-    metallb_pool_name: 'services',
-    metallb_addresses_raw: '',
-    metallb_interfaces_raw: '',
-    metallb_auto_assign: true,
-    metallb_avoid_buggy_ips: false,
-    apply: false,
-  });
-
-  const enabledNodesByName = Array.from(
-    new Map((proxmoxNodes ?? []).filter((n) => n.enabled).map((n) => [n.node_name, n])).values(),
+  const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
+  const sharedImages = useMemo(
+    () => (images ?? []).filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
+    [images],
   );
-
-  useEffect(() => {
-    if (enabledNodesByName.length === 0) return;
-    setForm((prev) => {
-      const nextMap = { ...prev.node_credential_ids };
-      let changed = false;
-      for (const node of enabledNodesByName) {
-        if (!nextMap[node.node_name] && node.credential_id > 0) {
-          nextMap[node.node_name] = node.credential_id;
-          changed = true;
-        }
-      }
-      if (!changed) return prev;
-      return { ...prev, node_credential_ids: nextMap };
-    });
-  }, [enabledNodesByName]);
-
-  useEffect(() => {
-    if (!nodeTags || nodeTags.length === 0) return;
-    setForm((prev) => {
-      const nextMap = { ...prev.node_network_profile_ids };
-      let changed = false;
-      for (const tag of nodeTags) {
-        if (!nextMap[tag.proxmox_node_name] && tag.network_profile_id > 0) {
-          nextMap[tag.proxmox_node_name] = tag.network_profile_id;
-          changed = true;
-        }
-      }
-      if (!changed) return prev;
-      return { ...prev, node_network_profile_ids: nextMap };
-    });
-  }, [nodeTags]);
-
-  const mutation = useMutation({ mutationFn: provisionCluster });
-  const combinedMutation = useMutation({ mutationFn: provisionAndBootstrapCluster });
-
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setDebouncedName(form.name.trim());
-    }, 350);
-    return () => clearTimeout(handle);
-  }, [form.name]);
-
-  const nameCheckQuery = useQuery({
-    queryKey: ['cluster-name-check', debouncedName],
-    queryFn: () => checkClusterName(debouncedName),
-    enabled: debouncedName.length > 0,
-    retry: 0,
+  const [debouncedName, setDebouncedName] = useState('');
+  const [sshModalOpen, setSSHModalOpen] = useState(false);
+  const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+  const [form, setForm] = useState({
+    name: '', topology_type: 'tri', control_plane_count: 3, worker_count: 3,
+    kubernetes_version: 'v1.31.4', cloud_init_image_id: 0, ssh_key_pair_id: 0,
+    control_plane_cpu: 2, control_plane_ram_mb: 2048, control_plane_disk_gb: 80,
+    worker_cpu: 2, worker_ram_mb: 2048, worker_disk_gb: 120,
   });
 
-  const isNameTaken = nameCheckQuery.data?.exists ?? false;
+  useEffect(() => {
+    const preferred = sharedImages.find((image) => image.is_default) ?? sharedImages[0];
+    if (preferred && form.cloud_init_image_id === 0) {
+      setForm((prev) => ({ ...prev, cloud_init_image_id: preferred.id }));
+    }
+  }, [sharedImages, form.cloud_init_image_id]);
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebouncedName(form.name.trim()), 350);
+    return () => window.clearTimeout(handle);
+  }, [form.name]);
+  const nameCheck = useQuery({
+    queryKey: ['cluster-name-check', debouncedName], queryFn: () => checkClusterName(debouncedName),
+    enabled: debouncedName.length > 0, retry: 0,
+  });
+  const isNameTaken = nameCheck.data?.exists ?? false;
+  const selectedKey = sshKeys?.find((key) => key.id === form.ssh_key_pair_id);
+  const selectedImage = sharedImages.find((image) => image.id === form.cloud_init_image_id);
 
-  const setField = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
-    setForm((f) => ({ ...f, [k]: v }));
+  const createSSH = useMutation({
+    mutationFn: createSSHKey,
+    onSuccess: (key) => {
+      queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
+      setForm((prev) => ({ ...prev, ssh_key_pair_id: key.id }));
+      setSSHModalOpen(false);
+      setSSHForm({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+    },
+  });
+  const provision = useMutation({ mutationFn: provisionAndBootstrapCluster });
+  const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((prev) => ({ ...prev, [key]: value }));
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (isNameTaken) return;
-
-    const nodeCredentialIDs = Object.fromEntries(
-      Object.entries(form.node_credential_ids)
-        .filter(([nodeName, credentialId]) => nodeName.trim() !== '' && Number(credentialId) > 0)
-        .map(([nodeName, credentialId]) => [nodeName, Number(credentialId)]),
-    );
-
-    const nodeNetworkProfileIDs = Object.fromEntries(
-      Object.entries(form.node_network_profile_ids)
-        .filter(([nodeName, profileId]) => nodeName.trim() !== '' && Number(profileId) > 0)
-        .map(([nodeName, profileId]) => [nodeName, Number(profileId)]),
-    );
-
-    const nodeIPPoolStartByNode = Object.fromEntries(
-      Object.entries(form.node_ip_pool_start_by_node)
-        .filter(([nodeName, ip]) => nodeName.trim() !== '' && ip.trim() !== '')
-        .map(([nodeName, ip]) => [nodeName, ip.trim()]),
-    );
-
-    const fallbackCredentialID =
-      Number(form.proxmox_credential_id) > 0
-        ? Number(form.proxmox_credential_id)
-        : Number(Object.values(nodeCredentialIDs)[0] ?? 0);
-
-    const provisionPayload = {
-      ...form,
-      network_profile_id: Number(form.network_profile_id),
-      proxmox_credential_id: fallbackCredentialID,
-      ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
-      node_credential_ids: nodeCredentialIDs,
-      node_network_profile_ids: nodeNetworkProfileIDs,
-      node_ip_pool_start_by_node: nodeIPPoolStartByNode,
-      node_ip_pool_start: form.node_ip_pool_start.trim() || '192.168.8.100',
-      apply: form.bootstrap_after_provision ? true : form.apply,
-    };
-
-    const metallbPayload =
-      form.bootstrap_after_provision && form.metallb_after_bootstrap
-        ? {
-            namespace: form.metallb_namespace.trim() || 'metallb-system',
-            version: form.metallb_version.trim() || 'v0.14.9',
-            address_pools: [
-              {
-                name: form.metallb_pool_name.trim() || 'services',
-                addresses: form.metallb_addresses_raw
-                  .split('\n')
-                  .map((value) => value.trim())
-                  .filter(Boolean),
-                auto_assign: form.metallb_auto_assign,
-                avoid_buggy_ips: form.metallb_avoid_buggy_ips,
-              },
-            ],
-            interfaces: form.metallb_interfaces_raw
-              .split('\n')
-              .map((value) => value.trim())
-              .filter(Boolean),
-            apply: true,
-          }
-        : undefined;
-
-    const result = form.bootstrap_after_provision
-      ? await combinedMutation.mutateAsync({
-          provision: provisionPayload,
-          bootstrap: {
-            ssh_user: form.bootstrap_ssh_user.trim(),
-            ssh_key_pair_id: Number(form.ssh_key_pair_id) || undefined,
-            deploy_kube_vip: form.bootstrap_deploy_kube_vip,
-            control_plane_vip: form.bootstrap_deploy_kube_vip ? form.bootstrap_control_plane_vip.trim() : '',
-            pod_cidr: form.bootstrap_pod_cidr.trim(),
-            service_cidr: form.bootstrap_service_cidr.trim(),
-            cni: form.bootstrap_cni.trim(),
-            node_ips: {},
-            apply: true,
-            metallb: metallbPayload,
-          },
-        })
-      : await mutation.mutateAsync(provisionPayload);
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (isNameTaken || !selectedKey || !selectedImage) return;
+    const result = await provision.mutateAsync({
+      provision: {
+        ...form,
+        network_profile_id: 0,
+        proxmox_credential_id: 0,
+        node_ip_pool_start: '',
+        ubuntu_image: '',
+        ssh_public_key: '',
+        apply: true,
+      },
+      bootstrap: {
+        ssh_user: selectedKey.ssh_user || 'ubuntu',
+        ssh_key_pair_id: selectedKey.id,
+        deploy_kube_vip: false,
+        control_plane_vip: '',
+        pod_cidr: '10.244.0.0/16',
+        service_cidr: '10.96.0.0/12',
+        cni: 'calico',
+        node_ips: {},
+        apply: true,
+      },
+    });
     navigate(`/clusters/${result.cluster_id}?tab=runs`);
   };
 
   return (
     <Layout>
-      <PageHeader
-        title="Provision Cluster"
-        description="Create a new Kubernetes cluster on Proxmox"
-        actions={
-          <Link
-            to="/clusters"
-            className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900 text-sm"
-          >
-            <ArrowLeft className="h-4 w-4" /> Back
-          </Link>
-        }
-      />
-
-      <form onSubmit={handleSubmit} className="space-y-6 max-w-3xl">
-        {/* General */}
+      <PageHeader title="Provision Cluster" description="Automatically place, provision, and bootstrap Kubernetes nodes"
+        actions={<Link to="/clusters" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" /> Back</Link>} />
+      <form onSubmit={handleSubmit} className="max-w-3xl space-y-6">
+        <Alert variant="info" title="Automatic infrastructure placement">
+          ProxaCloud selects eligible online nodes by available RAM and derives their Proxmox credentials, subnet, IP addresses, shared storage, DNS names, and tunnel routes automatically.
+        </Alert>
         <Card>
-          <CardHeader><CardTitle>General</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input
-              label="Cluster name"
-              value={form.name}
-              onChange={(e) => setField('name', e.target.value)}
-              error={isNameTaken ? 'Cluster name already exists' : undefined}
-              helperText={
-                debouncedName.length > 0 && !isNameTaken && !nameCheckQuery.isFetching
-                  ? 'Cluster name is available'
-                  : undefined
-              }
-              required
-              placeholder="homelab-prod"
-            />
-            <Select
-              label="Topology"
-              value={form.topology_type}
-              onChange={(e) => setField('topology_type', e.target.value)}
-            >
-              <option value="single">Single node</option>
-              <option value="dual">Dual node</option>
-              <option value="tri">Tri node (HA)</option>
+          <CardHeader><CardTitle>Cluster</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input label="Cluster name" value={form.name} onChange={(e) => setField('name', e.target.value)} required placeholder="production" error={isNameTaken ? 'Cluster name already exists' : undefined} />
+            <Select label="Topology" value={form.topology_type} onChange={(e) => {
+              const topology = e.target.value;
+              setForm((prev) => ({ ...prev, topology_type: topology, control_plane_count: topology === 'single' ? 1 : topology === 'dual' ? 2 : 3 }));
+            }}>
+              <option value="single">Single node</option><option value="dual">Dual node</option><option value="tri">Tri node (HA)</option>
             </Select>
-            <Input
-              label="Control plane count"
-              type="number"
-              min={1}
-              value={form.control_plane_count}
-              onChange={(e) => setField('control_plane_count', Number(e.target.value))}
-              required
-            />
-            <Input
-              label="Worker count"
-              type="number"
-              min={1}
-              value={form.worker_count}
-              onChange={(e) => setField('worker_count', Number(e.target.value))}
-              required
-            />
-            <Select
-              label="Subnet"
-              value={form.network_profile_id}
-              onChange={(e) => setField('network_profile_id', Number(e.target.value))}
-            >
-              <option value={0}>-- Select subnet --</option>
-              {networks?.map((n) => (
-                <option key={n.id} value={n.id}>
-                  {n.vpc_name || 'default-vpc'} / {n.name} {n.is_default ? '(default)' : ''}
-                </option>
-              ))}
-            </Select>
-            <Select
-              label="Proxmox credential"
-              value={form.proxmox_credential_id}
-              onChange={(e) => setField('proxmox_credential_id', Number(e.target.value))}
-            >
-              <option value={0}>-- Select credential --</option>
-              {credentials?.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({c.endpoint})
-                </option>
-              ))}
-            </Select>
-
-            {form.topology_type === 'tri' && (
-              <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
-                <p className="text-sm font-medium text-slate-800">Per-node credential mapping (Tri-node HA)</p>
-                <p className="text-xs text-slate-600">
-                  Override credentials per Proxmox node. Leave a node on default by keeping "Use default cluster credential".
-                </p>
-                <p className="text-xs text-amber-700">
-                  Note: "apply" runs in background. For multi-credential topologies, Terraform is applied per credential group.
-                </p>
-                {enabledNodesByName.length === 0 ? (
-                  <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first on the Nodes page.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {enabledNodesByName.map((node) => (
-                      <div key={node.node_name} className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-                        <Input
-                          label="Proxmox node"
-                          value={node.node_name}
-                          readOnly
-                        />
-                        <Select
-                          label="Credential"
-                          value={form.node_credential_ids[node.node_name] ?? 0}
-                          onChange={(e) => {
-                            const selected = Number(e.target.value);
-                            setForm((prev) => ({
-                              ...prev,
-                              node_credential_ids: {
-                                ...prev.node_credential_ids,
-                                [node.node_name]: selected,
-                              },
-                            }));
-                          }}
-                        >
-                          <option value={0}>Use default cluster credential</option>
-                          {credentials?.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name} ({c.endpoint})
-                            </option>
-                          ))}
-                        </Select>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
-              <p className="text-sm font-medium text-slate-800">Per-node subnet mapping</p>
-              <p className="text-xs text-slate-600">
-                Assign CIDR source per Proxmox node. If not set, the selected cluster subnet is used.
-              </p>
-              {enabledNodesByName.length === 0 ? (
-                <p className="text-xs text-slate-500">No enabled Proxmox nodes found. Discover nodes first on the Nodes page.</p>
-              ) : (
-                <div className="space-y-2">
-                  {enabledNodesByName.map((node) => (
-                    <div key={node.node_name} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                      <Input
-                        label="Proxmox node"
-                        value={node.node_name}
-                        readOnly
-                      />
-                      <Select
-                        label="Subnet"
-                        value={form.node_network_profile_ids[node.node_name] ?? 0}
-                        onChange={(e) => {
-                          const selected = Number(e.target.value);
-                          setForm((prev) => ({
-                            ...prev,
-                            node_network_profile_ids: {
-                              ...prev.node_network_profile_ids,
-                              [node.node_name]: selected,
-                            },
-                          }));
-                        }}
-                      >
-                        <option value={0}>Use selected cluster subnet</option>
-                        {networks?.map((n) => (
-                          <option key={n.id} value={n.id}>
-                            {n.vpc_name || 'default-vpc'} / {n.name} ({n.cidr})
-                          </option>
-                        ))}
-                      </Select>
-                      <Input
-                        label="IP pool start override (optional)"
-                        value={form.node_ip_pool_start_by_node[node.node_name] ?? ''}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setForm((prev) => ({
-                            ...prev,
-                            node_ip_pool_start_by_node: {
-                              ...prev.node_ip_pool_start_by_node,
-                              [node.node_name]: value,
-                            },
-                          }));
-                        }}
-                        placeholder="e.g. 10.10.20.100"
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <Input
-              label="Kubernetes version"
-              value={form.kubernetes_version}
-              onChange={(e) => setField('kubernetes_version', e.target.value)}
-              placeholder="v1.31.4"
-              required
-            />
-            <Select
-              label="SSH key pair"
-              value={form.ssh_key_pair_id}
-              onChange={(e) => {
-                const selectedID = Number(e.target.value);
-                const selectedKey = sshKeys?.find((key) => key.id === selectedID);
-                setForm((prev) => ({
-                  ...prev,
-                  ssh_key_pair_id: selectedID,
-                  ssh_public_key: selectedKey ? selectedKey.public_key : prev.ssh_public_key,
-                  bootstrap_ssh_user: selectedKey ? selectedKey.ssh_user : prev.bootstrap_ssh_user,
-                }));
-              }}
-            >
-              <option value={0}>-- Select saved key pair (optional) --</option>
-              {sshKeys?.map((key) => (
-                <option key={key.id} value={key.id}>
-                  {key.name} ({key.ssh_user})
-                </option>
-              ))}
-            </Select>
-            <Input
-              label="Node IP pool start"
-              value={form.node_ip_pool_start}
-              onChange={(e) => setField('node_ip_pool_start', e.target.value)}
-              placeholder="192.168.8.100"
-              helperText="First IP to assign; each VM gets the next free address"
-              required
-            />
+            <Input label="Control plane count" type="number" min={1} value={form.control_plane_count} onChange={(e) => setField('control_plane_count', Number(e.target.value))} required />
+            <Input label="Worker count" type="number" min={1} value={form.worker_count} onChange={(e) => setField('worker_count', Number(e.target.value))} required />
+            <Input label="Kubernetes version" value={form.kubernetes_version} onChange={(e) => setField('kubernetes_version', e.target.value)} required />
           </CardContent>
         </Card>
 
-        {/* VM Image */}
         <Card>
-          <CardHeader><CardTitle>VM Image &amp; SSH</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <Input
-              label="Ubuntu image path"
-              value={form.ubuntu_image}
-              onChange={(e) => setField('ubuntu_image', e.target.value)}
-              placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img"
-              required
-            />
-            <Textarea
-              label="SSH public key"
-              value={form.ssh_public_key}
-              onChange={(e) => setField('ssh_public_key', e.target.value)}
-              rows={3}
-              placeholder="ssh-ed25519 AAAA..."
-              helperText="Pick a saved key pair above or paste a public key manually"
-              required={Number(form.ssh_key_pair_id) === 0}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Control plane resources */}
-        <Card>
-          <CardHeader><CardTitle>Control Plane Resources</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Input
-              label="CPU cores"
-              type="number"
-              min={1}
-              value={form.control_plane_cpu}
-              onChange={(e) => setField('control_plane_cpu', Number(e.target.value))}
-            />
-            <Input
-              label="RAM (MB)"
-              type="number"
-              min={2048}
-              step={1024}
-              value={form.control_plane_ram_mb}
-              onChange={(e) => setField('control_plane_ram_mb', Number(e.target.value))}
-            />
-            <Input
-              label="Disk (GB)"
-              type="number"
-              min={20}
-              value={form.control_plane_disk_gb}
-              onChange={(e) => setField('control_plane_disk_gb', Number(e.target.value))}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Worker resources */}
-        <Card>
-          <CardHeader><CardTitle>Worker Resources</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <Input
-              label="CPU cores"
-              type="number"
-              min={1}
-              value={form.worker_cpu}
-              onChange={(e) => setField('worker_cpu', Number(e.target.value))}
-            />
-            <Input
-              label="RAM (MB)"
-              type="number"
-              min={2048}
-              step={1024}
-              value={form.worker_ram_mb}
-              onChange={(e) => setField('worker_ram_mb', Number(e.target.value))}
-            />
-            <Input
-              label="Disk (GB)"
-              type="number"
-              min={20}
-              value={form.worker_disk_gb}
-              onChange={(e) => setField('worker_disk_gb', Number(e.target.value))}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Apply toggle */}
-        <Card>
+          <CardHeader><CardTitle>Shared NFS OS Image</CardTitle></CardHeader>
           <CardContent>
-            <label className="flex items-center gap-3 cursor-pointer mb-3">
-              <input
-                type="checkbox"
-                checked={form.apply}
-                onChange={(e) => setField('apply', e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-              />
-              <span className="text-sm text-slate-700">
-                Apply immediately (run <code className="text-xs bg-slate-100 px-1 py-0.5 rounded">terraform apply</code>)
-              </span>
-            </label>
-
-            <label className="flex items-center gap-3 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.bootstrap_after_provision}
-                onChange={(e) => setField('bootstrap_after_provision', e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-              />
-              <span className="text-sm text-slate-700">Run bootstrap automatically after provision apply</span>
-            </label>
-
-            {form.bootstrap_after_provision && (
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <Input
-                  label="Bootstrap SSH user"
-                  value={form.bootstrap_ssh_user}
-                  onChange={(e) => setField('bootstrap_ssh_user', e.target.value)}
-                  required
-                />
-                <Input
-                  label="Control-plane VIP"
-                  value={form.bootstrap_control_plane_vip}
-                  onChange={(e) => setField('bootstrap_control_plane_vip', e.target.value)}
-                  placeholder="e.g. 192.168.8.50"
-                  helperText={form.bootstrap_deploy_kube_vip ? 'Required when Deploy kube-vip is enabled for an HA endpoint.' : 'Optional. If kube-vip is off, bootstrap will use the first control-plane node directly.'}
-                />
-                <Input
-                  label="Pod CIDR"
-                  value={form.bootstrap_pod_cidr}
-                  onChange={(e) => setField('bootstrap_pod_cidr', e.target.value)}
-                  placeholder="10.244.0.0/16"
-                />
-                <Input
-                  label="Service CIDR"
-                  value={form.bootstrap_service_cidr}
-                  onChange={(e) => setField('bootstrap_service_cidr', e.target.value)}
-                  placeholder="10.96.0.0/12"
-                />
-                <Select
-                  label="CNI"
-                  value={form.bootstrap_cni}
-                  onChange={(e) => setField('bootstrap_cni', e.target.value)}
-                >
-                  <option value="calico">calico</option>
-                  <option value="flannel">flannel</option>
-                </Select>
-                <label className="flex items-center gap-3 self-end pb-2">
-                  <input
-                    type="checkbox"
-                    checked={form.bootstrap_deploy_kube_vip}
-                    onChange={(e) => setField('bootstrap_deploy_kube_vip', e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                  />
-                  <span className="text-sm text-slate-700">Deploy kube-vip</span>
-                </label>
-                <p className="sm:col-span-2 text-xs text-amber-700">
-                  Auto-bootstrap requires a saved SSH key pair with private key.
-                </p>
-                <label className="sm:col-span-2 flex items-center gap-3 border-t border-slate-200 pt-4">
-                  <input
-                    type="checkbox"
-                    checked={form.metallb_after_bootstrap}
-                    onChange={(e) => setField('metallb_after_bootstrap', e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                  />
-                  <span className="text-sm text-slate-700">Deploy MetalLB automatically after bootstrap</span>
-                </label>
-                {form.metallb_after_bootstrap && (
-                  <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4 rounded border border-slate-200 bg-white p-4">
-                    <Input
-                      label="MetalLB namespace"
-                      value={form.metallb_namespace}
-                      onChange={(e) => setField('metallb_namespace', e.target.value)}
-                      placeholder="metallb-system"
-                      required
-                    />
-                    <Input
-                      label="MetalLB version"
-                      value={form.metallb_version}
-                      onChange={(e) => setField('metallb_version', e.target.value)}
-                      placeholder="v0.14.9"
-                      required
-                    />
-                    <Input
-                      label="Address pool name"
-                      value={form.metallb_pool_name}
-                      onChange={(e) => setField('metallb_pool_name', e.target.value)}
-                      placeholder="services"
-                      required
-                    />
-                    <Textarea
-                      label="L2 interfaces"
-                      value={form.metallb_interfaces_raw}
-                      onChange={(e) => setField('metallb_interfaces_raw', e.target.value)}
-                      rows={3}
-                      placeholder={'ens18\neth0'}
-                      helperText="Optional. Leave empty for all eligible interfaces."
-                    />
-                    <div className="sm:col-span-2">
-                      <Textarea
-                        label="Address ranges"
-                        value={form.metallb_addresses_raw}
-                        onChange={(e) => setField('metallb_addresses_raw', e.target.value)}
-                        rows={4}
-                        placeholder={'192.168.8.220-192.168.8.240\n192.168.8.250/32'}
-                        helperText="One CIDR, IP, or IP range per line."
-                        required
-                      />
-                    </div>
-                    <label className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={form.metallb_auto_assign}
-                        onChange={(e) => setField('metallb_auto_assign', e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                      />
-                      <span className="text-sm text-slate-700">Enable auto assignment</span>
-                    </label>
-                    <label className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={form.metallb_avoid_buggy_ips}
-                        onChange={(e) => setField('metallb_avoid_buggy_ips', e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                      />
-                      <span className="text-sm text-slate-700">Avoid buggy .0 and .255 addresses</span>
-                    </label>
-                  </div>
-                )}
-              </div>
-            )}
+            {sharedImages.length === 0 ? <Alert variant="warning" title="No shared images">Discover or upload an image to the cloud-images NFS import storage first.</Alert> :
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{sharedImages.map((image) => {
+                const selected = image.id === form.cloud_init_image_id;
+                return <button key={image.id} type="button" onClick={() => setField('cloud_init_image_id', image.id)} className={`rounded-md border p-4 text-left ${selected ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 hover:bg-slate-50'}`}>
+                  <div className="flex gap-3"><Server className="h-5 w-5 text-slate-500" /><div><p className="font-medium text-slate-900">{image.name}</p><p className="mt-1 break-all text-xs text-slate-500">{image.image_path}</p></div></div>
+                </button>;
+              })}</div>}
           </CardContent>
         </Card>
 
-        {mutation.data && !form.bootstrap_after_provision && (
-          <Alert variant="success" title="Cluster created!">
-            <p>Cluster ID: <strong>{mutation.data.cluster_id}</strong> — Status: <strong>{mutation.data.status}</strong></p>
-            {mutation.data.warnings.length > 0 && (
-              <ul className="mt-2 list-disc list-inside text-amber-800">
-                {mutation.data.warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            )}
-          </Alert>
-        )}
-        {combinedMutation.data && form.bootstrap_after_provision && (
-          <Alert variant="success" title="Provision + bootstrap started!">
-            <p>Cluster ID: <strong>{combinedMutation.data.cluster_id}</strong> — Status: <strong>{combinedMutation.data.status}</strong></p>
-            {combinedMutation.data.warnings.length > 0 && (
-              <ul className="mt-2 list-disc list-inside text-amber-800">
-                {combinedMutation.data.warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            )}
-          </Alert>
-        )}
-        {mutation.error && <ErrorMessage error={mutation.error} />}
-        {combinedMutation.error && <ErrorMessage error={combinedMutation.error} />}
-        {nameCheckQuery.error && <ErrorMessage error={nameCheckQuery.error} />}
+        <Card>
+          <CardHeader><CardTitle>SSH Access</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_auto]">
+            <Select label="SSH key pair" value={form.ssh_key_pair_id} onChange={(e) => setField('ssh_key_pair_id', Number(e.target.value))} required>
+              <option value={0}>-- Select SSH key --</option>
+              {sshKeys?.map((key) => <option key={key.id} value={key.id}>{key.name} ({key.ssh_user})</option>)}
+            </Select>
+            <Button type="button" variant="secondary" onClick={() => setSSHModalOpen(true)}><Plus className="h-4 w-4" /> Paste new SSH key</Button>
+          </CardContent>
+        </Card>
 
-        <div className="flex gap-3">
-          <Button
-            type="submit"
-            loading={mutation.isPending || combinedMutation.isPending}
-            disabled={isNameTaken || nameCheckQuery.isFetching}
-            size="lg"
-          >
-            {form.bootstrap_after_provision
-              ? form.metallb_after_bootstrap
-                ? 'Provision + Bootstrap + MetalLB'
-                : 'Provision + Bootstrap Cluster'
-              : 'Provision Cluster'}
-          </Button>
-          <Button type="button" variant="secondary" size="lg" onClick={() => navigate('/clusters')}>
-            Cancel
-          </Button>
-        </div>
+        {[['Control Plane Resources', 'control_plane_cpu', 'control_plane_ram_mb', 'control_plane_disk_gb'], ['Worker Resources', 'worker_cpu', 'worker_ram_mb', 'worker_disk_gb']].map(([title, cpu, ram, disk]) =>
+          <Card key={title}><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Input label="CPU cores" type="number" min={1} value={form[cpu as keyof typeof form] as number} onChange={(e) => setField(cpu as keyof typeof form, Number(e.target.value) as never)} />
+            <Input label="RAM (MB)" type="number" min={2048} step={1024} value={form[ram as keyof typeof form] as number} onChange={(e) => setField(ram as keyof typeof form, Number(e.target.value) as never)} />
+            <Input label="Disk (GB)" type="number" min={20} value={form[disk as keyof typeof form] as number} onChange={(e) => setField(disk as keyof typeof form, Number(e.target.value) as never)} />
+          </CardContent></Card>)}
+
+        {provision.error && <ErrorMessage error={provision.error} />}
+        <Button type="submit" loading={provision.isPending} disabled={isNameTaken || !selectedKey || !selectedImage}>Provision and bootstrap cluster</Button>
       </form>
+
+      <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add SSH Key Pair">
+        <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); createSSH.mutate(sshForm); }}>
+          <Input label="Name" value={sshForm.name} onChange={(e) => setSSHForm({ ...sshForm, name: e.target.value })} required />
+          <Input label="SSH user" value={sshForm.ssh_user} onChange={(e) => setSSHForm({ ...sshForm, ssh_user: e.target.value })} required />
+          <Textarea label="Public key" rows={3} value={sshForm.public_key} onChange={(e) => setSSHForm({ ...sshForm, public_key: e.target.value })} required />
+          <Textarea label="Private key" rows={7} value={sshForm.private_key} onChange={(e) => setSSHForm({ ...sshForm, private_key: e.target.value })} required />
+          {createSSH.error && <ErrorMessage error={createSSH.error} />}
+          <div className="flex gap-3"><Button type="submit" loading={createSSH.isPending}>Save and select</Button><Button type="button" variant="secondary" onClick={() => setSSHModalOpen(false)}>Cancel</Button></div>
+        </form>
+      </Modal>
     </Layout>
   );
 }

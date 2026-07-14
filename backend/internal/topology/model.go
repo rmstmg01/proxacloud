@@ -64,6 +64,16 @@ func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
 	if len(nodes) == 0 {
 		return PlanResponse{}, errors.New("no enabled proxmox nodes discovered; run discovery first")
 	}
+	online := nodes[:0]
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Status) == "" || strings.EqualFold(node.Status, "online") {
+			online = append(online, node)
+		}
+	}
+	nodes = online
+	if len(nodes) == 0 {
+		return PlanResponse{}, errors.New("no enabled online proxmox nodes are available")
+	}
 
 	minNodes := minimumNodesForTopology(t)
 	if len(nodes) < minNodes {

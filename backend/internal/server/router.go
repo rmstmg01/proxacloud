@@ -190,6 +190,7 @@ func NewApp() (*App, error) {
 			Proxied:    cfg.CloudflareDNSProxied,
 		},
 	}, tunnelAPIClient, mailSender)
+	clusterService.SetTunnelInfrastructure(vpsService.TunnelInfrastructure(), cfg.ProxacloudTunnelPublicPortStart, cfg.ProxacloudTunnelPublicPortEnd)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
 	regionHandler := regions.NewHandler(regionService)

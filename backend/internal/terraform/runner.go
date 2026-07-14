@@ -26,19 +26,20 @@ const (
 const defaultProxmoxSSHPort = 9846
 
 type VMNode struct {
-	VMName             string `json:"vm_name"`
-	Role               string `json:"role"`
-	RoleIndex          int    `json:"role_index"`
-	ProxmoxNodeName    string `json:"proxmox_node_name"`
-	ProxmoxNodeAddress string `json:"proxmox_node_address,omitempty"`
-	CPU                int    `json:"cpu"`
-	MemoryMB           int    `json:"memory_mb"`
-	DiskGB             int    `json:"disk_gb"`
-	IPAddress          string `json:"ip_address,omitempty"`
-	NetworkCIDR        string `json:"network_cidr"`
-	Gateway            string `json:"gateway"`
-	Bridge             string `json:"bridge"`
-	VLAN               int    `json:"vlan"`
+	VMName              string `json:"vm_name"`
+	Role                string `json:"role"`
+	RoleIndex           int    `json:"role_index"`
+	ProxmoxNodeName     string `json:"proxmox_node_name"`
+	ProxmoxNodeAddress  string `json:"proxmox_node_address,omitempty"`
+	CPU                 int    `json:"cpu"`
+	MemoryMB            int    `json:"memory_mb"`
+	DiskGB              int    `json:"disk_gb"`
+	IPAddress           string `json:"ip_address,omitempty"`
+	NetworkCIDR         string `json:"network_cidr"`
+	Gateway             string `json:"gateway"`
+	Bridge              string `json:"bridge"`
+	VLAN                int    `json:"vlan"`
+	AgentInstallCommand string `json:"-"`
 }
 
 type WorkspaceSpec struct {
@@ -196,7 +197,7 @@ func (r *Runner) PrepareWorkspace(spec WorkspaceSpec) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(cloudInitPath, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(cloudInitPath, []byte(content), 0o600); err != nil {
 			return "", fmt.Errorf("write cloud-init file: %w", err)
 		}
 	}
@@ -711,11 +712,12 @@ func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
 	}
 
 	payload := map[string]any{
-		"VMName":       node.VMName,
-		"Role":         node.Role,
-		"ClusterName":  spec.ClusterName,
-		"SSHPublicKey": spec.SSHPublicKey,
-		"IPAddress":    node.IPAddress,
+		"VMName":              node.VMName,
+		"Role":                node.Role,
+		"ClusterName":         spec.ClusterName,
+		"SSHPublicKey":        spec.SSHPublicKey,
+		"IPAddress":           node.IPAddress,
+		"AgentInstallCommand": strings.TrimSpace(node.AgentInstallCommand),
 	}
 
 	var out bytes.Buffer
@@ -803,6 +805,7 @@ variable "nodes" {
 }
 
 locals {
+	ubuntu_image_is_import = can(regex(":import/", var.ubuntu_image))
   node_map = {
     for n in var.nodes : n.vm_name => n
   }
@@ -856,7 +859,8 @@ resource "proxmox_virtual_environment_vm" "k8s" {
 
   disk {
     datastore_id = "local-lvm"
-    file_id      = var.ubuntu_image
+    file_id      = local.ubuntu_image_is_import ? null : var.ubuntu_image
+    import_from  = local.ubuntu_image_is_import ? var.ubuntu_image : null
     interface    = "scsi0"
     size         = each.value.disk_gb
   }
@@ -889,6 +893,9 @@ runcmd:
   - [ bash, -lc, "echo CLUSTER_NAME={{ .ClusterName }} > /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_ROLE={{ .Role }} >> /etc/k8s-cluster.env" ]
   - [ bash, -lc, "echo NODE_IP={{ .IPAddress }} >> /etc/k8s-cluster.env" ]
+{{- if .AgentInstallCommand }}
+  - [ bash, -lc, {{ printf "%q" .AgentInstallCommand }} ]
+{{- end }}
 `
 
 const standaloneVPSTerraformMainTF = `terraform {

@@ -614,6 +614,10 @@ export interface ClusterNodeRecord {
   ip_address: string;
   proxmox_node_name: string;
   proxmox_credential_id: number;
+  hostname: string;
+  fqdn: string;
+  tunnel_public_port?: number;
+  ssh_command?: string;
 }
 
 export interface ProvisionRunRecord {
