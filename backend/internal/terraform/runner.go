@@ -11,11 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -374,6 +377,11 @@ func (r *Runner) applyPreparedWorkspace(workDir string, auth ProxmoxAuth) (RunRe
 
 func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth ProxmoxAuth, onProgress func(string)) (RunResult, error) {
 	output := strings.Builder{}
+	if aliasMessage, err := prepareCloudImageImportAlias(workDir, auth); err != nil {
+		return RunResult{WorkDir: workDir, Output: output.String(), Status: "failed"}, err
+	} else if aliasMessage != "" && onProgress != nil {
+		onProgress(aliasMessage)
+	}
 	authEnv := buildEnv(auth.toEnv())
 	initArgs := r.initArgs()
 	steps := [][]string{
@@ -400,6 +408,118 @@ func (r *Runner) applyPreparedWorkspaceWithProgress(workDir string, auth Proxmox
 	}
 
 	return RunResult{WorkDir: workDir, Output: output.String(), Status: "applied"}, nil
+}
+
+var safeProxmoxImportComponent = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// prepareCloudImageImportAlias handles Ubuntu-style cloud images whose file
+// name ends in .img. Proxmox can list those files as import content, but its
+// directory-storage parser only accepts raw, qcow2 and vmdk extensions when a
+// VM consumes import-from. The alias is a hard link (or symlink fallback) on
+// the shared storage, so the image remains on NFS and is not copied per node.
+func prepareCloudImageImportAlias(workDir string, auth ProxmoxAuth) (string, error) {
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars.json")
+	raw, err := os.ReadFile(tfvarsPath)
+	if err != nil {
+		return "", fmt.Errorf("read terraform workspace variables: %w", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return "", fmt.Errorf("read terraform workspace variables: %w", err)
+	}
+
+	imageKey := ""
+	imageID := ""
+	for _, key := range []string{"ubuntu_image", "cloud_init_image"} {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) != "" {
+			imageKey = key
+			imageID = strings.TrimSpace(value)
+			break
+		}
+	}
+	storageID, filename, ok := imgImportVolumeParts(imageID)
+	if !ok {
+		return "", nil
+	}
+	if !safeProxmoxImportComponent.MatchString(storageID) || !safeProxmoxImportComponent.MatchString(filename) {
+		return "", fmt.Errorf("cloud image import path %q contains unsupported characters", imageID)
+	}
+	if strings.TrimSpace(auth.SSHUsername) == "" || strings.TrimSpace(auth.SSHPassword) == "" {
+		return "", fmt.Errorf("cloud image %q needs a Proxmox-compatible import alias; Proxmox SSH username and password are required to create it on the shared NFS storage", imageID)
+	}
+
+	host := proxmoxSSHAddress(auth.Endpoint)
+	if nodes, ok := values["nodes"].([]any); ok && len(nodes) > 0 {
+		if first, ok := nodes[0].(map[string]any); ok {
+			if address, ok := first["proxmox_node_address"].(string); ok && strings.TrimSpace(address) != "" {
+				host = strings.TrimSpace(address)
+			}
+		}
+	}
+	if host == "" {
+		return "", errors.New("cannot determine a Proxmox SSH address for cloud image import preparation")
+	}
+
+	sourcePath := "/mnt/pve/" + storageID + "/import/" + filename
+	command := fmt.Sprintf(
+		"set -eu; source=%s; test -r \"$source\"; format=$(qemu-img info \"$source\" | sed -n 's/^file format: //p' | head -n 1); case \"$format\" in qcow2|raw|vmdk) ;; *) echo \"unsupported image format: $format\" >&2; exit 1 ;; esac; target=\"${source%%.img}.$format\"; if [ ! -e \"$target\" ]; then ln \"$source\" \"$target\" 2>/dev/null || ln -s \"$source\" \"$target\"; fi; test -r \"$target\"; printf '%%s' \"$format\"",
+		shellQuote(sourcePath),
+	)
+	clientConfig := &ssh.ClientConfig{
+		User:            strings.TrimSpace(auth.SSHUsername),
+		Auth:            []ssh.AuthMethod{ssh.Password(auth.SSHPassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Matches the provider's current SSH behavior.
+		Timeout:         20 * time.Second,
+	}
+	client, err := ssh.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", defaultProxmoxSSHPort)), clientConfig)
+	if err != nil {
+		return "", fmt.Errorf("connect to Proxmox over SSH to prepare shared cloud image: %w", err)
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("open Proxmox SSH session to prepare shared cloud image: %w", err)
+	}
+	formatOutput, err := session.CombinedOutput(command)
+	_ = session.Close()
+	if err != nil {
+		return "", fmt.Errorf("prepare shared cloud image %q: %w: %s", imageID, err, strings.TrimSpace(string(formatOutput)))
+	}
+	format := strings.TrimSpace(string(formatOutput))
+	if format != "qcow2" && format != "raw" && format != "vmdk" {
+		return "", fmt.Errorf("prepare shared cloud image %q returned unsupported format %q", imageID, format)
+	}
+
+	aliasFilename := strings.TrimSuffix(filename, filepath.Ext(filename)) + "." + format
+	aliasID := storageID + ":import/" + aliasFilename
+	values[imageKey] = aliasID
+	updated, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("update terraform workspace image alias: %w", err)
+	}
+	updated = append(updated, '\n')
+	if err := os.WriteFile(tfvarsPath, updated, 0o644); err != nil {
+		return "", fmt.Errorf("update terraform workspace image alias: %w", err)
+	}
+	return fmt.Sprintf("Prepared shared NFS cloud image alias %s for Proxmox import", aliasID), nil
+}
+
+func imgImportVolumeParts(volumeID string) (string, string, bool) {
+	trimmed := strings.TrimSpace(volumeID)
+	separator := strings.Index(strings.ToLower(trimmed), ":import/")
+	if separator <= 0 {
+		return "", "", false
+	}
+	storageID := trimmed[:separator]
+	filename := trimmed[separator+len(":import/"):]
+	if !strings.EqualFold(filepath.Ext(filename), ".img") || strings.ContainsAny(filename, `/\\`) {
+		return "", "", false
+	}
+	return storageID, filename, true
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (r *Runner) DestroyStandaloneVPS(workDir string, auth ProxmoxAuth) (RunResult, error) {

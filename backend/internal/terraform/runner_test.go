@@ -27,6 +27,22 @@ func TestCompactTerraformProgressOutputKeepsLatestOutputWhenTruncated(t *testing
 	}
 }
 
+func TestImgImportVolumeParts(t *testing.T) {
+	storage, filename, ok := imgImportVolumeParts("cloud-images:import/ubuntu-24.04-server-cloudimg-amd64.img")
+	if !ok || storage != "cloud-images" || filename != "ubuntu-24.04-server-cloudimg-amd64.img" {
+		t.Fatalf("imgImportVolumeParts() = %q, %q, %t", storage, filename, ok)
+	}
+	for _, volumeID := range []string{
+		"cloud-images:import/ubuntu-24.04.qcow2",
+		"cloud-images:iso/ubuntu-24.04.img",
+		"cloud-images:import/subdir/ubuntu-24.04.img",
+	} {
+		if _, _, ok := imgImportVolumeParts(volumeID); ok {
+			t.Fatalf("imgImportVolumeParts(%q) unexpectedly accepted", volumeID)
+		}
+	}
+}
+
 func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 	runner := NewRunner("terraform", t.TempDir(), "")
 
