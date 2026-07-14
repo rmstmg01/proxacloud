@@ -162,7 +162,7 @@ func TestPrepareClusterWorkspaceImportsSharedImageAndInstallsTunnelAgent(t *test
 			t.Fatalf("cluster cloud-init missing %s", key)
 		}
 	}
-	for _, want := range []string{"disable_root: false", "name: root"} {
+	for _, want := range []string{"disable_root: false", "name: root", "ssh_pwauth: false", "lock_passwd: true"} {
 		if !strings.Contains(cloudInit, want) {
 			t.Fatalf("cluster cloud-init missing %q", want)
 		}

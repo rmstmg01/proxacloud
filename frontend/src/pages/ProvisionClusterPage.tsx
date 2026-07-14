@@ -12,10 +12,13 @@ import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { architectureLabel, DistributionLogo } from '../components/DistributionLogo';
+import { useAuth } from '../context/AuthContext';
 
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
   const { data: images, error: imageDiscoveryError, isLoading: imagesLoading } = useQuery({
     queryKey: ['cluster-provision-images'],
@@ -95,7 +98,7 @@ export function ProvisionClusterPage() {
         apply: true,
       },
     });
-    navigate(`/clusters/${result.cluster_id}?tab=runs`);
+    navigate(isAdmin ? `/clusters/${result.cluster_id}?tab=runs` : `/clusters/${result.cluster_id}`);
   };
 
   return (

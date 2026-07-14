@@ -90,6 +90,76 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'day2', label: 'Cluster Maintenance' },
 ];
 
+const ACTIVE_DEPLOYMENT_STATUSES = new Set([
+  'prepared',
+  'provisioning',
+  'provisioning-then-bootstrap',
+  'applied',
+  'bootstrap-prepared',
+  'bootstrapping',
+]);
+
+function isClusterDeploymentActive(status?: string): boolean {
+  return ACTIVE_DEPLOYMENT_STATUSES.has((status ?? '').trim().toLowerCase());
+}
+
+function customerDeploymentStatus(status: string): {
+  variant: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+} {
+  const normalized = status.trim().toLowerCase();
+  if (normalized.includes('failed')) {
+    return {
+      variant: 'error',
+      title: 'Deployment needs attention',
+      message: 'The cluster could not be completed. Please contact support and include the cluster name.',
+    };
+  }
+  if (normalized === 'bootstrapped' || normalized === 'metallb-deployed') {
+    return {
+      variant: 'success',
+      title: 'Cluster is ready',
+      message: 'Deployment and Kubernetes configuration completed successfully.',
+    };
+  }
+  if (normalized === 'offline') {
+    return {
+      variant: 'warning',
+      title: 'Cluster is offline',
+      message: 'The cluster is currently offline. Please contact support if this is unexpected.',
+    };
+  }
+  if (normalized === 'bootstrapping' || normalized === 'bootstrap-prepared') {
+    return {
+      variant: 'info',
+      title: 'Configuring Kubernetes',
+      message: 'The cluster nodes are ready and Kubernetes is being configured. You will receive an email when the cluster is ready.',
+    };
+  }
+  if (normalized === 'applied') {
+    return {
+      variant: 'info',
+      title: 'Preparing Kubernetes configuration',
+      message: 'Infrastructure provisioning completed and Kubernetes configuration will start automatically.',
+    };
+  }
+  if (isClusterDeploymentActive(normalized)) {
+    return {
+      variant: 'info',
+      title: 'Creating cluster nodes',
+      message: 'Deployment is in progress. You will receive an email when the cluster is ready.',
+    };
+  }
+  return {
+    variant: normalized === 'online' ? 'success' : 'info',
+    title: normalized === 'online' ? 'Cluster is online' : 'Cluster status',
+    message: normalized === 'online'
+      ? 'The cluster is online and available.'
+      : 'The cluster deployment request has been processed.',
+  };
+}
+
 function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.').map((p) => Number(p));
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return null;
@@ -134,7 +204,7 @@ function shouldPollLatestOperation(operation: ClusterOperation | null | undefine
 
 // ─── Sub-tabs ────────────────────────────────────────────────────────────────
 
-function OverviewTab({ id }: { id: number }) {
+function OverviewTab({ id, customerView = false }: { id: number; customerView?: boolean }) {
   const { data: cluster } = useQuery({ queryKey: ['cluster', id], queryFn: () => getCluster(id) });
   if (!cluster) return <PageSpinner />;
   const fields: [string, string][] = [
@@ -144,28 +214,38 @@ function OverviewTab({ id }: { id: number }) {
     ['Kubernetes Version', cluster.kubernetes_version],
     ['Control Planes', String(cluster.control_plane_count)],
     ['Workers', String(cluster.worker_count)],
-    ['Subnet ID', String(cluster.network_profile_id)],
-    ['Kubeconfig Mode', cluster.kubeconfig_mode === 'dedicated' ? 'Dedicated per-cluster profile' : 'Legacy shared profile'],
-    ['Kubeconfig Path', cluster.kubeconfig_path || 'Using shared fallback'],
+    ...(!customerView ? [
+      ['Subnet ID', String(cluster.network_profile_id)],
+      ['Kubeconfig Mode', cluster.kubeconfig_mode === 'dedicated' ? 'Dedicated per-cluster profile' : 'Legacy shared profile'],
+      ['Kubeconfig Path', cluster.kubeconfig_path || 'Using shared fallback'],
+    ] as [string, string][] : []),
     ['Created', new Date(cluster.created_at).toLocaleString()],
     ['Updated', new Date(cluster.updated_at).toLocaleString()],
   ];
+  const deploymentStatus = customerDeploymentStatus(cluster.status);
   return (
-    <Card>
-      <CardHeader><CardTitle>Cluster Details</CardTitle></CardHeader>
-      <div className="divide-y divide-slate-100">
-        {fields.map(([label, value]) => (
-          <div key={label} className="px-6 py-3 flex items-center">
-            <span className="w-48 text-sm text-slate-500 font-medium flex-shrink-0">{label}</span>
-            {label === 'Status' ? (
-              <StatusBadge status={value} />
-            ) : (
-              <span className="text-sm text-slate-900">{value}</span>
-            )}
-          </div>
-        ))}
-      </div>
-    </Card>
+    <div className="space-y-4">
+      {customerView && (
+        <Alert variant={deploymentStatus.variant} title={deploymentStatus.title}>
+          {deploymentStatus.message}
+        </Alert>
+      )}
+      <Card>
+        <CardHeader><CardTitle>Cluster Details</CardTitle></CardHeader>
+        <div className="divide-y divide-slate-100">
+          {fields.map(([label, value]) => (
+            <div key={label} className="px-6 py-3 flex items-center">
+              <span className="w-48 text-sm text-slate-500 font-medium flex-shrink-0">{label}</span>
+              {label === 'Status' ? (
+                <StatusBadge status={value} />
+              ) : (
+                <span className="text-sm text-slate-900">{value}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
   );
 }
 
@@ -1008,7 +1088,6 @@ const SECRET_PROVIDERS: { value: ClusterSecretProvider; label: string }[] = [
 
 const CUSTOMER_TABS: { key: Tab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
-  { key: 'runs', label: 'Run History' },
 ];
 
 function parseSecretData(raw: string): Record<string, string> {
@@ -3056,7 +3135,11 @@ export function ClusterDetailPage() {
   const { user } = useAuth();
   const clusterId = Number(id);
   const qc = useQueryClient();
-  const { data: cluster, isLoading } = useQuery({ queryKey: ['cluster', clusterId], queryFn: () => getCluster(clusterId) });
+  const { data: cluster, isLoading } = useQuery({
+    queryKey: ['cluster', clusterId],
+    queryFn: () => getCluster(clusterId),
+    refetchInterval: (query) => isClusterDeploymentActive(query.state.data?.status) ? 3000 : false,
+  });
   const initialTab = (searchParams.get('tab') as Tab | null) ?? 'overview';
   const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const visibleTabs = isAdmin ? TABS : CUSTOMER_TABS;
@@ -3083,36 +3166,37 @@ export function ClusterDetailPage() {
         }
       />
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto">
-        {visibleTabs.map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setActiveTab(key)}
-            className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
-              activeTab === key
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {visibleTabs.length > 1 && (
+        <div className="flex gap-1 border-b border-slate-200 mb-6 overflow-x-auto">
+          {visibleTabs.map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
+                activeTab === key
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {activeTab === 'overview' && <OverviewTab id={clusterId} />}
-      {activeTab === 'runs' && <RunsTab id={clusterId} />}
-      {activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
-      {activeTab === 'day2' && <ClusterMaintenanceTab id={clusterId} />}
-      {activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
-      {activeTab === 'storage' && <StorageTab id={clusterId} />}
-      {activeTab === 'secrets' && <SecretsTab id={clusterId} />}
-      {activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
-      {activeTab === 'pullsecrets' && <ImagePullSecretsTab id={clusterId} />}
-      {activeTab === 'manifests' && <ManifestsTab id={clusterId} />}
-      {activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
-      {activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
-      {activeTab === 'etcd' && <EtcdTab id={clusterId} />}
+      {activeTab === 'overview' && <OverviewTab id={clusterId} customerView={!isAdmin} />}
+      {isAdmin && activeTab === 'runs' && <RunsTab id={clusterId} />}
+      {isAdmin && activeTab === 'bootstrap' && <BootstrapTab id={clusterId} />}
+      {isAdmin && activeTab === 'day2' && <ClusterMaintenanceTab id={clusterId} />}
+      {isAdmin && activeTab === 'metallb' && <MetalLBTab id={clusterId} />}
+      {isAdmin && activeTab === 'storage' && <StorageTab id={clusterId} />}
+      {isAdmin && activeTab === 'secrets' && <SecretsTab id={clusterId} />}
+      {isAdmin && activeTab === 'configmaps' && <ConfigMapsTab id={clusterId} />}
+      {isAdmin && activeTab === 'pullsecrets' && <ImagePullSecretsTab id={clusterId} />}
+      {isAdmin && activeTab === 'manifests' && <ManifestsTab id={clusterId} />}
+      {isAdmin && activeTab === 'applications' && <ApplicationsTab id={clusterId} />}
+      {isAdmin && activeTab === 'observability' && <ObservabilityTab id={clusterId} />}
+      {isAdmin && activeTab === 'etcd' && <EtcdTab id={clusterId} />}
     </Layout>
   );
 }
