@@ -103,9 +103,6 @@ export function ProvisionClusterPage() {
       <PageHeader title="Provision Cluster" description="Automatically place, provision, and bootstrap Kubernetes nodes"
         actions={<Link to="/clusters" className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" /> Back</Link>} />
       <form onSubmit={handleSubmit} className="max-w-3xl space-y-6">
-        <Alert variant="info" title="Automatic infrastructure placement">
-          ProxaCloud selects eligible online nodes by available RAM and derives their Proxmox credentials, subnet, IP addresses, shared storage, DNS names, and tunnel routes automatically.
-        </Alert>
         <Card>
           <CardHeader><CardTitle>Cluster</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -123,7 +120,7 @@ export function ProvisionClusterPage() {
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Shared NFS OS Image</CardTitle></CardHeader>
+          <CardHeader><CardTitle>Select Operating System</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             {imageDiscoveryError && <ErrorMessage error={imageDiscoveryError} />}
             {sharedImages.length === 0 && !imageDiscoveryError ? <Alert variant="warning" title={imagesLoading ? 'Checking shared images' : 'No shared images'}>{imagesLoading ? 'Synchronizing the OS image catalog with shared NFS storage.' : 'Upload an Ubuntu image to the cloud-images NFS import storage first.'}</Alert> :

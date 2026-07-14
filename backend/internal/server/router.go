@@ -191,6 +191,7 @@ func NewApp() (*App, error) {
 		},
 	}, tunnelAPIClient, mailSender)
 	clusterService.SetTunnelInfrastructure(vpsService.TunnelInfrastructure(), cfg.ProxacloudTunnelPublicPortStart, cfg.ProxacloudTunnelPublicPortEnd)
+	clusterService.SetMailer(mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
 	regionHandler := regions.NewHandler(regionService)

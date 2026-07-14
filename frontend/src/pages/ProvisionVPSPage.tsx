@@ -482,7 +482,7 @@ export function ProvisionVPSPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Cloud Init Image</CardTitle>
+            <CardTitle>Select Operating System</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             {sharedImages.length > 0 ? (

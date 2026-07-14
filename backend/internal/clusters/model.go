@@ -68,6 +68,10 @@ type TLSCertificateStore interface {
 	GetByID(id int64) (sslcerts.Certificate, error)
 }
 
+type ClusterMailer interface {
+	Send(to, subject, body string) error
+}
+
 type Service struct {
 	db              *sql.DB
 	networks        NetworkStore
@@ -88,6 +92,7 @@ type Service struct {
 	tunnelInfra     *tunnelinfra.Service
 	tunnelPortStart int
 	tunnelPortEnd   int
+	mailer          ClusterMailer
 }
 
 var ErrClusterExists = errors.New("cluster already exists")
@@ -1588,6 +1593,11 @@ func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapRes
 			_ = s.updateClusterOperation(operationID, "succeeded", "completed", 100, "")
 			if dbErr := s.updateClusterStatus(clusterID, finalStatus); dbErr != nil {
 				log.Printf("ERROR updating cluster %d status: %v", clusterID, dbErr)
+			} else if emailed, emailErr := s.emailDeploymentDetails(clusterID); emailErr != nil {
+				log.Printf("ERROR emailing deployment details for cluster %d: %v", clusterID, emailErr)
+				_ = s.appendOperationEvent(operationID, "deployment-email", "warning", fmt.Sprintf("Cluster is ready, but deployment details email failed: %v", emailErr))
+			} else if emailed {
+				_ = s.appendOperationEvent(operationID, "deployment-email", "info", "Cluster deployment details emailed to the customer")
 			}
 		}()
 
