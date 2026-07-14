@@ -73,6 +73,8 @@ type ProxmoxCredentialStore interface {
 
 type SSHKeyPairStore interface {
 	GetByID(id int64) (sshkeys.KeyPair, error)
+	GetAutomationKey() (sshkeys.KeyPair, error)
+	GetCustomerPublicKey(id, customerAccountID int64) (sshkeys.CustomerPublicKey, error)
 }
 
 type Service struct {
@@ -180,6 +182,7 @@ type CreateRequest struct {
 	CloudInitImageID    int64  `json:"cloud_init_image_id"`
 	CloudInitImagePath  string `json:"cloud_init_image_path"`
 	SSHKeyPairID        int64  `json:"ssh_key_pair_id"`
+	CustomerSSHKeyID    int64  `json:"customer_ssh_key_id"`
 	IPMode              string `json:"ip_mode"`
 	IPAddress           string `json:"ip_address"`
 	CPU                 int    `json:"cpu"`
@@ -657,19 +660,25 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 	req.CloudInitImagePath = image.ImagePath
 
 	sshUser := "root"
-	sshPublicKey := ""
-	if req.SSHKeyPairID > 0 {
-		pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
-		if err != nil {
-			return CreateResponse{}, fmt.Errorf("load ssh key pair: %w", err)
-		}
-		sshPublicKey = strings.TrimSpace(pair.PublicKey)
+	automationKey, err := s.sshKeys.GetAutomationKey()
+	if err != nil {
+		return CreateResponse{}, err
 	}
+	sshPublicKey := strings.TrimSpace(automationKey.PublicKey)
+	if sshPublicKey == "" || strings.TrimSpace(automationKey.PrivateKey) == "" {
+		return CreateResponse{}, errors.New("Terraform/Ansible automation SSH key pair is incomplete")
+	}
+	req.SSHKeyPairID = automationKey.ID
+	if req.CustomerSSHKeyID <= 0 {
+		return CreateResponse{}, errors.New("select or add a customer SSH public key")
+	}
+	customerKey, err := s.sshKeys.GetCustomerPublicKey(req.CustomerSSHKeyID, req.CustomerAccountID)
+	if err != nil {
+		return CreateResponse{}, err
+	}
+	customerPublicKey := strings.TrimSpace(customerKey.PublicKey)
 
 	rootPassword := strings.TrimSpace(req.RootPassword)
-	if rootPassword == "" && sshPublicKey == "" {
-		return CreateResponse{}, errors.New("select an ssh key or set a root password")
-	}
 	if strings.ContainsAny(rootPassword, "\r\n") {
 		return CreateResponse{}, errors.New("root password cannot contain newlines")
 	}
@@ -693,8 +702,8 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	var vpsID int64
 	err = s.db.QueryRow(
-		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, region_id, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, NULLIF($10, 0), $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'created')
+		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, region_id, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, customer_ssh_key_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, NULLIF($10, 0), NULLIF($11, 0), $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'created')
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
@@ -706,6 +715,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		req.CloudInitImageID,
 		req.CloudInitImagePath,
 		req.SSHKeyPairID,
+		req.CustomerSSHKeyID,
 		req.Name,
 		req.Name,
 		req.IPMode,
@@ -756,6 +766,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		CloudInitImage:      req.CloudInitImagePath,
 		OSType:              image.OSType,
 		SSHPublicKey:        sshPublicKey,
+		CustomerPublicKey:   customerPublicKey,
 		SSHUser:             sshUser,
 		RootPassword:        rootPassword,
 		IPAddress:           req.IPAddress,

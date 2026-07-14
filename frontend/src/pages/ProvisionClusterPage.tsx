@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Plus, Server } from 'lucide-react';
 import { checkClusterName, provisionAndBootstrapCluster } from '../api/clusters';
-import { createSSHKey, getSSHKeys } from '../api/sshKeys';
+import { createCustomerSSHKey, getCustomerSSHKeys } from '../api/customerSshKeys';
 import { getVPSCloudInitImages } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
@@ -15,7 +15,7 @@ import { Alert, ErrorMessage } from '../components/ui/Alert';
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
+  const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
   const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
   const sharedImages = useMemo(
     () => (images ?? []).filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
@@ -23,10 +23,10 @@ export function ProvisionClusterPage() {
   );
   const [debouncedName, setDebouncedName] = useState('');
   const [sshModalOpen, setSSHModalOpen] = useState(false);
-  const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+  const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'ubuntu', public_key: '' });
   const [form, setForm] = useState({
     name: '', topology_type: 'tri', control_plane_count: 3, worker_count: 3,
-    kubernetes_version: 'v1.31.4', cloud_init_image_id: 0, ssh_key_pair_id: 0,
+    kubernetes_version: 'v1.31.4', cloud_init_image_id: 0, customer_ssh_key_id: 0,
     control_plane_cpu: 2, control_plane_ram_mb: 2048, control_plane_disk_gb: 80,
     worker_cpu: 2, worker_ram_mb: 2048, worker_disk_gb: 120,
   });
@@ -46,16 +46,16 @@ export function ProvisionClusterPage() {
     enabled: debouncedName.length > 0, retry: 0,
   });
   const isNameTaken = nameCheck.data?.exists ?? false;
-  const selectedKey = sshKeys?.find((key) => key.id === form.ssh_key_pair_id);
+  const selectedKey = sshKeys?.find((key) => key.id === form.customer_ssh_key_id);
   const selectedImage = sharedImages.find((image) => image.id === form.cloud_init_image_id);
 
   const createSSH = useMutation({
-    mutationFn: createSSHKey,
+    mutationFn: createCustomerSSHKey,
     onSuccess: (key) => {
-      queryClient.invalidateQueries({ queryKey: ['ssh-keys'] });
-      setForm((prev) => ({ ...prev, ssh_key_pair_id: key.id }));
+      queryClient.invalidateQueries({ queryKey: ['customer-ssh-keys'] });
+      setForm((prev) => ({ ...prev, customer_ssh_key_id: key.id }));
       setSSHModalOpen(false);
-      setSSHForm({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+      setSSHForm({ name: '', ssh_user: 'ubuntu', public_key: '' });
     },
   });
   const provision = useMutation({ mutationFn: provisionAndBootstrapCluster });
@@ -75,8 +75,7 @@ export function ProvisionClusterPage() {
         apply: true,
       },
       bootstrap: {
-        ssh_user: selectedKey.ssh_user || 'ubuntu',
-        ssh_key_pair_id: selectedKey.id,
+        ssh_user: 'ubuntu',
         deploy_kube_vip: false,
         control_plane_vip: '',
         pod_cidr: '10.244.0.0/16',
@@ -129,9 +128,9 @@ export function ProvisionClusterPage() {
         <Card>
           <CardHeader><CardTitle>SSH Access</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 items-end gap-3 sm:grid-cols-[1fr_auto]">
-            <Select label="SSH key pair" value={form.ssh_key_pair_id} onChange={(e) => setField('ssh_key_pair_id', Number(e.target.value))} required>
-              <option value={0}>-- Select SSH key --</option>
-              {sshKeys?.map((key) => <option key={key.id} value={key.id}>{key.name} ({key.ssh_user})</option>)}
+            <Select label="Customer SSH public key" value={form.customer_ssh_key_id} onChange={(e) => setField('customer_ssh_key_id', Number(e.target.value))} required>
+              <option value={0}>-- Select saved public key --</option>
+              {sshKeys?.map((key) => <option key={key.id} value={key.id}>{key.name} ({key.fingerprint})</option>)}
             </Select>
             <Button type="button" variant="secondary" onClick={() => setSSHModalOpen(true)}><Plus className="h-4 w-4" /> Paste new SSH key</Button>
           </CardContent>
@@ -148,12 +147,11 @@ export function ProvisionClusterPage() {
         <Button type="submit" loading={provision.isPending} disabled={isNameTaken || !selectedKey || !selectedImage}>Provision and bootstrap cluster</Button>
       </form>
 
-      <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add SSH Key Pair">
+      <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add Customer SSH Public Key">
         <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); createSSH.mutate(sshForm); }}>
           <Input label="Name" value={sshForm.name} onChange={(e) => setSSHForm({ ...sshForm, name: e.target.value })} required />
-          <Input label="SSH user" value={sshForm.ssh_user} onChange={(e) => setSSHForm({ ...sshForm, ssh_user: e.target.value })} required />
+          <Input label="SSH user" value={sshForm.ssh_user} onChange={() => setSSHForm({ ...sshForm, ssh_user: 'ubuntu' })} helperText="Cluster node access uses ubuntu." readOnly required />
           <Textarea label="Public key" rows={3} value={sshForm.public_key} onChange={(e) => setSSHForm({ ...sshForm, public_key: e.target.value })} required />
-          <Textarea label="Private key" rows={7} value={sshForm.private_key} onChange={(e) => setSSHForm({ ...sshForm, private_key: e.target.value })} required />
           {createSSH.error && <ErrorMessage error={createSSH.error} />}
           <div className="flex gap-3"><Button type="submit" loading={createSSH.isPending}>Save and select</Button><Button type="button" variant="secondary" onClick={() => setSSHModalOpen(false)}>Cancel</Button></div>
         </form>

@@ -59,6 +59,8 @@ type ProxmoxCredentialStore interface {
 
 type SSHKeyPairStore interface {
 	GetByID(id int64) (sshkeys.KeyPair, error)
+	GetAutomationKey() (sshkeys.KeyPair, error)
+	GetCustomerPublicKey(id, customerAccountID int64) (sshkeys.CustomerPublicKey, error)
 }
 
 type TLSCertificateStore interface {
@@ -97,23 +99,25 @@ var ErrClusterConfigMapNotFound = errors.New("config map not found")
 var ErrSavedManifestNotFound = errors.New("saved manifest not found")
 
 type ProvisionRequest struct {
-	Name                string `json:"name"`
-	TopologyType        string `json:"topology_type"`
-	ControlPlaneCount   int    `json:"control_plane_count"`
-	WorkerCount         int    `json:"worker_count"`
-	NetworkProfileID    int64  `json:"network_profile_id"`
-	KubernetesVersion   string `json:"kubernetes_version"`
-	UbuntuImage         string `json:"ubuntu_image"`
-	CloudInitImageID    int64  `json:"cloud_init_image_id"`
-	SSHPublicKey        string `json:"ssh_public_key"`
-	ControlPlaneCPU     int    `json:"control_plane_cpu"`
-	ControlPlaneRAMMB   int    `json:"control_plane_ram_mb"`
-	ControlPlaneDisk    int    `json:"control_plane_disk_gb"`
-	WorkerCPU           int    `json:"worker_cpu"`
-	WorkerRAMMB         int    `json:"worker_ram_mb"`
-	WorkerDisk          int    `json:"worker_disk_gb"`
-	ProxmoxCredentialID int64  `json:"proxmox_credential_id"`
-	SSHKeyPairID        int64  `json:"ssh_key_pair_id"`
+	Name                 string `json:"name"`
+	TopologyType         string `json:"topology_type"`
+	ControlPlaneCount    int    `json:"control_plane_count"`
+	WorkerCount          int    `json:"worker_count"`
+	NetworkProfileID     int64  `json:"network_profile_id"`
+	KubernetesVersion    string `json:"kubernetes_version"`
+	UbuntuImage          string `json:"ubuntu_image"`
+	CloudInitImageID     int64  `json:"cloud_init_image_id"`
+	SSHPublicKey         string `json:"ssh_public_key"`
+	ControlPlaneCPU      int    `json:"control_plane_cpu"`
+	ControlPlaneRAMMB    int    `json:"control_plane_ram_mb"`
+	ControlPlaneDisk     int    `json:"control_plane_disk_gb"`
+	WorkerCPU            int    `json:"worker_cpu"`
+	WorkerRAMMB          int    `json:"worker_ram_mb"`
+	WorkerDisk           int    `json:"worker_disk_gb"`
+	ProxmoxCredentialID  int64  `json:"proxmox_credential_id"`
+	SSHKeyPairID         int64  `json:"ssh_key_pair_id"`
+	CustomerSSHKeyID     int64  `json:"customer_ssh_key_id"`
+	CustomerSSHPublicKey string `json:"-"`
 	// NodeCredentialIDs optionally overrides the Proxmox credential per node name.
 	// Key: proxmox node name, Value: proxmox credential id.
 	NodeCredentialIDs map[string]int64 `json:"node_credential_ids"`
@@ -1110,6 +1114,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 				VLAN:              networkProfile.VLAN,
 				UbuntuImage:       req.UbuntuImage,
 				SSHPublicKey:      req.SSHPublicKey,
+				CustomerPublicKey: req.CustomerSSHPublicKey,
 				Nodes:             groupNodes,
 			})
 			if prepErr != nil {
@@ -1157,6 +1162,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 			VLAN:              networkProfile.VLAN,
 			UbuntuImage:       req.UbuntuImage,
 			SSHPublicKey:      req.SSHPublicKey,
+			CustomerPublicKey: req.CustomerSSHPublicKey,
 			Nodes:             vms,
 		})
 		if err != nil {
@@ -1188,6 +1194,16 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 
 	bootstrapReq := req.Bootstrap
 	bootstrapReq.Apply = true
+	automationKey, err := s.sshKeys.GetAutomationKey()
+	if err != nil {
+		return ProvisionAndBootstrapResponse{}, err
+	}
+	bootstrapReq.SSHUser = "ubuntu"
+	bootstrapReq.SSHKeyPairID = automationKey.ID
+	bootstrapReq.SSHPrivateKey = ""
+	bootstrapReq.SSHPrivateKeyPath = ""
+	bootstrapReq.SSHKeyID = 0
+	bootstrapReq.SSHKeyName = ""
 	if bootstrapReq.MetalLB != nil {
 		metallbReq := *bootstrapReq.MetalLB
 		metallbReq.Apply = true
@@ -1195,17 +1211,6 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 			return ProvisionAndBootstrapResponse{}, fmt.Errorf("bootstrap.metallb: %w", err)
 		}
 		bootstrapReq.MetalLB = &metallbReq
-	}
-
-	if strings.TrimSpace(bootstrapReq.SSHUser) == "" {
-		return ProvisionAndBootstrapResponse{}, errors.New("bootstrap.ssh_user is required for provision-and-bootstrap")
-	}
-	if bootstrapReq.SSHKeyPairID <= 0 &&
-		bootstrapReq.SSHKeyID <= 0 &&
-		strings.TrimSpace(bootstrapReq.SSHPrivateKey) == "" &&
-		strings.TrimSpace(bootstrapReq.SSHPrivateKeyPath) == "" &&
-		strings.TrimSpace(bootstrapReq.SSHKeyName) == "" {
-		return ProvisionAndBootstrapResponse{}, errors.New("bootstrap ssh key is required: set bootstrap.ssh_key_pair_id or bootstrap.ssh_private_key")
 	}
 
 	provisionResp, err := s.Provision(provisionReq)
@@ -7093,8 +7098,8 @@ func validateMetalLBAddress(value string) error {
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
 	var clusterID int64
 	err := s.db.QueryRow(
-		`INSERT INTO clusters (name, customer_account_id, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'planned')
+		`INSERT INTO clusters (name, customer_account_id, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, automation_ssh_key_pair_id, customer_ssh_key_id, status)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0), 'planned')
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
@@ -7110,6 +7115,8 @@ func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse
 		req.WorkerRAMMB,
 		req.WorkerDisk,
 		req.ProxmoxCredentialID,
+		req.SSHKeyPairID,
+		req.CustomerSSHKeyID,
 	).Scan(&clusterID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
@@ -7984,27 +7991,28 @@ func (s *Service) resolveBootstrapSSHKey(clusterID int64, req BootstrapRequest) 
 }
 
 func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
-	req.SSHPublicKey = strings.TrimSpace(req.SSHPublicKey)
-	if req.SSHPublicKey != "" {
-		return nil
-	}
-	if req.SSHKeyPairID <= 0 {
-		return nil
-	}
 	if s.sshKeys == nil {
 		return errors.New("ssh key pair service is not configured")
 	}
-
-	pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
+	pair, err := s.sshKeys.GetAutomationKey()
 	if err != nil {
-		if errors.Is(err, sshkeys.ErrKeyPairNotFound) {
-			return errors.New("selected ssh key pair not found")
-		}
-		return fmt.Errorf("load ssh key pair: %w", err)
+		return err
 	}
 	req.SSHPublicKey = strings.TrimSpace(pair.PublicKey)
-	if req.SSHPublicKey == "" {
-		return errors.New("selected ssh key pair has empty public key")
+	if req.SSHPublicKey == "" || strings.TrimSpace(pair.PrivateKey) == "" {
+		return errors.New("Terraform/Ansible automation SSH key pair is incomplete")
+	}
+	req.SSHKeyPairID = pair.ID
+	if req.CustomerSSHKeyID <= 0 {
+		return errors.New("select or add a customer SSH public key")
+	}
+	customerKey, err := s.sshKeys.GetCustomerPublicKey(req.CustomerSSHKeyID, req.CustomerAccountID)
+	if err != nil {
+		return err
+	}
+	req.CustomerSSHPublicKey = strings.TrimSpace(customerKey.PublicKey)
+	if req.CustomerSSHPublicKey == "" {
+		return errors.New("selected customer SSH public key is empty")
 	}
 	return nil
 }

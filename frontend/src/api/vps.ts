@@ -78,14 +78,14 @@ export const createVPSInstance = (body: {
   network_profile_id: number;
   cloud_init_image_id: number;
   cloud_init_image_path: string;
-  ssh_key_pair_id: number;
+  customer_ssh_key_id: number;
   ip_mode: 'dhcp' | 'manual' | 'auto';
   ip_address: string;
   cpu: number;
   memory_mb: number;
   disk_gb: number;
   ssh_user: string;
-  root_password: string;
+  root_password?: string;
   apply: boolean;
 }) => client.post<VPSCreateResponse>('/vps', body).then((r) => r.data);
 

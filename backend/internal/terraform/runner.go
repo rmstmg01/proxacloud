@@ -56,6 +56,7 @@ type WorkspaceSpec struct {
 	VLAN              int      `json:"vlan"`
 	UbuntuImage       string   `json:"ubuntu_image"`
 	SSHPublicKey      string   `json:"ssh_public_key"`
+	CustomerPublicKey string   `json:"customer_public_key,omitempty"`
 	Nodes             []VMNode `json:"nodes"`
 }
 
@@ -74,6 +75,7 @@ type StandaloneVPSSpec struct {
 	CloudInitImage      string   `json:"cloud_init_image"`
 	OSType              string   `json:"os_type"`
 	SSHPublicKey        string   `json:"ssh_public_key"`
+	CustomerPublicKey   string   `json:"customer_public_key,omitempty"`
 	SSHUser             string   `json:"ssh_user"`
 	RootPassword        string   `json:"-"`
 	IPAddress           string   `json:"ip_address,omitempty"`
@@ -929,6 +931,7 @@ func renderCloudInit(spec WorkspaceSpec, node VMNode) (string, error) {
 		"Role":                node.Role,
 		"ClusterName":         spec.ClusterName,
 		"SSHPublicKey":        spec.SSHPublicKey,
+		"CustomerPublicKey":   strings.TrimSpace(spec.CustomerPublicKey),
 		"IPAddress":           node.IPAddress,
 		"AgentInstallCommand": strings.TrimSpace(node.AgentInstallCommand),
 	}
@@ -951,6 +954,7 @@ func renderStandaloneVPSCloudInit(spec StandaloneVPSSpec) (string, error) {
 		"Name":                strings.TrimSpace(spec.Name),
 		"SSHUser":             strings.TrimSpace(spec.SSHUser),
 		"SSHPublicKey":        strings.TrimSpace(spec.SSHPublicKey),
+		"CustomerPublicKey":   strings.TrimSpace(spec.CustomerPublicKey),
 		"RootPassword":        strings.TrimSpace(spec.RootPassword),
 		"IPAddress":           strings.TrimSpace(spec.IPAddress),
 		"AgentInstallCommand": strings.TrimSpace(spec.AgentInstallCommand),
@@ -1094,6 +1098,9 @@ users:
     groups: sudo
     ssh_authorized_keys:
       - {{ .SSHPublicKey }}
+{{- if .CustomerPublicKey }}
+      - {{ .CustomerPublicKey }}
+{{- end }}
 package_update: true
 packages:
   - qemu-guest-agent
@@ -1339,6 +1346,9 @@ users:
 {{- if .SSHPublicKey }}
     ssh_authorized_keys:
       - {{ .SSHPublicKey }}
+{{- if .CustomerPublicKey }}
+      - {{ .CustomerPublicKey }}
+{{- end }}
 {{- end }}
 {{- if .RootPassword }}
 chpasswd:

@@ -280,6 +280,17 @@ export interface SSHKeyPair {
   updated_at: string;
 }
 
+export interface CustomerSSHPublicKey {
+  id: number;
+  customer_account_id?: number;
+  name: string;
+  ssh_user: string;
+  public_key: string;
+  fingerprint: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface SSLCertificate {
   id: number;
   name: string;

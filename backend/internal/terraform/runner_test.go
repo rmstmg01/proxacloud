@@ -66,16 +66,18 @@ func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 	runner := NewRunner("terraform", t.TempDir(), "")
 
 	workDir, err := runner.PrepareStandaloneVPSWorkspace(StandaloneVPSSpec{
-		WorkspaceKey:    "debian-vps",
-		Name:            "debian-vps",
-		ProxmoxNodeName: "pve01",
-		CloudInitImage:  "cloud-images:import/debian-12-genericcloud-amd64.qcow2",
-		OSType:          "debian",
-		RootPassword:    "ChangeMe123!",
-		NetworkCIDR:     "192.168.10.0/24",
-		Gateway:         "192.168.10.1",
-		Bridge:          "vmbr0",
-		DNS:             []string{"1.1.1.1"},
+		WorkspaceKey:      "debian-vps",
+		Name:              "debian-vps",
+		ProxmoxNodeName:   "pve01",
+		CloudInitImage:    "cloud-images:import/debian-12-genericcloud-amd64.qcow2",
+		OSType:            "debian",
+		RootPassword:      "ChangeMe123!",
+		SSHPublicKey:      "ssh-ed25519 AAAA-automation",
+		CustomerPublicKey: "ssh-ed25519 AAAA-customer",
+		NetworkCIDR:       "192.168.10.0/24",
+		Gateway:           "192.168.10.1",
+		Bridge:            "vmbr0",
+		DNS:               []string{"1.1.1.1"},
 	})
 	if err != nil {
 		t.Fatalf("PrepareStandaloneVPSWorkspace() error = %v", err)
@@ -95,6 +97,12 @@ func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 	}
 	if !strings.Contains(tfvars, `"os_type": "debian"`) {
 		t.Fatalf("terraform.tfvars.json = %s, want debian os_type", tfvars)
+	}
+	cloudInit := readTestFile(t, filepath.Join(workDir, "cloud-init", "user-data.yaml"))
+	for _, key := range []string{"AAAA-automation", "AAAA-customer"} {
+		if !strings.Contains(cloudInit, key) {
+			t.Fatalf("VPS cloud-init missing %s", key)
+		}
 	}
 }
 
@@ -126,7 +134,7 @@ func TestPrepareStandaloneVPSWorkspacePreservesNonDebianOSType(t *testing.T) {
 func TestPrepareClusterWorkspaceImportsSharedImageAndInstallsTunnelAgent(t *testing.T) {
 	runner := NewRunner("terraform", t.TempDir(), "")
 	workDir, err := runner.PrepareWorkspace(WorkspaceSpec{
-		ClusterName: "demo", UbuntuImage: "cloud-images:import/ubuntu-24.04.qcow2", SSHPublicKey: "ssh-ed25519 AAAA-test",
+		ClusterName: "demo", UbuntuImage: "cloud-images:import/ubuntu-24.04.qcow2", SSHPublicKey: "ssh-ed25519 AAAA-automation", CustomerPublicKey: "ssh-ed25519 AAAA-customer",
 		NetworkCIDR: "192.168.10.0/24", Gateway: "192.168.10.1", Bridge: "vmbr0",
 		Nodes: []VMNode{{VMName: "demo-cp-1", Role: "control-plane", RoleIndex: 1, ProxmoxNodeName: "pve01", CPU: 2, MemoryMB: 2048, DiskGB: 40, IPAddress: "192.168.10.10", NetworkCIDR: "192.168.10.0/24", Gateway: "192.168.10.1", Bridge: "vmbr0", AgentInstallCommand: "install-agent --token secret"}},
 	})
@@ -143,6 +151,11 @@ func TestPrepareClusterWorkspaceImportsSharedImageAndInstallsTunnelAgent(t *test
 	cloudInit := readTestFile(t, filepath.Join(workDir, "cloud-init", "demo-cp-1.yaml"))
 	if !strings.Contains(cloudInit, "install-agent --token secret") {
 		t.Fatalf("cloud-init does not include tunnel agent command")
+	}
+	for _, key := range []string{"AAAA-automation", "AAAA-customer"} {
+		if !strings.Contains(cloudInit, key) {
+			t.Fatalf("cluster cloud-init missing %s", key)
+		}
 	}
 }
 

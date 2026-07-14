@@ -111,7 +111,7 @@ export const provisionCluster = (body: {
   worker_count: number;
   network_profile_id: number;
   proxmox_credential_id: number;
-  ssh_key_pair_id?: number;
+  customer_ssh_key_id: number;
   node_credential_ids?: Record<string, number>;
   node_network_profile_ids?: Record<string, number>;
   node_ip_pool_start_by_node?: Record<string, string>;
@@ -136,7 +136,7 @@ export const provisionAndBootstrapCluster = (body: {
     worker_count: number;
     network_profile_id?: number;
     proxmox_credential_id?: number;
-    ssh_key_pair_id?: number;
+    customer_ssh_key_id: number;
     node_credential_ids?: Record<string, number>;
     node_network_profile_ids?: Record<string, number>;
     node_ip_pool_start_by_node?: Record<string, string>;
