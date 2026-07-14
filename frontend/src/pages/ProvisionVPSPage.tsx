@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Plus } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus } from 'lucide-react';
 import { createVPSInstance, discoverVPSCloudInitImagesForRegion } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getRegions } from '../api/regions';
@@ -38,6 +38,48 @@ const distributionOrder = [
   { key: 'fedora', label: 'Fedora' },
 ] as const;
 
+const passwordGroups = {
+  lower: 'abcdefghijklmnopqrstuvwxyz',
+  upper: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  number: '0123456789',
+  special: '!@#$%^&*_-+=?',
+};
+
+const passwordCharacters = Object.values(passwordGroups).join('');
+
+function randomIndex(max: number) {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return values[0] % max;
+}
+
+function generateRootPassword(length = 16) {
+  const size = Math.max(length, 10);
+  const chars = [
+    passwordGroups.lower[randomIndex(passwordGroups.lower.length)],
+    passwordGroups.upper[randomIndex(passwordGroups.upper.length)],
+    passwordGroups.number[randomIndex(passwordGroups.number.length)],
+    passwordGroups.special[randomIndex(passwordGroups.special.length)],
+  ];
+  while (chars.length < size) chars.push(passwordCharacters[randomIndex(passwordCharacters.length)]);
+  for (let index = chars.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomIndex(index + 1);
+    [chars[index], chars[swapIndex]] = [chars[swapIndex], chars[index]];
+  }
+  return chars.join('');
+}
+
+function rootPasswordError(password: string) {
+  if (password.trim() === '') return '';
+  if (password.length < 10) return 'Root password must be at least 10 characters.';
+  if (password.includes(':')) return 'Root password cannot include colon.';
+  if (!/[a-z]/.test(password)) return 'Root password must include a lowercase letter.';
+  if (!/[A-Z]/.test(password)) return 'Root password must include an uppercase letter.';
+  if (!/[0-9]/.test(password)) return 'Root password must include a number.';
+  if (!/[^A-Za-z0-9]/.test(password)) return 'Root password must include a special character.';
+  return '';
+}
+
 function imageFilename(imagePath: string) {
   const clean = imagePath.trim();
   const slash = clean.lastIndexOf('/');
@@ -52,6 +94,8 @@ export function ProvisionVPSPage() {
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
+  const [showRootPassword, setShowRootPassword] = useState(false);
+  const [passwordCopied, setPasswordCopied] = useState(false);
   const [discoveredImages, setDiscoveredImages] = useState<VPSCloudInitImage[]>([]);
   const lastAutoDiscoveryKey = useRef('');
   const [sshForm, setSSHForm] = useState({
@@ -75,6 +119,7 @@ export function ProvisionVPSPage() {
     cpu: 1,
     memory_mb: 1024,
     disk_gb: 20,
+    root_password: '',
     apply: true,
   });
 
@@ -109,11 +154,14 @@ export function ProvisionVPSPage() {
     [sharedImages, form.cloud_init_image_id, form.cloud_init_image_path],
   );
 
+  const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
+  const hasCustomerAccess = form.customer_ssh_key_id > 0 || form.root_password.trim() !== '';
   const createDisabled =
     form.region_id === 0 ||
     form.network_profile_id === 0 ||
     form.cloud_init_image_path.trim() === '' ||
-    form.customer_ssh_key_id === 0;
+    !hasCustomerAccess ||
+    passwordError !== '';
 
   useEffect(() => {
     const defaultRegion = enabledRegions.find((region) => region.is_default) ?? enabledRegions[0];
@@ -220,6 +268,19 @@ export function ProvisionVPSPage() {
       return;
     }
     createMutation.mutate({ ...form, apply: true });
+  };
+
+  const handleGenerateRootPassword = () => {
+    setField('root_password', generateRootPassword());
+    setShowRootPassword(true);
+    setPasswordCopied(false);
+  };
+
+  const handleCopyRootPassword = async () => {
+    if (form.root_password === '') return;
+    await navigator.clipboard.writeText(form.root_password);
+    setPasswordCopied(true);
+    window.setTimeout(() => setPasswordCopied(false), 1800);
   };
 
   const handleCreateSSH = (event: FormEvent) => {
@@ -366,9 +427,8 @@ export function ProvisionVPSPage() {
                 label="Customer SSH public key"
                 value={form.customer_ssh_key_id}
                 onChange={(event) => setField('customer_ssh_key_id', Number(event.target.value))}
-                required
               >
-                <option value={0}>-- Select saved public key --</option>
+                <option value={0}>-- Continue without an SSH key --</option>
                 {sshKeys?.map((key) => (
                   <option key={key.id} value={key.id}>
                     {key.name} ({key.fingerprint})
@@ -380,6 +440,9 @@ export function ProvisionVPSPage() {
                 Add Public Key
               </Button>
             </div>
+            <p className="text-xs text-slate-500">
+              Recommended: use an SSH public key for stronger, passwordless access. If you do not select one, set a root password below.
+            </p>
             <Input
               label="SSH user"
               value={form.ssh_user}
@@ -388,6 +451,32 @@ export function ProvisionVPSPage() {
               readOnly
               required
             />
+            <div className="space-y-2">
+              <Input
+                label="Root password (optional)"
+                type={showRootPassword ? 'text' : 'password'}
+                value={form.root_password}
+                onChange={(event) => {
+                  setField('root_password', event.target.value);
+                  setPasswordCopied(false);
+                }}
+                helperText="Leave empty for SSH-key-only access, or set a password for root login."
+                error={passwordError}
+                autoComplete="new-password"
+              />
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" size="sm" onClick={handleGenerateRootPassword}>
+                  <KeyRound className="h-4 w-4" /> Generate random password
+                </Button>
+                <Button type="button" variant="secondary" size="sm" onClick={handleCopyRootPassword} disabled={form.root_password === ''}>
+                  <Copy className="h-4 w-4" /> {passwordCopied ? 'Copied' : 'Copy'}
+                </Button>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setShowRootPassword((value) => !value)} disabled={form.root_password === ''}>
+                  {showRootPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showRootPassword ? 'Hide' : 'Show'}
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -458,7 +547,7 @@ export function ProvisionVPSPage() {
               ['Location', selectedRegion?.name || 'Select location'],
               ['Subnet', selectedNetwork ? `${selectedNetwork.vpc_name || 'default-vpc'} / ${selectedNetwork.name}` : 'Select subnet'],
               ['Image', selectedImage?.name || imageFilename(form.cloud_init_image_path) || 'Select image'],
-              ['Access', 'root via customer SSH public key'],
+              ['Access', form.customer_ssh_key_id > 0 ? `root via SSH public key${form.root_password.trim() ? ' + password' : ''}` : 'root via password'],
               ['Resources', `${form.cpu} vCPU, ${form.memory_mb} MB RAM, ${form.disk_gb} GB disk`],
               ['IP assignment', form.ip_mode === 'manual' ? form.ip_address || 'Manual IP required' : form.ip_mode === 'dhcp' ? 'DHCP' : 'Auto assign from network'],
             ].map(([label, value]) => (
@@ -470,9 +559,9 @@ export function ProvisionVPSPage() {
           </CardContent>
         </Card>
 
-        {form.customer_ssh_key_id === 0 && (
+        {!hasCustomerAccess && (
           <Alert variant="warning" title="Access method required">
-            Select or add a customer SSH public key before creating the VPS.
+            Set a root password or select a customer SSH public key before creating the VPS. SSH keys are recommended.
           </Alert>
         )}
         {createMutation.error && <ErrorMessage error={createMutation.error} />}

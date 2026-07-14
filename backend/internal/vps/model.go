@@ -685,18 +685,20 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		return CreateResponse{}, errors.New("Terraform/Ansible automation SSH key pair is incomplete")
 	}
 	req.SSHKeyPairID = automationKey.ID
-	if req.CustomerSSHKeyID <= 0 {
-		return CreateResponse{}, errors.New("select or add a customer SSH public key")
-	}
-	customerKey, err := s.sshKeys.GetCustomerPublicKey(req.CustomerSSHKeyID, req.CustomerAccountID)
-	if err != nil {
-		return CreateResponse{}, err
-	}
-	customerPublicKey := strings.TrimSpace(customerKey.PublicKey)
-
 	rootPassword := strings.TrimSpace(req.RootPassword)
 	if strings.ContainsAny(rootPassword, "\r\n") {
 		return CreateResponse{}, errors.New("root password cannot contain newlines")
+	}
+	customerPublicKey := ""
+	if req.CustomerSSHKeyID > 0 {
+		customerKey, err := s.sshKeys.GetCustomerPublicKey(req.CustomerSSHKeyID, req.CustomerAccountID)
+		if err != nil {
+			return CreateResponse{}, err
+		}
+		customerPublicKey = strings.TrimSpace(customerKey.PublicKey)
+		if customerPublicKey == "" {
+			return CreateResponse{}, errors.New("selected customer SSH public key is empty")
+		}
 	}
 
 	ipAddress, err := s.resolveIPAddress(req)
@@ -1292,7 +1294,7 @@ func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	if err := validateRootPassword(req.RootPassword); err != nil {
 		return err
 	}
-	return nil
+	return validateCustomerAccessMethod(req.CustomerSSHKeyID, req.RootPassword)
 }
 
 func validateRootPassword(password string) error {
@@ -1335,6 +1337,13 @@ func validateRootPassword(password string) error {
 	}
 	if !hasSpecial {
 		return errors.New("root password must include a special character")
+	}
+	return nil
+}
+
+func validateCustomerAccessMethod(customerSSHKeyID int64, rootPassword string) error {
+	if customerSSHKeyID <= 0 && strings.TrimSpace(rootPassword) == "" {
+		return errors.New("provide a root password or select a customer SSH public key")
 	}
 	return nil
 }
