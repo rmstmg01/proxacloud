@@ -10,12 +10,13 @@ func TestInferCloudImageMetadata(t *testing.T) {
 		displayName  string
 		architecture string
 	}{
-		{"AlmaLinux-8-GenericCloud-latest.x86_64.qcow2", "almalinux", "8", "AlmaLinux 8", "amd64"},
-		{"AlmaLinux-10-GenericCloud-latest.x86_64.qcow2", "almalinux", "10", "AlmaLinux 10", "amd64"},
-		{"Rocky-9-GenericCloud-Base.latest.x86_64.qcow2", "rocky", "9", "Rocky Linux 9", "amd64"},
+		{"AlmaLinux-8-GenericCloud-latest.x86_64.qcow2", "almalinux", "8.0", "AlmaLinux 8.0", "amd64"},
+		{"AlmaLinux-9-GenericCloud-9.7.x86_64.qcow2", "almalinux", "9.7", "AlmaLinux 9.7", "amd64"},
+		{"AlmaLinux-10.2-GenericCloud-latest.x86_64.qcow2", "almalinux", "10.2", "AlmaLinux 10.2", "amd64"},
+		{"Rocky-9-GenericCloud-Base.latest.x86_64.qcow2", "rocky", "9.0", "Rocky Linux 9.0", "amd64"},
 		{"ubuntu-24.04-server-cloudimg-amd64.img", "ubuntu", "24.04", "Ubuntu 24.04", "amd64"},
-		{"debian-12-genericcloud-amd64.qcow2", "debian", "12", "Debian 12", "amd64"},
-		{"Fedora-Cloud-Base-Generic-42-1.1.aarch64.qcow2", "fedora", "42", "Fedora 42", "arm64"},
+		{"debian-11-genericcloud-amd64.qcow2", "debian", "11.0", "Debian 11.0", "amd64"},
+		{"Fedora-Cloud-Base-Generic-42-1.1.aarch64.qcow2", "fedora", "42.0", "Fedora 42.0", "arm64"},
 	}
 
 	for _, test := range tests {

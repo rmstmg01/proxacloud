@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1816,6 +1817,18 @@ func inferCloudImageMetadata(filename string) inferredCloudImage {
 }
 
 func inferDistributionVersion(filename, distribution string) string {
+	semanticMatches := regexp.MustCompile(`(?:^|[^0-9])([0-9]{1,2})\.([0-9]{1,2})(?:[^0-9]|$)`).FindAllStringSubmatch(filename, -1)
+	for _, match := range semanticMatches {
+		major, majorErr := strconv.Atoi(match[1])
+		minor, minorErr := strconv.Atoi(match[2])
+		if majorErr != nil || minorErr != nil || major < 8 {
+			continue
+		}
+		if distribution == "ubuntu" {
+			return fmt.Sprintf("%d.%s", major, match[2])
+		}
+		return fmt.Sprintf("%d.%d", major, minor)
+	}
 	patterns := map[string][]string{
 		"ubuntu":    {`ubuntu[^0-9]*([0-9]{2}\.[0-9]{2})`},
 		"debian":    {`debian[^0-9]*([0-9]{1,2})`},
@@ -1826,7 +1839,7 @@ func inferDistributionVersion(filename, distribution string) string {
 	for _, pattern := range patterns[distribution] {
 		match := regexp.MustCompile(pattern).FindStringSubmatch(filename)
 		if len(match) > 1 {
-			return match[1]
+			return match[1] + ".0"
 		}
 	}
 	return ""

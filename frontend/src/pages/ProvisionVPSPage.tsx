@@ -427,8 +427,8 @@ export function ProvisionVPSPage() {
                             <p className="truncate text-sm font-semibold text-slate-900">{image.display_name || image.name || imageFilename(image.image_path)}</p>
                             {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}
                           </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                            <span>{architectureLabel(image.architecture)}</span>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-slate-500">
+                            <span className="text-[10px] font-normal leading-4">{architectureLabel(image.architecture)}</span>
                           </div>
                         </div>
                       </div>

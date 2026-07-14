@@ -1,0 +1,2 @@
+-- Version normalization is intentionally retained because removing a synthetic
+-- minor component cannot be distinguished from an image's real minor release.

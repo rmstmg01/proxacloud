@@ -132,7 +132,7 @@ export function ProvisionClusterPage() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{sharedImages.map((image) => {
                 const selected = image.id === form.cloud_init_image_id;
                 return <button key={image.id} type="button" onClick={() => setField('cloud_init_image_id', image.id)} className={`rounded-md border p-4 text-left ${selected ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}</div><p className="mt-1 text-xs text-slate-500">{architectureLabel(image.architecture)}</p></div></div>
+                  <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}</div><p className="mt-1 text-[10px] font-normal leading-4 text-slate-500">{architectureLabel(image.architecture)}</p></div></div>
                 </button>;
               })}</div></>}
           </CardContent>
