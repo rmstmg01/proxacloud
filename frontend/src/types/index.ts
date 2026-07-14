@@ -380,6 +380,11 @@ export interface VPSCloudInitImage {
   default_disk_gb: number;
   source_path: string;
   detected_node_name: string;
+  distribution: string;
+  version: string;
+  architecture: string;
+  display_name: string;
+  logo_key: string;
   created_at: string;
   updated_at: string;
 }

@@ -1198,7 +1198,7 @@ func (s *Service) ProvisionAndBootstrap(req ProvisionAndBootstrapRequest) (Provi
 	if err != nil {
 		return ProvisionAndBootstrapResponse{}, err
 	}
-	bootstrapReq.SSHUser = "ubuntu"
+	bootstrapReq.SSHUser = "root"
 	bootstrapReq.SSHKeyPairID = automationKey.ID
 	bootstrapReq.SSHPrivateKey = ""
 	bootstrapReq.SSHPrivateKeyPath = ""
@@ -7718,7 +7718,7 @@ func (s *Service) getClusterNodes(clusterID int64) ([]ClusterNodeRecord, error) 
 			continue
 		}
 		if n.FQDN != "" && n.TunnelPublicPort > 0 {
-			n.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", n.FQDN, n.TunnelPublicPort)
+			n.SSHCommand = fmt.Sprintf("ssh root@%s -p %d", n.FQDN, n.TunnelPublicPort)
 		}
 		out = append(out, n)
 	}
@@ -7742,7 +7742,7 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 		return ClusterNodeRecord{}, fmt.Errorf("query cluster node: %w", err)
 	}
 	if n.FQDN != "" && n.TunnelPublicPort > 0 {
-		n.SSHCommand = fmt.Sprintf("ssh ubuntu@%s -p %d", n.FQDN, n.TunnelPublicPort)
+		n.SSHCommand = fmt.Sprintf("ssh root@%s -p %d", n.FQDN, n.TunnelPublicPort)
 	}
 	return n, nil
 }
@@ -8020,17 +8020,24 @@ func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
 func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
 	if req.CloudInitImageID > 0 {
 		var imagePath string
-		if err := s.db.QueryRow(`SELECT image_path FROM vps_cloud_init_images WHERE id = $1`, req.CloudInitImageID).Scan(&imagePath); err != nil {
+		var distribution string
+		if err := s.db.QueryRow(`SELECT image_path, distribution FROM vps_cloud_init_images WHERE id = $1`, req.CloudInitImageID).Scan(&imagePath, &distribution); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errors.New("selected shared cloud image not found")
 			}
 			return fmt.Errorf("load shared cloud image: %w", err)
+		}
+		if !strings.EqualFold(strings.TrimSpace(distribution), "ubuntu") {
+			return errors.New("Kubernetes clusters require an Ubuntu cloud image")
 		}
 		req.UbuntuImage = imagePath
 	}
 	req.UbuntuImage = strings.TrimSpace(req.UbuntuImage)
 	if !strings.HasPrefix(strings.ToLower(req.UbuntuImage), "cloud-images:import/") {
 		return errors.New("select an OS image from the shared cloud-images NFS import storage")
+	}
+	if req.CloudInitImageID <= 0 && !strings.Contains(strings.ToLower(req.UbuntuImage), "ubuntu") {
+		return errors.New("Kubernetes clusters require an Ubuntu cloud image")
 	}
 	return nil
 }
@@ -8076,25 +8083,7 @@ func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {
 }
 
 func (s *Service) hydrateBootstrapSSHUser(req *BootstrapRequest) error {
-	req.SSHUser = strings.TrimSpace(req.SSHUser)
-	if req.SSHUser != "" || req.SSHKeyPairID <= 0 {
-		return nil
-	}
-	if s.sshKeys == nil {
-		return errors.New("ssh key pair service is not configured")
-	}
-
-	pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
-	if err != nil {
-		if errors.Is(err, sshkeys.ErrKeyPairNotFound) {
-			return errors.New("selected ssh key pair not found")
-		}
-		return fmt.Errorf("load ssh key pair: %w", err)
-	}
-	req.SSHUser = strings.TrimSpace(pair.SSHUser)
-	if req.SSHUser == "" {
-		req.SSHUser = "ubuntu"
-	}
+	req.SSHUser = "root"
 	return nil
 }
 

@@ -550,19 +550,19 @@ const playbookTemplate = `---
 
     - name: Create .kube directory for ansible user
       file:
-        path: "/home/{{ "{{ ansible_user }}" }}/.kube"
+        path: "/root/.kube"
         state: directory
         mode: '0755'
-        owner: "{{ "{{ ansible_user }}" }}"
-        group: "{{ "{{ ansible_user }}" }}"
+        owner: root
+        group: root
 
     - name: Copy admin.conf to user kubeconfig
       copy:
         src: /etc/kubernetes/admin.conf
-        dest: "/home/{{ "{{ ansible_user }}" }}/.kube/config"
+        dest: "/root/.kube/config"
         remote_src: true
-        owner: "{{ "{{ ansible_user }}" }}"
-        group: "{{ "{{ ansible_user }}" }}"
+        owner: root
+        group: root
         mode: '0600'
 
 - hosts: control_plane:!control_plane[0]

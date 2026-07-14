@@ -56,7 +56,7 @@ func (s *Service) Create(in KeyPair) (KeyPair, error) {
 		return KeyPair{}, errors.New("name is required")
 	}
 	if in.SSHUser == "" {
-		in.SSHUser = "ubuntu"
+		in.SSHUser = "root"
 	}
 	if in.PublicKey == "" {
 		return KeyPair{}, errors.New("public_key is required")
@@ -184,7 +184,7 @@ func (s *Service) CreateCustomerPublicKey(scope tenant.Scope, in CustomerPublicK
 		return CustomerPublicKey{}, errors.New("name is required")
 	}
 	if in.SSHUser == "" {
-		in.SSHUser = "ubuntu"
+		in.SSHUser = "root"
 	}
 	parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(in.PublicKey))
 	if err != nil {

@@ -1091,11 +1091,12 @@ const terraformVariablesTF = `# This file is intentionally minimal.
 const cloudInitTemplate = `#cloud-config
 hostname: {{ .VMName }}
 manage_etc_hosts: true
+disable_root: false
+ssh_pwauth: false
 users:
-  - name: ubuntu
+  - name: root
     shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: sudo
+    lock_passwd: true
     ssh_authorized_keys:
       - {{ .SSHPublicKey }}
 {{- if .CustomerPublicKey }}

@@ -104,6 +104,11 @@ func TestPrepareStandaloneVPSWorkspaceIncludesDebianWorkaround(t *testing.T) {
 			t.Fatalf("VPS cloud-init missing %s", key)
 		}
 	}
+	for _, want := range []string{"disable_root: false", "name: root"} {
+		if !strings.Contains(cloudInit, want) {
+			t.Fatalf("VPS cloud-init missing %q", want)
+		}
+	}
 }
 
 func TestPrepareStandaloneVPSWorkspacePreservesNonDebianOSType(t *testing.T) {
@@ -156,6 +161,14 @@ func TestPrepareClusterWorkspaceImportsSharedImageAndInstallsTunnelAgent(t *test
 		if !strings.Contains(cloudInit, key) {
 			t.Fatalf("cluster cloud-init missing %s", key)
 		}
+	}
+	for _, want := range []string{"disable_root: false", "name: root"} {
+		if !strings.Contains(cloudInit, want) {
+			t.Fatalf("cluster cloud-init missing %q", want)
+		}
+	}
+	if strings.Contains(cloudInit, "name: ubuntu") {
+		t.Fatal("cluster cloud-init still creates the ubuntu login user")
 	}
 }
 

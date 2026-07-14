@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Plus, Server } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Plus } from 'lucide-react';
 import { checkClusterName, provisionAndBootstrapCluster } from '../api/clusters';
 import { createCustomerSSHKey, getCustomerSSHKeys } from '../api/customerSshKeys';
 import { getVPSCloudInitImages } from '../api/vps';
@@ -11,6 +11,7 @@ import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
+import { DistributionLogo } from '../components/DistributionLogo';
 
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
@@ -18,12 +19,15 @@ export function ProvisionClusterPage() {
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
   const { data: images } = useQuery({ queryKey: ['vps-cloud-init-images'], queryFn: getVPSCloudInitImages });
   const sharedImages = useMemo(
-    () => (images ?? []).filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
+    () => (images ?? [])
+      .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
+      .filter((image) => image.distribution === 'ubuntu' || (!image.distribution && image.os_type === 'ubuntu'))
+      .sort((a, b) => (a.version || a.name).localeCompare(b.version || b.name, undefined, { numeric: true })),
     [images],
   );
   const [debouncedName, setDebouncedName] = useState('');
   const [sshModalOpen, setSSHModalOpen] = useState(false);
-  const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'ubuntu', public_key: '' });
+  const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'root', public_key: '' });
   const [form, setForm] = useState({
     name: '', topology_type: 'tri', control_plane_count: 3, worker_count: 3,
     kubernetes_version: 'v1.31.4', cloud_init_image_id: 0, customer_ssh_key_id: 0,
@@ -55,7 +59,7 @@ export function ProvisionClusterPage() {
       queryClient.invalidateQueries({ queryKey: ['customer-ssh-keys'] });
       setForm((prev) => ({ ...prev, customer_ssh_key_id: key.id }));
       setSSHModalOpen(false);
-      setSSHForm({ name: '', ssh_user: 'ubuntu', public_key: '' });
+      setSSHForm({ name: '', ssh_user: 'root', public_key: '' });
     },
   });
   const provision = useMutation({ mutationFn: provisionAndBootstrapCluster });
@@ -75,7 +79,7 @@ export function ProvisionClusterPage() {
         apply: true,
       },
       bootstrap: {
-        ssh_user: 'ubuntu',
+        ssh_user: 'root',
         deploy_kube_vip: false,
         control_plane_vip: '',
         pod_cidr: '10.244.0.0/16',
@@ -114,14 +118,15 @@ export function ProvisionClusterPage() {
 
         <Card>
           <CardHeader><CardTitle>Shared NFS OS Image</CardTitle></CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             {sharedImages.length === 0 ? <Alert variant="warning" title="No shared images">Discover or upload an image to the cloud-images NFS import storage first.</Alert> :
+              <><div className="flex items-center gap-2 border-b border-slate-200 pb-2"><DistributionLogo distribution="ubuntu" className="h-6 w-6" /><h3 className="font-semibold text-slate-900">Ubuntu</h3><span className="text-xs text-slate-500">supported cluster images</span></div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{sharedImages.map((image) => {
                 const selected = image.id === form.cloud_init_image_id;
                 return <button key={image.id} type="button" onClick={() => setField('cloud_init_image_id', image.id)} className={`rounded-md border p-4 text-left ${selected ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <div className="flex gap-3"><Server className="h-5 w-5 text-slate-500" /><div><p className="font-medium text-slate-900">{image.name}</p><p className="mt-1 break-all text-xs text-slate-500">{image.image_path}</p></div></div>
+                  <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}</div><p className="mt-1 text-xs text-slate-500">Version {image.version || 'detected'} · {image.architecture || 'amd64'} · root login</p></div></div>
                 </button>;
-              })}</div>}
+              })}</div></>}
           </CardContent>
         </Card>
 
@@ -150,7 +155,7 @@ export function ProvisionClusterPage() {
       <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add Customer SSH Public Key">
         <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); createSSH.mutate(sshForm); }}>
           <Input label="Name" value={sshForm.name} onChange={(e) => setSSHForm({ ...sshForm, name: e.target.value })} required />
-          <Input label="SSH user" value={sshForm.ssh_user} onChange={() => setSSHForm({ ...sshForm, ssh_user: 'ubuntu' })} helperText="Cluster node access uses ubuntu." readOnly required />
+          <Input label="SSH user" value={sshForm.ssh_user} onChange={() => setSSHForm({ ...sshForm, ssh_user: 'root' })} helperText="Cluster node access uses root." readOnly required />
           <Textarea label="Public key" rows={3} value={sshForm.public_key} onChange={(e) => setSSHForm({ ...sshForm, public_key: e.target.value })} required />
           {createSSH.error && <ErrorMessage error={createSSH.error} />}
           <div className="flex gap-3"><Button type="submit" loading={createSSH.isPending}>Save and select</Button><Button type="button" variant="secondary" onClick={() => setSSHModalOpen(false)}>Cancel</Button></div>

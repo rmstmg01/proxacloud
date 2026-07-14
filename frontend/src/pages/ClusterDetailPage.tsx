@@ -298,7 +298,7 @@ function RunsTab({ id }: { id: number }) {
 
 function BootstrapTab({ id }: { id: number }) {
   const [form, setForm] = useState({
-    ssh_user: 'ubuntu',
+    ssh_user: 'root',
     ssh_key_pair_id: 0,
     ssh_private_key: '',
     ssh_key_id: 0,

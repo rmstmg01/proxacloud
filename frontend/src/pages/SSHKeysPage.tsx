@@ -16,7 +16,7 @@ export function SSHKeysPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({
     name: '',
-    ssh_user: 'ubuntu',
+    ssh_user: 'root',
     public_key: '',
     private_key: '',
   });
@@ -26,7 +26,7 @@ export function SSHKeysPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ssh-keys'] });
       setCreateOpen(false);
-      setForm({ name: '', ssh_user: 'ubuntu', public_key: '', private_key: '' });
+      setForm({ name: '', ssh_user: 'root', public_key: '', private_key: '' });
     },
   });
 

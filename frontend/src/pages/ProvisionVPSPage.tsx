@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Plus, Server } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Plus } from 'lucide-react';
 import { createVPSInstance, discoverVPSCloudInitImagesForRegion } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getRegions } from '../api/regions';
@@ -12,6 +12,7 @@ import { Button } from '../components/ui/Button';
 import { Input, Select, Textarea } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
+import { DistributionLogo } from '../components/DistributionLogo';
 import type { VPSCloudInitImage } from '../types';
 
 function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_image_path: string; ssh_user: string; cpu: number; memory_mb: number; disk_gb: number }>(
@@ -29,16 +30,13 @@ function applyImageDefaults<T extends { cloud_init_image_id: number; cloud_init_
   };
 }
 
-function osMeta(image: VPSCloudInitImage) {
-  const value = `${image.os_type} ${image.name} ${image.image_path}`.toLowerCase();
-  if (value.includes('alma')) return { label: 'AlmaLinux', tone: 'bg-indigo-50 text-indigo-700 ring-indigo-200' };
-  if (value.includes('ubuntu')) return { label: 'Ubuntu', tone: 'bg-orange-50 text-orange-700 ring-orange-200' };
-  if (value.includes('debian')) return { label: 'Debian', tone: 'bg-rose-50 text-rose-700 ring-rose-200' };
-  if (value.includes('rocky')) return { label: 'Rocky', tone: 'bg-emerald-50 text-emerald-700 ring-emerald-200' };
-  if (value.includes('centos')) return { label: 'CentOS', tone: 'bg-violet-50 text-violet-700 ring-violet-200' };
-  if (value.includes('fedora')) return { label: 'Fedora', tone: 'bg-sky-50 text-sky-700 ring-sky-200' };
-  return { label: image.os_type || 'Linux', tone: 'bg-slate-50 text-slate-700 ring-slate-200' };
-}
+const distributionOrder = [
+  { key: 'almalinux', label: 'AlmaLinux' },
+  { key: 'rocky', label: 'Rocky Linux' },
+  { key: 'ubuntu', label: 'Ubuntu' },
+  { key: 'debian', label: 'Debian' },
+  { key: 'fedora', label: 'Fedora' },
+] as const;
 
 function imageFilename(imagePath: string) {
   const clean = imagePath.trim();
@@ -92,6 +90,15 @@ export function ProvisionVPSPage() {
   const sharedImages = useMemo(
     () => discoveredImages.filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/')),
     [discoveredImages],
+  );
+  const imageGroups = useMemo(
+    () => distributionOrder.map((distribution) => ({
+      ...distribution,
+      images: sharedImages
+        .filter((image) => image.distribution === distribution.key)
+        .sort((a, b) => (a.version || a.name).localeCompare(b.version || b.name, undefined, { numeric: true })),
+    })).filter((group) => group.images.length > 0),
+    [sharedImages],
   );
   const selectedNetwork = useMemo(
     () => availableNetworks.find((network) => network.id === form.network_profile_id),
@@ -390,10 +397,16 @@ export function ProvisionVPSPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {sharedImages.length > 0 ? (
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                {sharedImages.map((image) => {
+              <div className="space-y-6">
+                {imageGroups.map((group) => <section key={group.key} className="space-y-3">
+                  <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+                    <DistributionLogo distribution={group.key} className="h-6 w-6" />
+                    <h3 className="font-semibold text-slate-900">{group.label}</h3>
+                    <span className="text-xs text-slate-500">{group.images.length} version{group.images.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {group.images.map((image) => {
                   const selected = form.cloud_init_image_id === image.id || form.cloud_init_image_path === image.image_path;
-                  const meta = osMeta(image);
                   return (
                     <button
                       key={image.id}
@@ -406,16 +419,17 @@ export function ProvisionVPSPage() {
                       }`}
                     >
                       <div className="flex items-start gap-3">
-                        <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md ring-1 ${meta.tone}`}>
-                          <Server className="h-5 w-5" />
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-white ring-1 ring-slate-200">
+                          <DistributionLogo distribution={image.logo_key || image.distribution} className="h-6 w-6" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex min-w-0 items-center justify-between gap-2">
-                            <p className="truncate text-sm font-semibold text-slate-900">{image.name || imageFilename(image.image_path)}</p>
+                            <p className="truncate text-sm font-semibold text-slate-900">{image.display_name || image.name || imageFilename(image.image_path)}</p>
                             {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-600" />}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                            <span>{meta.label}</span>
+                            {image.version && <span>Version {image.version}</span>}
+                            <span>{image.architecture || 'amd64'}</span>
                             {image.is_default && <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700">default</span>}
                             <span>root login</span>
                             <span>{image.default_cpu || 2} vCPU</span>
@@ -427,6 +441,8 @@ export function ProvisionVPSPage() {
                     </button>
                   );
                 })}
+                  </div>
+                </section>)}
               </div>
             ) : (
               <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-600">

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -115,6 +116,11 @@ type CloudInitImage struct {
 	DefaultDiskGB    int       `json:"default_disk_gb"`
 	SourcePath       string    `json:"source_path"`
 	DetectedNodeName string    `json:"detected_node_name"`
+	Distribution     string    `json:"distribution"`
+	Version          string    `json:"version"`
+	Architecture     string    `json:"architecture"`
+	DisplayName      string    `json:"display_name"`
+	LogoKey          string    `json:"logo_key"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -131,6 +137,11 @@ type CreateCloudInitImageRequest struct {
 	DefaultDiskGB    int    `json:"default_disk_gb"`
 	SourcePath       string `json:"source_path"`
 	DetectedNodeName string `json:"detected_node_name"`
+	Distribution     string `json:"distribution"`
+	Version          string `json:"version"`
+	Architecture     string `json:"architecture"`
+	DisplayName      string `json:"display_name"`
+	LogoKey          string `json:"logo_key"`
 }
 
 type Instance struct {
@@ -1029,7 +1040,7 @@ func (s *Service) ListEvents(id int64) ([]Event, error) {
 }
 
 func (s *Service) ListImages() ([]CloudInitImage, error) {
-	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at FROM vps_cloud_init_images ORDER BY is_default DESC, name ASC`)
+	rows, err := s.db.Query(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at FROM vps_cloud_init_images ORDER BY distribution ASC, version ASC, is_default DESC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list cloud-init images: %w", err)
 	}
@@ -1050,7 +1061,7 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	req.ImagePath = strings.TrimSpace(req.ImagePath)
 	req.OSType = strings.TrimSpace(req.OSType)
 	req.Description = strings.TrimSpace(req.Description)
-	req.SSHUser = strings.TrimSpace(req.SSHUser)
+	req.SSHUser = "root"
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
 	req.DetectedNodeName = strings.TrimSpace(req.DetectedNodeName)
 	if req.Name == "" {
@@ -1063,11 +1074,13 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 		return CloudInitImage{}, err
 	}
 	meta := inferCloudImageMetadata(proxmoxStorageFilename(req.ImagePath))
+	req.Distribution = meta.Distribution
+	req.Version = meta.Version
+	req.Architecture = meta.Architecture
+	req.DisplayName = meta.DisplayName
+	req.LogoKey = meta.LogoKey
 	if req.OSType == "" || (req.OSType == "ubuntu" && meta.OSType != "generic" && meta.OSType != "ubuntu") {
 		req.OSType = meta.OSType
-	}
-	if req.SSHUser == "" {
-		req.SSHUser = meta.SSHUser
 	}
 	if req.DefaultCPU <= 0 {
 		req.DefaultCPU = meta.DefaultCPU
@@ -1085,12 +1098,12 @@ func (s *Service) CreateImage(req CreateCloudInitImageRequest) (CloudInitImage, 
 	}
 	var image CloudInitImage
 	err := s.db.QueryRow(
-		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		 ON CONFLICT (image_path) DO UPDATE SET name = EXCLUDED.name, os_type = EXCLUDED.os_type, description = EXCLUDED.description, is_default = EXCLUDED.is_default, ssh_user = EXCLUDED.ssh_user, default_cpu = EXCLUDED.default_cpu, default_memory_mb = EXCLUDED.default_memory_mb, default_disk_gb = EXCLUDED.default_disk_gb, source_path = EXCLUDED.source_path, detected_node_name = EXCLUDED.detected_node_name, updated_at = NOW()
-		 RETURNING id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at`,
-		req.Name, req.ImagePath, req.OSType, req.Description, req.IsDefault, req.SSHUser, req.DefaultCPU, req.DefaultMemoryMB, req.DefaultDiskGB, req.SourcePath, req.DetectedNodeName,
-	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.CreatedAt, &image.UpdatedAt)
+		`INSERT INTO vps_cloud_init_images (name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		 ON CONFLICT (image_path) DO UPDATE SET name = EXCLUDED.name, os_type = EXCLUDED.os_type, description = EXCLUDED.description, is_default = EXCLUDED.is_default, ssh_user = EXCLUDED.ssh_user, default_cpu = EXCLUDED.default_cpu, default_memory_mb = EXCLUDED.default_memory_mb, default_disk_gb = EXCLUDED.default_disk_gb, source_path = EXCLUDED.source_path, detected_node_name = EXCLUDED.detected_node_name, distribution = EXCLUDED.distribution, version = EXCLUDED.version, architecture = EXCLUDED.architecture, display_name = EXCLUDED.display_name, logo_key = EXCLUDED.logo_key, updated_at = NOW()
+		 RETURNING id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at`,
+		req.Name, req.ImagePath, req.OSType, req.Description, req.IsDefault, req.SSHUser, req.DefaultCPU, req.DefaultMemoryMB, req.DefaultDiskGB, req.SourcePath, req.DetectedNodeName, req.Distribution, req.Version, req.Architecture, req.DisplayName, req.LogoKey,
+	).Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.CreatedAt, &image.UpdatedAt)
 	if err != nil {
 		return CloudInitImage{}, fmt.Errorf("create cloud-init image: %w", err)
 	}
@@ -1411,8 +1424,8 @@ func (s *Service) validateNode(credentialID int64, nodeName string) error {
 func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, error) {
 	if id > 0 {
 		var image CloudInitImage
-		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1`, id).
-			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.CreatedAt, &image.UpdatedAt)
+		err := s.db.QueryRow(`SELECT id, name, image_path, os_type, description, is_default, ssh_user, default_cpu, default_memory_mb, default_disk_gb, source_path, detected_node_name, distribution, version, architecture, display_name, logo_key, created_at, updated_at FROM vps_cloud_init_images WHERE id = $1`, id).
+			Scan(&image.ID, &image.Name, &image.ImagePath, &image.OSType, &image.Description, &image.IsDefault, &image.SSHUser, &image.DefaultCPU, &image.DefaultMemoryMB, &image.DefaultDiskGB, &image.SourcePath, &image.DetectedNodeName, &image.Distribution, &image.Version, &image.Architecture, &image.DisplayName, &image.LogoKey, &image.CreatedAt, &image.UpdatedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return CloudInitImage{}, errors.New("selected cloud-init image not found")
 		}
@@ -1432,7 +1445,7 @@ func (s *Service) resolveImage(id int64, imagePath string) (CloudInitImage, erro
 		return CloudInitImage{}, err
 	}
 	meta := inferCloudImageMetadata(filepath.Base(imagePath))
-	return CloudInitImage{ImagePath: imagePath, SSHUser: meta.SSHUser, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
+	return CloudInitImage{ImagePath: imagePath, OSType: meta.OSType, SSHUser: meta.SSHUser, Distribution: meta.Distribution, Version: meta.Version, Architecture: meta.Architecture, DisplayName: meta.DisplayName, LogoKey: meta.LogoKey, DefaultCPU: meta.DefaultCPU, DefaultMemoryMB: meta.DefaultMemoryMB, DefaultDiskGB: meta.DefaultDiskGB}, nil
 }
 
 func isSupportedCloudImageVolID(volID string) bool {
@@ -1659,6 +1672,11 @@ func scanCloudInitImage(rows interface {
 		&image.DefaultDiskGB,
 		&image.SourcePath,
 		&image.DetectedNodeName,
+		&image.Distribution,
+		&image.Version,
+		&image.Architecture,
+		&image.DisplayName,
+		&image.LogoKey,
 		&image.CreatedAt,
 		&image.UpdatedAt,
 	)
@@ -1668,6 +1686,11 @@ type inferredCloudImage struct {
 	Name            string
 	OSType          string
 	SSHUser         string
+	Distribution    string
+	Version         string
+	Architecture    string
+	DisplayName     string
+	LogoKey         string
 	DefaultCPU      int
 	DefaultMemoryMB int
 	DefaultDiskGB   int
@@ -1679,7 +1702,10 @@ func inferCloudImageMetadata(filename string) inferredCloudImage {
 	out := inferredCloudImage{
 		Name:            strings.NewReplacer("_", " ", "-", " ").Replace(name),
 		OSType:          "generic",
-		SSHUser:         "cloud-user",
+		SSHUser:         "root",
+		Distribution:    "other",
+		Architecture:    "amd64",
+		LogoKey:         "linux",
 		DefaultCPU:      2,
 		DefaultMemoryMB: 2048,
 		DefaultDiskGB:   20,
@@ -1687,41 +1713,77 @@ func inferCloudImageMetadata(filename string) inferredCloudImage {
 	switch {
 	case strings.Contains(lower, "almalinux"):
 		out.OSType = "almalinux"
-		out.SSHUser = "almalinux"
+		out.Distribution = "almalinux"
+		out.LogoKey = "almalinux"
 	case strings.Contains(lower, "ubuntu"):
 		out.OSType = "ubuntu"
-		out.SSHUser = "ubuntu"
+		out.Distribution = "ubuntu"
+		out.LogoKey = "ubuntu"
 	case strings.Contains(lower, "debian"):
 		out.OSType = "debian"
-		out.SSHUser = "debian"
+		out.Distribution = "debian"
+		out.LogoKey = "debian"
 	case strings.Contains(lower, "rocky"):
 		out.OSType = "rocky"
-		out.SSHUser = "rocky"
+		out.Distribution = "rocky"
+		out.LogoKey = "rocky"
 	case strings.Contains(lower, "centos"):
 		out.OSType = "centos"
 		out.SSHUser = "centos"
 	case strings.Contains(lower, "fedora"):
 		out.OSType = "fedora"
-		out.SSHUser = "fedora"
+		out.Distribution = "fedora"
+		out.LogoKey = "fedora"
+	}
+	if strings.Contains(lower, "arm64") || strings.Contains(lower, "aarch64") {
+		out.Architecture = "arm64"
+	}
+	out.Version = inferDistributionVersion(lower, out.Distribution)
+	out.DisplayName = distributionDisplayName(out.Distribution, out.Version)
+	if out.DisplayName == "Other Linux" {
+		out.DisplayName = out.Name
 	}
 	return out
 }
 
-func defaultSSHUserForOS(osType string) string {
-	switch strings.ToLower(strings.TrimSpace(osType)) {
-	case "almalinux":
-		return "almalinux"
-	case "ubuntu":
-		return "ubuntu"
-	case "debian":
-		return "debian"
-	case "rocky":
-		return "rocky"
-	case "centos", "fedora", "generic":
-		return "cloud-user"
-	default:
-		return "cloud-user"
+func inferDistributionVersion(filename, distribution string) string {
+	patterns := map[string][]string{
+		"ubuntu":    {`ubuntu[^0-9]*([0-9]{2}\.[0-9]{2})`},
+		"debian":    {`debian[^0-9]*([0-9]{1,2})`},
+		"almalinux": {`almalinux[^0-9]*([0-9]{1,2})`},
+		"rocky":     {`rocky[^0-9]*([0-9]{1,2})`},
+		"fedora":    {`generic[^0-9]*([0-9]{2})(?:[^0-9]|$)`, `fedora[^0-9]*([0-9]{2})(?:[^0-9]|$)`},
 	}
+	for _, pattern := range patterns[distribution] {
+		match := regexp.MustCompile(pattern).FindStringSubmatch(filename)
+		if len(match) > 1 {
+			return match[1]
+		}
+	}
+	return ""
+}
+
+func distributionDisplayName(distribution, version string) string {
+	labels := map[string]string{
+		"almalinux": "AlmaLinux",
+		"rocky":     "Rocky Linux",
+		"ubuntu":    "Ubuntu",
+		"debian":    "Debian",
+		"fedora":    "Fedora",
+		"other":     "Other Linux",
+	}
+	label := labels[distribution]
+	if label == "" {
+		label = "Other Linux"
+	}
+	if version != "" {
+		return label + " " + version
+	}
+	return label
+}
+
+func defaultSSHUserForOS(osType string) string {
+	return "root"
 }
 
 func terraformAuthFromCredential(cred proxmox.Credential) terraform.ProxmoxAuth {
