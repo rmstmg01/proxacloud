@@ -73,6 +73,60 @@ kubectl rollout status deployment/website -n ${namespace}`,
 
 const documentSections = [
   {
+    title: 'New Proxmox Node Preparation',
+    icon: Terminal,
+    badge: 'Node Setup',
+    description:
+      'Configure the shared cloud image storage before a new Proxmox node is used for VPS, Kubernetes cluster, or database cluster provisioning.',
+    commands: [
+      {
+        label: 'Add the shared NFS cloud image storage',
+        command: `pvesm add nfs cloud-images \\
+  --server 192.168.8.10 \\
+  --export /srv/proxmox-cloud-images \\
+  --content import,iso,snippets`,
+      },
+      {
+        label: 'Verify the storage is active and check capacity',
+        command: `pvesm status`,
+      },
+      {
+        label: 'List cloud images available for VM import',
+        command: `pvesm list cloud-images --content import`,
+      },
+      {
+        label: 'Confirm the NFS export is visible from the node',
+        command: `pvesm scan nfs 192.168.8.10`,
+      },
+      {
+        label: 'Inspect the Proxmox storage definition',
+        command: `grep -A 8 '^nfs: cloud-images$' /etc/pve/storage.cfg`,
+      },
+      {
+        label: 'Check name resolution, network reachability, and NFS exports',
+        command: `getent hosts 192.168.8.10
+ping -c 4 192.168.8.10
+showmount -e 192.168.8.10`,
+      },
+      {
+        label: 'Read recent Proxmox storage service errors',
+        command: `journalctl -u pvestatd -u pvedaemon -n 100 --no-pager`,
+      },
+    ],
+    notes: [
+      'Run the add command from the shell of the new Proxmox node before enabling it for workload placement.',
+      'The node must be able to reach 192.168.8.10 and access the /srv/proxmox-cloud-images NFS export.',
+      'pvesm status confirms whether cloud-images is active and shows total, used, and available capacity. Do not provision on the node while the storage status is inactive or unknown.',
+      'pvesm list cloud-images --content import lists only importable OS images. Volid is the storage-qualified image path, Format is the disk format, Type should be import, and Size is reported in bytes.',
+      'Confirm the expected current OS images appear in the import list before deploying VPS or cluster nodes. A missing image usually means the NFS export is stale, inaccessible, mounted from the wrong export path, or the file is not stored as import content.',
+      'If cloud-images is already defined in the same Proxmox cluster, verify it is active on the new node instead of adding a duplicate storage ID.',
+      'If the NFS scan cannot see /srv/proxmox-cloud-images, check routing and firewall access to TCP port 2049, the NFS server export rules, and whether the new node IP is permitted by the export.',
+      'If showmount is unavailable, install the NFS client utilities for the Proxmox/Debian release and repeat the export check.',
+      'pvesm config is not a valid command on some Proxmox versions. Inspect /etc/pve/storage.cfg and use pvesm status instead.',
+      'After correcting connectivity or export permissions, re-run pvesm status and the import list command. Only enable workload placement after both checks succeed.',
+    ],
+  },
+  {
     title: 'Cluster Health Checks',
     icon: CheckCircle2,
     badge: 'Basic',

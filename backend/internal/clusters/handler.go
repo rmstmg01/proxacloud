@@ -49,6 +49,10 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if scope.IsCustomer() {
+		if req.RegionID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})
+			return
+		}
 		req.CustomerAccountID = scope.CustomerAccountID
 		if !h.canAffordCluster(w, scope.CustomerAccountID, req) {
 			return
@@ -83,6 +87,10 @@ func (h *Handler) ProvisionAndBootstrap(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if scope.IsCustomer() {
+		if req.Provision.RegionID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})
+			return
+		}
 		req.Provision.CustomerAccountID = scope.CustomerAccountID
 		if !h.canAffordCluster(w, scope.CustomerAccountID, req.Provision) {
 			return

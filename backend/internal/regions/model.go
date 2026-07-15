@@ -6,12 +6,17 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 var (
-	ErrRegionNotFound = errors.New("region not found")
-	ErrRegionInUse    = errors.New("region is in use")
-	ErrRegionNoNode   = errors.New("region has no enabled Proxmox node")
+	ErrRegionNotFound  = errors.New("region not found")
+	ErrRegionInUse     = errors.New("region is in use")
+	ErrRegionNoNode    = errors.New("region has no enabled Proxmox node")
+	ErrNodeAssigned    = errors.New("Proxmox node is already assigned to another region")
+	ErrNodeNotFound    = errors.New("Proxmox node not found")
+	ErrNodeNotAssigned = errors.New("Proxmox node is not assigned to this region")
 )
 
 type Region struct {
@@ -141,7 +146,12 @@ func (s *Service) Delete(id int64) error {
 		return ErrRegionNotFound
 	}
 	var inUse bool
-	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM vps_instances WHERE region_id = $1)`, id).Scan(&inUse); err != nil {
+	if err := s.db.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM vps_instances WHERE region_id = $1)
+		     OR EXISTS (SELECT 1 FROM clusters WHERE region_id = $1)
+		     OR EXISTS (SELECT 1 FROM database_clusters WHERE region_id = $1)`,
+		id,
+	).Scan(&inUse); err != nil {
 		return fmt.Errorf("check region use: %w", err)
 	}
 	if inUse {
@@ -166,15 +176,93 @@ func (s *Service) SetNodes(regionID int64, nodeIDs []int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	uniqueNodeIDs := uniquePositive(nodeIDs)
+	for _, nodeID := range uniqueNodeIDs {
+		var ownerRegion string
+		err := tx.QueryRow(
+			`SELECT r.name
+			   FROM region_nodes rn
+			   JOIN regions r ON r.id = rn.region_id
+			  WHERE rn.proxmox_node_id = $1 AND rn.region_id <> $2
+			  LIMIT 1`,
+			nodeID, regionID,
+		).Scan(&ownerRegion)
+		if err == nil {
+			return fmt.Errorf("%w: node_id=%d belongs to %s; use move instead", ErrNodeAssigned, nodeID, ownerRegion)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check region node assignment: %w", err)
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM region_nodes WHERE region_id = $1`, regionID); err != nil {
 		return err
 	}
-	for _, nodeID := range uniquePositive(nodeIDs) {
-		if _, err := tx.Exec(`INSERT INTO region_nodes (region_id, proxmox_node_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, regionID, nodeID); err != nil {
+	for _, nodeID := range uniqueNodeIDs {
+		if _, err := tx.Exec(`INSERT INTO region_nodes (region_id, proxmox_node_id) VALUES ($1, $2)`, regionID, nodeID); err != nil {
+			if isRegionNodeAssignmentConflict(err) {
+				return fmt.Errorf("%w: node_id=%d", ErrNodeAssigned, nodeID)
+			}
 			return fmt.Errorf("assign region node: %w", err)
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Service) MoveNode(regionID, nodeID int64) error {
+	if err := s.ensureRegion(regionID); err != nil {
+		return err
+	}
+	if nodeID <= 0 {
+		return ErrNodeNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var nodeExists bool
+	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM proxmox_nodes WHERE id = $1)`, nodeID).Scan(&nodeExists); err != nil {
+		return fmt.Errorf("check Proxmox node: %w", err)
+	}
+	if !nodeExists {
+		return ErrNodeNotFound
+	}
+	if _, err := tx.Exec(`DELETE FROM region_nodes WHERE proxmox_node_id = $1`, nodeID); err != nil {
+		return fmt.Errorf("remove previous region node assignment: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO region_nodes (region_id, proxmox_node_id) VALUES ($1, $2)`, regionID, nodeID); err != nil {
+		if isRegionNodeAssignmentConflict(err) {
+			return ErrNodeAssigned
+		}
+		return fmt.Errorf("move region node: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Service) UnassignNode(regionID, nodeID int64) error {
+	if err := s.ensureRegion(regionID); err != nil {
+		return err
+	}
+	if nodeID <= 0 {
+		return ErrNodeNotFound
+	}
+	res, err := s.db.Exec(
+		`DELETE FROM region_nodes WHERE region_id = $1 AND proxmox_node_id = $2`,
+		regionID, nodeID,
+	)
+	if err != nil {
+		return fmt.Errorf("unassign region node: %w", err)
+	}
+	if affected, _ := res.RowsAffected(); affected == 0 {
+		return ErrNodeNotAssigned
+	}
+	return nil
+}
+
+func isRegionNodeAssignmentConflict(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505"
 }
 
 func (s *Service) SetNetworks(regionID int64, networkIDs []int64) error {

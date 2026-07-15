@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRightLeft, MapPin, Pencil, Plus, Trash2 } from 'lucide-react';
-import { createRegion, deleteRegion, getRegions, setRegionNetworks, setRegionNodes, updateRegion } from '../api/regions';
+import { ArrowRightLeft, MapPin, Pencil, Plus, Trash2, Unlink } from 'lucide-react';
+import { createRegion, deleteRegion, getRegions, moveRegionNode, setRegionNetworks, unassignRegionNode, updateRegion } from '../api/regions';
 import { getNetworks } from '../api/networks';
 import { getNodes } from '../api/proxmox';
 import type { NetworkProfile, ProxmoxNode, Region } from '../types';
@@ -186,20 +186,24 @@ export function RegionsPage() {
       if (toRegionID <= 0) {
         throw new Error('select destination region');
       }
-      const fromRegion = regionList.find((region) => region.id === fromRegionID);
       const toRegion = regionList.find((region) => region.id === toRegionID);
       if (!toRegion) {
         throw new Error('destination region not found');
       }
-      if (fromRegion && fromRegion.id !== toRegion.id) {
-        await setRegionNodes(fromRegion.id, fromRegion.nodes.filter((node) => node.id !== nodeID).map((node) => node.id));
-      }
-      if (!toRegion.nodes.some((node) => node.id === nodeID)) {
-        await setRegionNodes(toRegion.id, [...toRegion.nodes.map((node) => node.id), nodeID]);
-      }
+      if (fromRegionID === toRegionID) return;
+      await moveRegionNode(toRegion.id, nodeID);
     },
     onSuccess: () => {
       invalidateRegions();
+      setMoveTargets({});
+    },
+  });
+
+  const unassignNodeMut = useMutation({
+    mutationFn: ({ regionID, nodeID }: { regionID: number; nodeID: number }) => unassignRegionNode(regionID, nodeID),
+    onSuccess: () => {
+      invalidateRegions();
+      queryClient.invalidateQueries({ queryKey: ['proxmox-nodes'] });
       setMoveTargets({});
     },
   });
@@ -252,7 +256,7 @@ export function RegionsPage() {
                         <p className="text-sm font-medium text-slate-900">{node.node_name}</p>
                         <p className="text-xs text-slate-500">{node.credential_name || `Credential ${node.credential_id}`} - {node.status}</p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <select
                           className="min-w-40 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
                           value={moveTargetFor(region.id, node.id)}
@@ -272,6 +276,20 @@ export function RegionsPage() {
                         >
                           <ArrowRightLeft className="h-4 w-4" />
                           Move
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          loading={unassignNodeMut.isPending && unassignNodeMut.variables?.regionID === region.id && unassignNodeMut.variables?.nodeID === node.id}
+                          onClick={() => {
+                            if (window.confirm(`Unassign ${node.node_name} from ${region.name}? It will be excluded from new automatic workload placement until assigned to an enabled region again. Existing virtual machines will not be changed.`)) {
+                              unassignNodeMut.mutate({ regionID: region.id, nodeID: node.id });
+                            }
+                          }}
+                        >
+                          <Unlink className="h-4 w-4" />
+                          Unassign
                         </Button>
                       </div>
                     </div>
@@ -311,6 +329,7 @@ export function RegionsPage() {
         <Card className="mt-6">
           <div className="border-b border-slate-200 bg-slate-50 px-6 py-4">
             <h3 className="text-base font-semibold text-slate-800">Unassigned Nodes</h3>
+            <p className="mt-1 text-sm text-slate-500">These nodes are excluded from new automatic workload placement and can be safely kept out of scheduling during maintenance.</p>
           </div>
           <div className="grid gap-3 p-6 md:grid-cols-2 xl:grid-cols-3">
             {unassigned.map((node) => (
@@ -345,6 +364,7 @@ export function RegionsPage() {
       )}
 
       {moveNodeMut.error && <div className="mt-4"><ErrorMessage error={moveNodeMut.error} /></div>}
+      {unassignNodeMut.error && <div className="mt-4"><ErrorMessage error={unassignNodeMut.error} /></div>}
 
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="New Region">
         <RegionForm

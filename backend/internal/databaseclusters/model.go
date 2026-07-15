@@ -46,6 +46,7 @@ type NetworkStore interface {
 
 type NodeInventory interface {
 	ListEnabledNodes() ([]proxmox.Node, error)
+	ListEnabledNodesByRegion(regionID int64) ([]proxmox.Node, error)
 }
 
 type ProxmoxCredentialStore interface {
@@ -59,6 +60,7 @@ type SSHKeyPairStore interface {
 
 type PlanRequest struct {
 	Name                string   `json:"name"`
+	RegionID            int64    `json:"region_id"`
 	NetworkProfileID    int64    `json:"network_profile_id"`
 	ProxmoxCredentialID int64    `json:"proxmox_credential_id"`
 	ProxmoxNodeNames    []string `json:"proxmox_node_names"`
@@ -111,6 +113,8 @@ type NodeRecord struct {
 
 type ClusterRecord struct {
 	ID                  int64         `json:"id"`
+	RegionID            int64         `json:"region_id,omitempty"`
+	RegionName          string        `json:"region_name,omitempty"`
 	Name                string        `json:"name"`
 	Engine              string        `json:"engine"`
 	MariaDBVersion      string        `json:"mariadb_version"`
@@ -544,13 +548,13 @@ func (s *Service) List(scopes ...tenant.Scope) ([]ClusterRecord, error) {
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
-	query := `SELECT id, name, engine, mariadb_version, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, sst_username, haproxy_namespace, haproxy_service_name, terraform_work_dir, ansible_work_dir, COALESCE(customer_account_id, 0), status, created_at, updated_at FROM database_clusters`
+	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id`
 	args := []any{}
 	if scope.IsCustomer() {
-		query += ` WHERE customer_account_id = $1`
+		query += ` WHERE d.customer_account_id = $1`
 		args = append(args, scope.CustomerAccountID)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY d.created_at DESC`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list database clusters: %w", err)
@@ -559,7 +563,7 @@ func (s *Service) List(scopes ...tenant.Scope) ([]ClusterRecord, error) {
 	out := []ClusterRecord{}
 	for rows.Next() {
 		var rec ClusterRecord
-		if err := rows.Scan(&rec.ID, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err == nil {
+		if err := rows.Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err == nil {
 			out = append(out, rec)
 		}
 	}
@@ -572,14 +576,14 @@ func (s *Service) Get(clusterID int64, scopes ...tenant.Scope) (ClusterRecord, e
 		scope = scopes[0]
 	}
 	var rec ClusterRecord
-	query := `SELECT id, name, engine, mariadb_version, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, sst_username, haproxy_namespace, haproxy_service_name, terraform_work_dir, ansible_work_dir, COALESCE(customer_account_id, 0), status, created_at, updated_at FROM database_clusters WHERE id = $1`
+	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id WHERE d.id = $1`
 	args := []any{clusterID}
 	if scope.IsCustomer() {
-		query += ` AND customer_account_id = $2`
+		query += ` AND d.customer_account_id = $2`
 		args = append(args, scope.CustomerAccountID)
 	}
 	err := s.db.QueryRow(query, args...).
-		Scan(&rec.ID, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
+		Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClusterRecord{}, ErrDatabaseClusterNotFound
 	}
@@ -757,11 +761,25 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 	if err != nil {
 		return networks.Profile{}, nil, nil, err
 	}
+	if req.RegionID > 0 {
+		allowed, allowedErr := s.regionAllowsNetwork(req.RegionID, req.NetworkProfileID)
+		if allowedErr != nil {
+			return networks.Profile{}, nil, nil, allowedErr
+		}
+		if !allowed {
+			return networks.Profile{}, nil, nil, errors.New("selected subnet is not assigned to the selected region")
+		}
+	}
 	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)).To4() == nil {
 		return networks.Profile{}, nil, nil, errors.New("node_ip_pool_start must be a valid IPv4 address")
 	}
 
-	enabled, err := s.inventory.ListEnabledNodes()
+	var enabled []proxmox.Node
+	if req.RegionID > 0 {
+		enabled, err = s.inventory.ListEnabledNodesByRegion(req.RegionID)
+	} else {
+		enabled, err = s.inventory.ListEnabledNodes()
+	}
 	if err != nil {
 		return networks.Profile{}, nil, nil, err
 	}
@@ -812,6 +830,22 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 		"prefer a single writer or application-level retry handling for Galera deadlocks in production",
 	}
 	return profile, nodes, warnings, nil
+}
+
+func (s *Service) regionAllowsNetwork(regionID, networkProfileID int64) (bool, error) {
+	var allowed bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1 FROM region_networks rn
+			JOIN regions r ON r.id = rn.region_id
+			WHERE rn.region_id = $1 AND rn.network_profile_id = $2 AND r.enabled = TRUE
+		)`,
+		regionID, networkProfileID,
+	).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("check selected region subnet: %w", err)
+	}
+	return allowed, nil
 }
 
 func selectProxmoxNodes(enabled []proxmox.Node, credentialID int64, requested []string) ([]proxmox.Node, error) {
@@ -1217,10 +1251,10 @@ func (s *Service) insertCluster(req ProvisionRequest, rootRef, appRef, sstRef, w
 	}
 	defer tx.Rollback()
 	var clusterID int64
-	err = tx.QueryRow(`INSERT INTO database_clusters (name, engine, mariadb_version, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, root_password_secret_ref, app_password_secret_ref, sst_username, sst_password_secret_ref, haproxy_namespace, haproxy_service_name, terraform_work_dir, customer_account_id, status)
-		VALUES ($1, $2, $3, 'tri', $4, $5, NULLIF($6, 0), $7, $8, $9, $10, $11, $12, $13, $14, $15, NULLIF($16, 0), 'planned')
+	err = tx.QueryRow(`INSERT INTO database_clusters (name, region_id, engine, mariadb_version, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, root_password_secret_ref, app_password_secret_ref, sst_username, sst_password_secret_ref, haproxy_namespace, haproxy_service_name, terraform_work_dir, customer_account_id, status)
+		VALUES ($1, NULLIF($2, 0), $3, $4, 'tri', $5, $6, NULLIF($7, 0), $8, $9, $10, $11, $12, $13, $14, $15, $16, NULLIF($17, 0), 'planned')
 		RETURNING id`,
-		req.Name, engineMariaDBGalera, req.MariaDBVersion, req.NetworkProfileID, req.ProxmoxCredentialID, req.SSHKeyPairID, req.DatabaseName, req.AppUsername, rootRef, appRef, req.SSTUsername, sstRef, req.HAProxyNamespace, req.HAProxyServiceName, workDir, req.CustomerAccountID).Scan(&clusterID)
+		req.Name, req.RegionID, engineMariaDBGalera, req.MariaDBVersion, req.NetworkProfileID, req.ProxmoxCredentialID, req.SSHKeyPairID, req.DatabaseName, req.AppUsername, rootRef, appRef, req.SSTUsername, sstRef, req.HAProxyNamespace, req.HAProxyServiceName, workDir, req.CustomerAccountID).Scan(&clusterID)
 	if err != nil {
 		return 0, fmt.Errorf("insert database cluster: %w", err)
 	}

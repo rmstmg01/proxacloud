@@ -14,8 +14,8 @@ type fixedNodeInventory struct{ nodes []proxmox.Node }
 
 func (i fixedNodeInventory) ListEnabledNodes() ([]proxmox.Node, error) { return i.nodes, nil }
 
-func (s *Service) planAutomaticInfrastructure(req topology.PlanRequest, controlPlaneRAMMB, workerRAMMB int) (topology.PlanResponse, int64, error) {
-	nodes, err := s.proxmoxSvc.ListEnabledNodes()
+func (s *Service) planAutomaticInfrastructure(req topology.PlanRequest, regionID int64, controlPlaneRAMMB, workerRAMMB int) (topology.PlanResponse, int64, error) {
+	nodes, err := s.listEnabledProvisionNodes(regionID)
 	if err != nil {
 		return topology.PlanResponse{}, 0, err
 	}

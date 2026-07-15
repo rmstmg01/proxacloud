@@ -52,6 +52,7 @@ type NetworkStore interface {
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
 	ListEnabledNodes() ([]proxmox.Node, error)
+	ListEnabledNodesByRegion(regionID int64) ([]proxmox.Node, error)
 	ListStorageInventory() (proxmox.StorageInventory, error)
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
@@ -106,6 +107,7 @@ var ErrSavedManifestNotFound = errors.New("saved manifest not found")
 
 type ProvisionRequest struct {
 	Name                 string `json:"name"`
+	RegionID             int64  `json:"region_id"`
 	TopologyType         string `json:"topology_type"`
 	ControlPlaneCount    int    `json:"control_plane_count"`
 	WorkerCount          int    `json:"worker_count"`
@@ -247,6 +249,8 @@ type ClusterAccessDetails struct {
 type ClusterSummary struct {
 	ID                int64      `json:"id"`
 	CustomerAccountID int64      `json:"customer_account_id,omitempty"`
+	RegionID          int64      `json:"region_id,omitempty"`
+	RegionName        string     `json:"region_name,omitempty"`
 	Name              string     `json:"name"`
 	TopologyType      string     `json:"topology_type"`
 	KubernetesVersion string     `json:"kubernetes_version"`
@@ -962,11 +966,20 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 		TopologyType:      req.TopologyType,
 		ControlPlaneCount: req.ControlPlaneCount,
 		WorkerCount:       req.WorkerCount,
-	}, req.ControlPlaneRAMMB, req.WorkerRAMMB)
+	}, req.RegionID, req.ControlPlaneRAMMB, req.WorkerRAMMB)
 	if err != nil {
 		return ProvisionResponse{}, err
 	}
 	req.NetworkProfileID = automaticNetworkProfileID
+	if req.RegionID > 0 {
+		allowed, allowedErr := s.regionAllowsNetwork(req.RegionID, req.NetworkProfileID)
+		if allowedErr != nil {
+			return ProvisionResponse{}, allowedErr
+		}
+		if !allowed {
+			return ProvisionResponse{}, errors.New("automatically selected subnet is not assigned to the selected region")
+		}
+	}
 	if len(plan.SelectedProxmoxNode) > 0 {
 		req.ProxmoxCredentialID = req.NodeCredentialIDs[plan.SelectedProxmoxNode[0]]
 	}
@@ -1653,14 +1666,14 @@ func (s *Service) ListClusters(scopes ...tenant.Scope) ([]ClusterSummary, error)
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
-	query := `SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, COALESCE(kubeconfig_path, ''), created_at, updated_at
-		 FROM clusters`
+	query := `SELECT c.id, COALESCE(c.customer_account_id, 0), COALESCE(c.region_id, 0), COALESCE(r.name, ''), c.name, c.topology_type, c.kubernetes_version, c.network_profile_id, c.control_plane_count, c.worker_count, c.control_plane_cpu, c.control_plane_ram_mb, c.control_plane_disk_gb, c.worker_cpu, c.worker_ram_mb, c.worker_disk_gb, c.status, c.health_status, c.health_checked_at, COALESCE(c.kubeconfig_path, ''), c.created_at, c.updated_at
+		 FROM clusters c LEFT JOIN regions r ON r.id = c.region_id`
 	args := []any{}
 	if scope.IsCustomer() {
-		query += ` WHERE customer_account_id = $1`
+		query += ` WHERE c.customer_account_id = $1`
 		args = append(args, scope.CustomerAccountID)
 	}
-	query += ` ORDER BY created_at DESC`
+	query += ` ORDER BY c.created_at DESC`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list clusters: %w", err)
@@ -1673,6 +1686,8 @@ func (s *Service) ListClusters(scopes ...tenant.Scope) ([]ClusterSummary, error)
 		if scanErr := rows.Scan(
 			&c.ID,
 			&c.CustomerAccountID,
+			&c.RegionID,
+			&c.RegionName,
 			&c.Name,
 			&c.TopologyType,
 			&c.KubernetesVersion,
@@ -7189,11 +7204,12 @@ func validateMetalLBAddress(value string) error {
 func (s *Service) insertCluster(req ProvisionRequest, plan topology.PlanResponse) (int64, error) {
 	var clusterID int64
 	err := s.db.QueryRow(
-		`INSERT INTO clusters (name, customer_account_id, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, automation_ssh_key_pair_id, customer_ssh_key_id, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0), 'planned')
+		`INSERT INTO clusters (name, customer_account_id, region_id, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, proxmox_credential_id, automation_ssh_key_pair_id, customer_ssh_key_id, status)
+		 VALUES ($1, NULLIF($2, 0), NULLIF($3, 0), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NULLIF($16, 0), NULLIF($17, 0), 'planned')
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
+		req.RegionID,
 		plan.TopologyType,
 		req.KubernetesVersion,
 		req.NetworkProfileID,
@@ -7841,12 +7857,14 @@ func (s *Service) getClusterNodeByName(clusterID int64, nodeName string) (Cluste
 func (s *Service) getClusterSummary(clusterID int64) (ClusterSummary, error) {
 	var c ClusterSummary
 	err := s.db.QueryRow(
-		`SELECT id, COALESCE(customer_account_id, 0), name, topology_type, kubernetes_version, network_profile_id, control_plane_count, worker_count, control_plane_cpu, control_plane_ram_mb, control_plane_disk_gb, worker_cpu, worker_ram_mb, worker_disk_gb, status, health_status, health_checked_at, COALESCE(kubeconfig_path, ''), created_at, updated_at
-		 FROM clusters WHERE id = $1`,
+		`SELECT c.id, COALESCE(c.customer_account_id, 0), COALESCE(c.region_id, 0), COALESCE(r.name, ''), c.name, c.topology_type, c.kubernetes_version, c.network_profile_id, c.control_plane_count, c.worker_count, c.control_plane_cpu, c.control_plane_ram_mb, c.control_plane_disk_gb, c.worker_cpu, c.worker_ram_mb, c.worker_disk_gb, c.status, c.health_status, c.health_checked_at, COALESCE(c.kubeconfig_path, ''), c.created_at, c.updated_at
+		 FROM clusters c LEFT JOIN regions r ON r.id = c.region_id WHERE c.id = $1`,
 		clusterID,
 	).Scan(
 		&c.ID,
 		&c.CustomerAccountID,
+		&c.RegionID,
+		&c.RegionName,
 		&c.Name,
 		&c.TopologyType,
 		&c.KubernetesVersion,
@@ -8134,10 +8152,10 @@ func (s *Service) resolveProvisionImage(req *ProvisionRequest) error {
 	if req.CloudInitImageID <= 0 && !strings.Contains(strings.ToLower(req.UbuntuImage), "ubuntu") {
 		return errors.New("Kubernetes clusters require an Ubuntu cloud image")
 	}
-	return s.verifyProvisionImageOnNFS(req.CloudInitImageID, req.UbuntuImage)
+	return s.verifyProvisionImageOnNFS(req.RegionID, req.CloudInitImageID, req.UbuntuImage)
 }
 
-func (s *Service) verifyProvisionImageOnNFS(imageID int64, imagePath string) error {
+func (s *Service) verifyProvisionImageOnNFS(regionID, imageID int64, imagePath string) error {
 	separator := strings.Index(imagePath, ":")
 	if separator <= 0 {
 		return errors.New("selected OS image has an invalid shared storage volume ID")
@@ -8153,7 +8171,7 @@ func (s *Service) verifyProvisionImageOnNFS(imageID int64, imagePath string) err
 			sharedNodes[strings.ToLower(strings.TrimSpace(item.NodeName))] = true
 		}
 	}
-	nodes, err := s.proxmoxSvc.ListEnabledNodes()
+	nodes, err := s.listEnabledProvisionNodes(regionID)
 	if err != nil {
 		return fmt.Errorf("list enabled Proxmox nodes while verifying OS image: %w", err)
 	}
@@ -8200,7 +8218,7 @@ func storageContainsVolume(content []proxmox.StorageContent, imagePath string) b
 }
 
 func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {
-	nodes, err := s.proxmoxSvc.ListEnabledNodes()
+	nodes, err := s.listEnabledProvisionNodes(req.RegionID)
 	if err != nil {
 		return fmt.Errorf("list enabled proxmox nodes: %w", err)
 	}
@@ -8237,6 +8255,32 @@ func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {
 		req.NodeIPPoolStart = "0.0.0.10"
 	}
 	return nil
+}
+
+func (s *Service) listEnabledProvisionNodes(regionID int64) ([]proxmox.Node, error) {
+	if regionID > 0 {
+		return s.proxmoxSvc.ListEnabledNodesByRegion(regionID)
+	}
+	return s.proxmoxSvc.ListEnabledNodes()
+}
+
+func (s *Service) regionAllowsNetwork(regionID, networkProfileID int64) (bool, error) {
+	if regionID <= 0 || networkProfileID <= 0 {
+		return false, nil
+	}
+	var allowed bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS (
+			SELECT 1 FROM region_networks rn
+			JOIN regions r ON r.id = rn.region_id
+			WHERE rn.region_id = $1 AND rn.network_profile_id = $2 AND r.enabled = TRUE
+		)`,
+		regionID, networkProfileID,
+	).Scan(&allowed)
+	if err != nil {
+		return false, fmt.Errorf("check selected region subnet: %w", err)
+	}
+	return allowed, nil
 }
 
 func (s *Service) hydrateBootstrapSSHUser(req *BootstrapRequest) error {

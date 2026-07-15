@@ -13,6 +13,7 @@ import { Modal } from '../components/ui/Modal';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { architectureLabel, DistributionLogo } from '../components/DistributionLogo';
 import { useAuth } from '../context/AuthContext';
+import { getRegions } from '../api/regions';
 
 export function ProvisionClusterPage() {
   const navigate = useNavigate();
@@ -20,6 +21,7 @@ export function ProvisionClusterPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
+  const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
   const { data: images, error: imageDiscoveryError, isLoading: imagesLoading } = useQuery({
     queryKey: ['cluster-provision-images'],
     queryFn: () => discoverVPSCloudInitImagesAutomatically(),
@@ -37,7 +39,7 @@ export function ProvisionClusterPage() {
   const [sshModalOpen, setSSHModalOpen] = useState(false);
   const [sshForm, setSSHForm] = useState({ name: '', ssh_user: 'root', public_key: '' });
   const [form, setForm] = useState({
-    name: '', topology_type: 'tri', control_plane_count: 3, worker_count: 3,
+    name: '', region_id: 0, topology_type: 'tri', control_plane_count: 3, worker_count: 3,
     kubernetes_version: 'v1.31.4', cloud_init_image_id: 0, customer_ssh_key_id: 0,
     control_plane_cpu: 2, control_plane_ram_mb: 2048, control_plane_disk_gb: 80,
     worker_cpu: 2, worker_ram_mb: 2048, worker_disk_gb: 120,
@@ -61,6 +63,7 @@ export function ProvisionClusterPage() {
   const isNameTaken = nameCheck.data?.exists ?? false;
   const selectedKey = sshKeys?.find((key) => key.id === form.customer_ssh_key_id);
   const selectedImage = sharedImages.find((image) => image.id === form.cloud_init_image_id);
+  const enabledRegions = (regions ?? []).filter((region) => region.enabled && region.nodes.some((node) => node.enabled));
 
   const createSSH = useMutation({
     mutationFn: createCustomerSSHKey,
@@ -76,7 +79,7 @@ export function ProvisionClusterPage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (isNameTaken || !selectedKey || !selectedImage) return;
+    if (isNameTaken || !selectedKey || !selectedImage || form.region_id <= 0) return;
     const result = await provision.mutateAsync({
       provision: {
         ...form,
@@ -110,6 +113,10 @@ export function ProvisionClusterPage() {
           <CardHeader><CardTitle>Cluster</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input label="Cluster name" value={form.name} onChange={(e) => setField('name', e.target.value)} required placeholder="production" error={isNameTaken ? 'Cluster name already exists' : undefined} />
+            <Select label="Region" value={form.region_id} onChange={(e) => setField('region_id', Number(e.target.value))} required>
+              <option value={0}>Select region</option>
+              {enabledRegions.map((region) => <option key={region.id} value={region.id}>{region.name} ({region.nodes.filter((node) => node.enabled).length} nodes)</option>)}
+            </Select>
             <Select label="Topology" value={form.topology_type} onChange={(e) => {
               const topology = e.target.value;
               setForm((prev) => ({ ...prev, topology_type: topology, control_plane_count: topology === 'single' ? 1 : topology === 'dual' ? 2 : 3 }));

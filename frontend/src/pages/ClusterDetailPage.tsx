@@ -211,6 +211,7 @@ function OverviewTab({ id, customerView = false }: { id: number; customerView?: 
   if (!cluster) return <PageSpinner />;
   const fields: [string, string][] = [
     ['Name', cluster.name],
+    ['Region', cluster.region_name || 'Legacy / unassigned'],
     ['Status', cluster.status],
     ['Topology', cluster.topology_type],
     ['Kubernetes Version', cluster.kubernetes_version],

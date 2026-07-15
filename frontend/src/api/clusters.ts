@@ -110,6 +110,7 @@ export const getBootstrapKeys = (id: number) =>
 
 export const provisionCluster = (body: {
   name: string;
+  region_id: number;
   topology_type: string;
   control_plane_count: number;
   worker_count: number;
@@ -135,6 +136,7 @@ export const provisionCluster = (body: {
 export const provisionAndBootstrapCluster = (body: {
   provision: {
     name: string;
+    region_id: number;
     topology_type: string;
     control_plane_count: number;
     worker_count: number;

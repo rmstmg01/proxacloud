@@ -308,6 +308,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}", regionHandler.Update)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/regions/{id}", regionHandler.Delete)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}/nodes", regionHandler.SetNodes)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}/nodes/{nodeID}", regionHandler.MoveNode)
+			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/regions/{id}/nodes/{nodeID}", regionHandler.UnassignNode)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Put("/regions/{id}/networks", regionHandler.SetNetworks)
 
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/proxmox/credentials", proxmoxHandler.CreateCredential)

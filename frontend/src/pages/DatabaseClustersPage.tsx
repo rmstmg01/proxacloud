@@ -18,6 +18,7 @@ import {
 import { getNetworks } from '../api/networks';
 import { getNodes } from '../api/proxmox';
 import { getSSHKeys } from '../api/sshKeys';
+import { getRegions } from '../api/regions';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -26,10 +27,11 @@ import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
-import type { NetworkProfile, ProxmoxNode, SSHKeyPair } from '../types';
+import type { NetworkProfile, ProxmoxNode, Region, SSHKeyPair } from '../types';
 
 const initialForm = {
   name: '',
+  region_id: '',
   network_profile_id: '',
   node_1: '',
   node_2: '',
@@ -76,6 +78,7 @@ export function DatabaseClustersPage() {
   });
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
   const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
+  const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
   const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
   const selectedCluster = clusters?.find((cluster) => cluster.id === selectedID) ?? null;
   const detailQuery = useQuery({
@@ -94,7 +97,11 @@ export function DatabaseClustersPage() {
     enabled: selectedID !== null,
     refetchInterval: selectedID !== null ? 5_000 : false,
   });
-  const availableNodes = proxmoxNodes?.filter((node) => node.enabled) ?? [];
+  const selectedRegion = regions?.find((region) => region.id === Number(form.region_id));
+  const regionNodeIDs = new Set(selectedRegion?.nodes.map((node) => node.id) ?? []);
+  const regionNetworkIDs = new Set(selectedRegion?.networks.map((network) => network.id) ?? []);
+  const availableNodes = proxmoxNodes?.filter((node) => node.enabled && regionNodeIDs.has(node.id)) ?? [];
+  const availableNetworks = networks?.filter((network) => regionNetworkIDs.has(network.id)) ?? [];
   const invalidateClusterQueries = (clusterID?: number) => {
     queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
     if (clusterID) {
@@ -194,7 +201,9 @@ export function DatabaseClustersPage() {
   });
 
   const updateField = (field: keyof typeof initialForm, value: string | boolean) => {
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => field === 'region_id'
+      ? { ...current, region_id: String(value), network_profile_id: '', node_1: '', node_2: '', node_3: '' }
+      : { ...current, [field]: value });
   };
 
   const submitDeploy = (event: FormEvent) => {
@@ -203,6 +212,7 @@ export function DatabaseClustersPage() {
     const primaryNode = availableNodes.find((node) => node.node_name === form.node_1);
     provisionMutation.mutate({
       name: form.name.trim(),
+      region_id: Number(form.region_id),
       network_profile_id: Number(form.network_profile_id),
       proxmox_credential_id: primaryNode?.credential_id ?? 0,
       proxmox_node_names: nodeNames,
@@ -279,7 +289,8 @@ export function DatabaseClustersPage() {
       {showDeploy && (
         <DeployDatabaseForm
           form={form}
-          networks={networks ?? []}
+          regions={(regions ?? []).filter((region) => region.enabled)}
+          networks={availableNetworks}
           nodes={availableNodes}
           sshKeys={sshKeys ?? []}
           loading={provisionMutation.isPending}
@@ -303,6 +314,7 @@ export function DatabaseClustersPage() {
                     <tr className="border-b border-slate-200 bg-slate-50">
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Engine</th>
+                      <th className="text-left px-6 py-3 font-medium text-slate-600">Region</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Endpoint</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
                       <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
@@ -316,6 +328,7 @@ export function DatabaseClustersPage() {
                         <td className="px-6 py-4 text-slate-600">
                           {cluster.engine} {cluster.mariadb_version}
                         </td>
+                        <td className="px-6 py-4 text-slate-600">{cluster.region_name || 'Legacy / unassigned'}</td>
                         <td className="px-6 py-4 text-slate-600">
                           {cluster.haproxy_service_name}.{cluster.haproxy_namespace}
                         </td>
@@ -504,6 +517,7 @@ function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; 
         {loading && <p className="mb-3 text-xs text-slate-400">Refreshing details...</p>}
         <dl className="space-y-3 text-sm">
           <Field label="Database" value={cluster.database_name} />
+          <Field label="Region" value={cluster.region_name || 'Legacy / unassigned'} />
           <Field label="App user" value={cluster.app_username} />
           <Field label="Terraform" value={cluster.terraform_work_dir || 'Not generated'} />
           <Field label="Ansible" value={cluster.ansible_work_dir || 'Not generated'} />
@@ -583,6 +597,7 @@ function eventLevelClass(level: string) {
 
 function DeployDatabaseForm({
   form,
+  regions,
   networks,
   nodes,
   sshKeys,
@@ -591,6 +606,7 @@ function DeployDatabaseForm({
   onSubmit,
 }: {
   form: typeof initialForm;
+  regions: Region[];
   networks: NetworkProfile[];
   nodes: ProxmoxNode[];
   sshKeys: SSHKeyPair[];
@@ -615,6 +631,10 @@ function DeployDatabaseForm({
         <form onSubmit={onSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input label="Cluster name" value={form.name} onChange={(e) => onChange('name', e.target.value)} placeholder="pscs-prod-db" required />
+            <Select label="Region" value={form.region_id} onChange={(e) => onChange('region_id', e.target.value)} required>
+              <option value="">Select region</option>
+              {regions.map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
+            </Select>
             <Select label="Subnet" value={form.network_profile_id} onChange={(e) => onChange('network_profile_id', e.target.value)} required>
               <option value="">Select subnet</option>
               {networks.map((network) => (
@@ -623,7 +643,6 @@ function DeployDatabaseForm({
                 </option>
               ))}
             </Select>
-            <Input label="Credential mode" value="Auto from selected nodes" disabled />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

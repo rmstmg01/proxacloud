@@ -62,6 +62,10 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if scope.IsCustomer() {
+		if req.RegionID <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})
+			return
+		}
 		req.CustomerAccountID = scope.CustomerAccountID
 		if h.billing != nil {
 			cpu, memoryMB, diskGB := req.CPU, req.MemoryMB, req.DiskGB

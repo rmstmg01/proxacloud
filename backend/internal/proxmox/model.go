@@ -490,12 +490,32 @@ func (s *Service) ListNodes() []Node {
 }
 
 func (s *Service) ListEnabledNodes() ([]Node, error) {
-	rows, err := s.db.Query(
+	return s.listEnabledNodes(0)
+}
+
+func (s *Service) ListEnabledNodesByRegion(regionID int64) ([]Node, error) {
+	if regionID <= 0 {
+		return []Node{}, nil
+	}
+	return s.listEnabledNodes(regionID)
+}
+
+func (s *Service) listEnabledNodes(regionID int64) ([]Node, error) {
+	query :=
 		`SELECT n.id, n.credential_id, c.name, n.node_name, n.status, n.cpu_count, n.cpu_usage, n.memory_total_bytes, n.memory_used_bytes, n.disk_total_bytes, n.disk_used_bytes, n.enabled, n.last_discovered_at
 		 FROM proxmox_nodes n
 		 JOIN proxmox_credentials c ON c.id = n.credential_id
-		 WHERE n.enabled = TRUE
-		 ORDER BY n.node_name ASC`,
+		 JOIN region_nodes rn ON rn.proxmox_node_id = n.id
+		 JOIN regions r ON r.id = rn.region_id
+		 WHERE n.enabled = TRUE AND r.enabled = TRUE`
+	args := []any{}
+	if regionID > 0 {
+		query += ` AND r.id = $1`
+		args = append(args, regionID)
+	}
+	query += ` ORDER BY n.node_name ASC`
+	rows, err := s.db.Query(
+		query, args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("query enabled proxmox nodes: %w", err)

@@ -118,6 +118,7 @@ export function ClustersPage() {
                   <tr className="border-b border-slate-200 bg-slate-50">
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Name</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Version</th>
+                    <th className="text-left px-6 py-3 font-medium text-slate-600">Region</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Topology</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Nodes</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Health</th>
@@ -131,6 +132,7 @@ export function ClustersPage() {
                     <tr key={c.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-6 py-4 font-medium text-slate-900">{c.name}</td>
                       <td className="px-6 py-4 text-slate-600">{c.kubernetes_version}</td>
+                      <td className="px-6 py-4 text-slate-600">{c.region_name || 'Legacy / unassigned'}</td>
                       <td className="px-6 py-4 text-slate-600 capitalize">{c.topology_type}</td>
                       <td className="px-6 py-4 text-slate-600">
                         {c.control_plane_count}CP + {c.worker_count}W

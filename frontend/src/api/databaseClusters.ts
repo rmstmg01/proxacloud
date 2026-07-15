@@ -14,6 +14,8 @@ export type DatabaseClusterNode = {
 
 export type DatabaseCluster = {
   id: number;
+  region_id?: number;
+  region_name?: string;
   name: string;
   engine: string;
   mariadb_version: string;
@@ -72,6 +74,7 @@ export const deleteDatabaseCluster = (id: number, confirmationName: string) =>
 
 export const provisionDatabaseCluster = (body: {
   name: string;
+  region_id: number;
   network_profile_id: number;
   proxmox_credential_id: number;
   proxmox_node_names: string[];

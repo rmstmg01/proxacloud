@@ -587,6 +587,8 @@ export interface PlanResponse {
 
 export interface ClusterSummary {
   id: number;
+  region_id?: number;
+  region_name?: string;
   name: string;
   topology_type: string;
   kubernetes_version: string;

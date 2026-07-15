@@ -97,10 +97,62 @@ func (h *Handler) SetNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.service.SetNodes(id, req.NodeIDs); err != nil {
+		if errors.Is(err, ErrNodeAssigned) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "updated": true})
+}
+
+func (h *Handler) MoveNode(w http.ResponseWriter, r *http.Request) {
+	regionID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid region id"})
+		return
+	}
+	nodeID, err := strconv.ParseInt(chi.URLParam(r, "nodeID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid node id"})
+		return
+	}
+	if err := h.service.MoveNode(regionID, nodeID); err != nil {
+		switch {
+		case errors.Is(err, ErrRegionNotFound), errors.Is(err, ErrNodeNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		case errors.Is(err, ErrNodeAssigned):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"region_id": regionID, "node_id": nodeID, "updated": true})
+}
+
+func (h *Handler) UnassignNode(w http.ResponseWriter, r *http.Request) {
+	regionID, err := parseIDParam(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid region id"})
+		return
+	}
+	nodeID, err := strconv.ParseInt(chi.URLParam(r, "nodeID"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid node id"})
+		return
+	}
+	if err := h.service.UnassignNode(regionID, nodeID); err != nil {
+		switch {
+		case errors.Is(err, ErrRegionNotFound), errors.Is(err, ErrNodeNotFound), errors.Is(err, ErrNodeNotAssigned):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"region_id": regionID, "node_id": nodeID, "unassigned": true})
 }
 
 func (h *Handler) SetNetworks(w http.ResponseWriter, r *http.Request) {
