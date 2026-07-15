@@ -14,14 +14,71 @@ type fixedNodeInventory struct{ nodes []proxmox.Node }
 
 func (i fixedNodeInventory) ListEnabledNodes() ([]proxmox.Node, error) { return i.nodes, nil }
 
+const placementInventoryFreshness = 15 * time.Minute
+
+func placementNodeKey(credentialID int64, nodeName string) string {
+	return fmt.Sprintf("%d:%s", credentialID, strings.ToLower(strings.TrimSpace(nodeName)))
+}
+
+func eligibleCloudImagesStorage(item proxmox.NodeStorage) bool {
+	if !strings.EqualFold(strings.TrimSpace(item.StorageID), "cloud-images") || !item.Enabled || !item.Active {
+		return false
+	}
+	// NFS is shared storage by design. Some Proxmox versions/API responses omit
+	// the shared flag from node storage status even though the datastore type is
+	// nfs and it is active on the node.
+	return item.Shared || strings.EqualFold(strings.TrimSpace(item.Type), "nfs")
+}
+
+func (s *Service) listRegionNetworkProfileIDs(regionID int64) ([]int64, error) {
+	rows, err := s.db.Query(
+		`SELECT rn.network_profile_id
+		   FROM region_networks rn
+		   JOIN regions r ON r.id = rn.region_id
+		  WHERE rn.region_id = $1 AND r.enabled = TRUE
+		  ORDER BY rn.network_profile_id ASC`,
+		regionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list selected region subnets: %w", err)
+	}
+	defer rows.Close()
+	profileIDs := make([]int64, 0)
+	for rows.Next() {
+		var profileID int64
+		if err := rows.Scan(&profileID); err != nil {
+			return nil, fmt.Errorf("read selected region subnet: %w", err)
+		}
+		if profileID > 0 {
+			profileIDs = append(profileIDs, profileID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate selected region subnets: %w", err)
+	}
+	return profileIDs, nil
+}
+
 func (s *Service) planAutomaticInfrastructure(req topology.PlanRequest, regionID int64, controlPlaneRAMMB, workerRAMMB int) (topology.PlanResponse, int64, error) {
 	nodes, err := s.listEnabledProvisionNodes(regionID)
 	if err != nil {
 		return topology.PlanResponse{}, 0, err
 	}
-	tags, err := s.networks.ListNodeTagMap()
-	if err != nil {
-		return topology.PlanResponse{}, 0, err
+	tags := map[string]int64{}
+	regionProfileIDs := make([]int64, 0)
+	if regionID > 0 {
+		regionProfileIDs, err = s.listRegionNetworkProfileIDs(regionID)
+		if err != nil {
+			return topology.PlanResponse{}, 0, err
+		}
+		if len(regionProfileIDs) == 0 {
+			return topology.PlanResponse{}, 0, errors.New("selected region has no subnet assigned")
+		}
+	} else {
+		tags, err = s.networks.ListNodeTagMap()
+		if err != nil {
+			return topology.PlanResponse{}, 0, err
+		}
 	}
 	storage, err := s.proxmoxSvc.ListStorageInventory()
 	if err != nil {
@@ -29,23 +86,59 @@ func (s *Service) planAutomaticInfrastructure(req topology.PlanRequest, regionID
 	}
 	nfs := map[string]bool{}
 	for _, item := range storage.Items {
-		if item.StorageID == "cloud-images" && item.Enabled && item.Active && item.Shared {
-			nfs[item.NodeName] = true
+		if eligibleCloudImagesStorage(item) {
+			nfs[placementNodeKey(item.CredentialID, item.NodeName)] = true
 		}
 	}
+	storageErrors := map[string]bool{}
+	for _, item := range storage.Errors {
+		storageErrors[placementNodeKey(item.CredentialID, item.NodeName)] = true
+	}
 	groups := map[int64][]proxmox.Node{}
+	onlineCount := 0
+	freshCount := 0
+	credentialCount := 0
+	storageCount := 0
+	mappedCount := 0
+	storageErrorCount := 0
+	eligibleNodes := make([]proxmox.Node, 0, len(nodes))
 	for _, node := range nodes {
 		if strings.TrimSpace(node.Status) != "" && !strings.EqualFold(node.Status, "online") {
 			continue
 		}
-		if !node.LastDiscoveredAt.IsZero() && time.Since(node.LastDiscoveredAt) > 15*time.Minute {
+		onlineCount++
+		if !node.LastDiscoveredAt.IsZero() && time.Since(node.LastDiscoveredAt) > placementInventoryFreshness {
+			continue
+		}
+		freshCount++
+		if node.CredentialID <= 0 {
+			continue
+		}
+		credentialCount++
+		key := placementNodeKey(node.CredentialID, node.NodeName)
+		if storageErrors[key] {
+			storageErrorCount++
+		}
+		if !nfs[key] {
+			continue
+		}
+		storageCount++
+		if regionID > 0 {
+			eligibleNodes = append(eligibleNodes, node)
 			continue
 		}
 		profileID := tags[node.NodeName]
-		if profileID <= 0 || node.CredentialID <= 0 || !nfs[node.NodeName] {
+		if profileID <= 0 {
 			continue
 		}
+		mappedCount++
 		groups[profileID] = append(groups[profileID], node)
+	}
+	if regionID > 0 {
+		mappedCount = len(eligibleNodes)
+		for _, profileID := range regionProfileIDs {
+			groups[profileID] = append(groups[profileID], eligibleNodes...)
+		}
 	}
 	minimum := 1
 	switch strings.ToLower(strings.TrimSpace(req.TopologyType)) {
@@ -73,7 +166,20 @@ func (s *Service) planAutomaticInfrastructure(req topology.PlanRequest, regionID
 		}
 	}
 	if selectedProfile == 0 {
-		return topology.PlanResponse{}, 0, fmt.Errorf("no subnet has %d eligible online nodes with fresh inventory, credentials, and shared cloud-images NFS storage", minimum)
+		maxSameSubnet := 0
+		for _, group := range groups {
+			if len(group) > maxSameSubnet {
+				maxSameSubnet = len(group)
+			}
+		}
+		networkGuidance := "the same saved subnet tag on every node"
+		if regionID > 0 {
+			networkGuidance = "the selected region subnet assignment"
+		}
+		return topology.PlanResponse{}, 0, fmt.Errorf(
+			"%s topology requires %d eligible Proxmox nodes on one subnet; selected region has %d enabled nodes (online: %d, fresh inventory: %d, credentials: %d, active cloud-images NFS: %d, subnet mapped: %d, maximum eligible on one subnet: %d, storage API errors: %d). Refresh node discovery and verify cloud-images and %s",
+			strings.ToLower(strings.TrimSpace(req.TopologyType)), minimum, len(nodes), onlineCount, freshCount, credentialCount, storageCount, mappedCount, maxSameSubnet, storageErrorCount, networkGuidance,
+		)
 	}
 	cpCount := req.ControlPlaneCount
 	if cpCount <= 0 {

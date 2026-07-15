@@ -8235,13 +8235,26 @@ func (s *Service) resolveAutomaticInfrastructure(req *ProvisionRequest) error {
 			req.NodeCredentialIDs[node.NodeName] = node.CredentialID
 		}
 	}
-	tags, err := s.networks.ListNodeTagMap()
-	if err != nil {
-		return fmt.Errorf("load node network tags: %w", err)
-	}
-	req.NodeNetworkProfileIDs = tags
-	if len(tags) == 0 {
-		return errors.New("no subnet is mapped to any enabled Proxmox node; configure node network tags first")
+	if req.RegionID > 0 {
+		profiles, profileErr := s.listRegionNetworkProfileIDs(req.RegionID)
+		if profileErr != nil {
+			return profileErr
+		}
+		if len(profiles) == 0 {
+			return errors.New("selected region has no subnet assigned")
+		}
+		// Region placement chooses the subnet automatically. Avoid carrying legacy
+		// per-node overrides into the effective network resolution.
+		req.NodeNetworkProfileIDs = map[string]int64{}
+	} else {
+		tags, tagErr := s.networks.ListNodeTagMap()
+		if tagErr != nil {
+			return fmt.Errorf("load node network tags: %w", tagErr)
+		}
+		req.NodeNetworkProfileIDs = tags
+		if len(tags) == 0 {
+			return errors.New("no subnet is mapped to any enabled Proxmox node; configure node network tags first")
+		}
 	}
 	if req.ProxmoxCredentialID <= 0 {
 		for _, node := range nodes {
