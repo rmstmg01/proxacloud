@@ -19,6 +19,9 @@ export type DatabaseCluster = {
   name: string;
   engine: string;
   mariadb_version: string;
+  cloud_init_image_id?: number;
+  cloud_init_image_path?: string;
+  passwords_generated: boolean;
   topology_type: string;
   database_name: string;
   app_username: string;
@@ -75,25 +78,20 @@ export const deleteDatabaseCluster = (id: number, confirmationName: string) =>
 export const provisionDatabaseCluster = (body: {
   name: string;
   region_id: number;
-  network_profile_id: number;
-  proxmox_credential_id: number;
-  proxmox_node_names: string[];
-  node_ip_pool_start: string;
   cpu: number;
   memory_mb: number;
   disk_gb: number;
   mariadb_version: string;
-  ubuntu_image: string;
-  ssh_key_pair_id: number;
+  cloud_init_image_id: number;
   database_name: string;
   app_username: string;
   app_password: string;
   root_password: string;
   sst_username: string;
   sst_password: string;
+  generate_passwords: boolean;
   haproxy_namespace: string;
   haproxy_service_name: string;
-  apply: boolean;
 }) =>
   client
     .post<{
@@ -105,6 +103,19 @@ export const provisionDatabaseCluster = (body: {
       warnings: string[];
     }>('/database-clusters/provision', body)
     .then((r) => r.data);
+
+export type DatabaseClusterCredentials = {
+  cluster_id: number;
+  database_name: string;
+  root_username: string;
+  root_password: string;
+  app_username: string;
+  app_password: string;
+  generated: boolean;
+};
+
+export const getDatabaseClusterCredentials = (id: number) =>
+  client.get<DatabaseClusterCredentials>(`/database-clusters/${id}/credentials`).then((r) => r.data);
 
 export const bootstrapDatabaseCluster = (
   id: number,

@@ -3,6 +3,7 @@ package databaseclusters
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -42,6 +43,7 @@ var (
 
 type NetworkStore interface {
 	GetByID(id int64) (networks.Profile, error)
+	GetIPUsage(networkProfileID int64) (networks.IPUsageSummary, error)
 }
 
 type NodeInventory interface {
@@ -51,11 +53,14 @@ type NodeInventory interface {
 
 type ProxmoxCredentialStore interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
+	ListStorageInventory() (proxmox.StorageInventory, error)
+	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 	ControlVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, action string) (string, error)
 }
 
 type SSHKeyPairStore interface {
 	GetByID(id int64) (sshkeys.KeyPair, error)
+	GetAutomationKey() (sshkeys.KeyPair, error)
 }
 
 type PlanRequest struct {
@@ -73,6 +78,7 @@ type PlanRequest struct {
 type ProvisionRequest struct {
 	PlanRequest
 	MariaDBVersion     string `json:"mariadb_version"`
+	CloudInitImageID   int64  `json:"cloud_init_image_id"`
 	UbuntuImage        string `json:"ubuntu_image"`
 	SSHPublicKey       string `json:"ssh_public_key"`
 	SSHKeyPairID       int64  `json:"ssh_key_pair_id"`
@@ -82,6 +88,7 @@ type ProvisionRequest struct {
 	RootPassword       string `json:"root_password"`
 	SSTUsername        string `json:"sst_username"`
 	SSTPassword        string `json:"sst_password"`
+	GeneratePasswords  bool   `json:"generate_passwords"`
 	HAProxyNamespace   string `json:"haproxy_namespace"`
 	HAProxyServiceName string `json:"haproxy_service_name"`
 	Apply              bool   `json:"apply"`
@@ -118,6 +125,9 @@ type ClusterRecord struct {
 	Name                string        `json:"name"`
 	Engine              string        `json:"engine"`
 	MariaDBVersion      string        `json:"mariadb_version"`
+	CloudInitImageID    int64         `json:"cloud_init_image_id,omitempty"`
+	CloudInitImagePath  string        `json:"cloud_init_image_path,omitempty"`
+	PasswordsGenerated  bool          `json:"passwords_generated"`
 	TopologyType        string        `json:"topology_type"`
 	NetworkProfileID    int64         `json:"network_profile_id"`
 	ProxmoxCredentialID int64         `json:"proxmox_credential_id"`
@@ -203,6 +213,20 @@ type KubernetesManifestResponse struct {
 	Manifest  string `json:"manifest"`
 }
 
+type CredentialsResponse struct {
+	ClusterID    int64  `json:"cluster_id"`
+	DatabaseName string `json:"database_name"`
+	RootUsername string `json:"root_username"`
+	RootPassword string `json:"root_password"`
+	AppUsername  string `json:"app_username"`
+	AppPassword  string `json:"app_password"`
+	Generated    bool   `json:"generated"`
+}
+
+type DatabaseClusterMailer interface {
+	Send(to, subject, body string) error
+}
+
 type Service struct {
 	db                 *sql.DB
 	networks           NetworkStore
@@ -215,6 +239,7 @@ type Service struct {
 	ansibleWorkDir     string
 	terraformAutoApply bool
 	ansibleAutoApply   bool
+	mailer             DatabaseClusterMailer
 }
 
 func NewService(db *sql.DB, networkStore NetworkStore, inventory NodeInventory, terraformRunner *terraform.Runner, proxmoxCredentials ProxmoxCredentialStore, sshKeys SSHKeyPairStore, secretStore secrets.Store, ansibleBinary, ansibleWorkDir string, terraformAutoApply, ansibleAutoApply bool) *Service {
@@ -237,6 +262,10 @@ func NewService(db *sql.DB, networkStore NetworkStore, inventory NodeInventory, 
 		terraformAutoApply: terraformAutoApply,
 		ansibleAutoApply:   ansibleAutoApply,
 	}
+}
+
+func (s *Service) SetMailer(sender DatabaseClusterMailer) {
+	s.mailer = sender
 }
 
 func (s *Service) Plan(req PlanRequest) (PlanResponse, error) {
@@ -273,6 +302,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	if err != nil {
 		return ProvisionResponse{}, err
 	}
+	req.NetworkProfileID = profile.ID
 	if req.ProxmoxCredentialID <= 0 && len(nodes) > 0 {
 		req.ProxmoxCredentialID = nodes[0].ProxmoxCredentialID
 	}
@@ -282,8 +312,8 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	if err := s.resolveProvisionSSHKey(&req); err != nil {
 		return ProvisionResponse{}, err
 	}
-	if strings.TrimSpace(req.UbuntuImage) == "" {
-		return ProvisionResponse{}, errors.New("ubuntu_image is required")
+	if err := s.resolveAndVerifyUbuntuImage(&req, nodes); err != nil {
+		return ProvisionResponse{}, err
 	}
 
 	req.MariaDBVersion = nonEmpty(req.MariaDBVersion, "11.4")
@@ -292,6 +322,26 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	req.SSTUsername = nonEmpty(req.SSTUsername, "sstuser")
 	req.HAProxyNamespace = nonEmpty(req.HAProxyNamespace, "pscs")
 	req.HAProxyServiceName = nonEmpty(req.HAProxyServiceName, "external-mariadb")
+	passwordsGenerated := req.GeneratePasswords || strings.TrimSpace(req.RootPassword) == "" || strings.TrimSpace(req.AppPassword) == ""
+	if req.GeneratePasswords || strings.TrimSpace(req.RootPassword) == "" {
+		req.RootPassword, err = generateDatabasePassword()
+		if err != nil {
+			return ProvisionResponse{}, err
+		}
+	}
+	if req.GeneratePasswords || strings.TrimSpace(req.AppPassword) == "" {
+		req.AppPassword, err = generateDatabasePassword()
+		if err != nil {
+			return ProvisionResponse{}, err
+		}
+	}
+	if strings.TrimSpace(req.SSTPassword) == "" {
+		req.SSTPassword, err = generateDatabasePassword()
+		if err != nil {
+			return ProvisionResponse{}, err
+		}
+	}
+	req.GeneratePasswords = passwordsGenerated
 	if strings.TrimSpace(req.RootPassword) == "" || strings.TrimSpace(req.AppPassword) == "" || strings.TrimSpace(req.SSTPassword) == "" {
 		return ProvisionResponse{}, errors.New("root_password, app_password, and sst_password are required")
 	}
@@ -382,6 +432,7 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	status := "planned"
 	outputs := make([]string, 0, len(credentialIDs))
 	if req.Apply {
+		_ = s.updateStatus(clusterID, "provisioning")
 		_ = s.insertEvent(clusterID, "terraform-apply", "info", "Starting Terraform apply to create database VMs", "")
 		for _, credentialID := range credentialIDs {
 			groupWorkDir := workspaces[credentialID]
@@ -433,6 +484,24 @@ func (s *Service) Provision(req ProvisionRequest) (ProvisionResponse, error) {
 	}, nil
 }
 
+func (s *Service) ProvisionAndBootstrap(req ProvisionRequest) (ProvisionResponse, error) {
+	req.Apply = true
+	resp, err := s.Provision(req)
+	if err != nil {
+		return ProvisionResponse{}, err
+	}
+	boot, bootErr := s.Bootstrap(resp.ClusterID, BootstrapRequest{SSHKeyPairID: req.SSHKeyPairID, Apply: true})
+	if bootErr != nil {
+		_ = s.updateStatus(resp.ClusterID, "bootstrap_failed")
+		_ = s.insertEvent(resp.ClusterID, "bootstrap", "error", "Database servers were created, but Galera bootstrap could not start", bootErr.Error())
+		resp.Status = "bootstrap_failed"
+		resp.Warnings = append(resp.Warnings, "Database servers were created, but Galera bootstrap could not start; retry bootstrap from the cluster details page")
+		return resp, nil
+	}
+	resp.Status = boot.Status
+	return resp, nil
+}
+
 func (s *Service) Bootstrap(clusterID int64, req BootstrapRequest) (BootstrapResponse, error) {
 	cluster, err := s.Get(clusterID)
 	if err != nil {
@@ -481,10 +550,20 @@ func (s *Service) runBootstrapApplyAsync(clusterID int64, workDir string) {
 		_ = s.insertEvent(clusterID, "ansible-apply", "error", "Ansible Galera bootstrap failed", result.Output+"\n"+applyErr.Error())
 		return
 	}
-	_ = s.updateStatus(clusterID, "ready")
 	_ = s.insertEvent(clusterID, "ansible-apply", "success", "MariaDB Galera bootstrap completed successfully", result.Output)
+	_ = s.updateStatus(clusterID, "configuring_endpoint")
 	if err := s.applyKubernetesAppDatabaseConfigAfterBootstrap(clusterID); err != nil {
+		_ = s.updateStatus(clusterID, "configuration_failed")
 		_ = s.insertEvent(clusterID, "kubernetes-app-config", "error", "Failed to connect Kubernetes app to MariaDB Galera cluster", err.Error())
+		return
+	}
+	_ = s.updateStatus(clusterID, "ready")
+	_ = s.insertEvent(clusterID, "completed", "success", "Database cluster is ready", "")
+	if emailed, err := s.emailDeploymentDetails(clusterID); err != nil {
+		log.Printf("ERROR emailing database cluster details for %d: %v", clusterID, err)
+		_ = s.insertEvent(clusterID, "deployment-email", "warning", "Database cluster is ready, but the details email could not be sent", err.Error())
+	} else if emailed {
+		_ = s.insertEvent(clusterID, "deployment-email", "info", "Database cluster details emailed to the customer", "")
 	}
 }
 
@@ -548,7 +627,7 @@ func (s *Service) List(scopes ...tenant.Scope) ([]ClusterRecord, error) {
 	if len(scopes) > 0 {
 		scope = scopes[0]
 	}
-	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id`
+	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, COALESCE(d.cloud_init_image_id, 0), d.cloud_init_image_path, d.passwords_generated, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id`
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE d.customer_account_id = $1`
@@ -563,7 +642,7 @@ func (s *Service) List(scopes ...tenant.Scope) ([]ClusterRecord, error) {
 	out := []ClusterRecord{}
 	for rows.Next() {
 		var rec ClusterRecord
-		if err := rows.Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err == nil {
+		if err := rows.Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.CloudInitImageID, &rec.CloudInitImagePath, &rec.PasswordsGenerated, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt); err == nil {
 			out = append(out, rec)
 		}
 	}
@@ -576,14 +655,14 @@ func (s *Service) Get(clusterID int64, scopes ...tenant.Scope) (ClusterRecord, e
 		scope = scopes[0]
 	}
 	var rec ClusterRecord
-	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id WHERE d.id = $1`
+	query := `SELECT d.id, COALESCE(d.region_id, 0), COALESCE(r.name, ''), d.name, d.engine, d.mariadb_version, COALESCE(d.cloud_init_image_id, 0), d.cloud_init_image_path, d.passwords_generated, d.topology_type, d.network_profile_id, d.proxmox_credential_id, d.ssh_key_pair_id, d.database_name, d.app_username, d.sst_username, d.haproxy_namespace, d.haproxy_service_name, d.terraform_work_dir, d.ansible_work_dir, COALESCE(d.customer_account_id, 0), d.status, d.created_at, d.updated_at FROM database_clusters d LEFT JOIN regions r ON r.id = d.region_id WHERE d.id = $1`
 	args := []any{clusterID}
 	if scope.IsCustomer() {
 		query += ` AND d.customer_account_id = $2`
 		args = append(args, scope.CustomerAccountID)
 	}
 	err := s.db.QueryRow(query, args...).
-		Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
+		Scan(&rec.ID, &rec.RegionID, &rec.RegionName, &rec.Name, &rec.Engine, &rec.MariaDBVersion, &rec.CloudInitImageID, &rec.CloudInitImagePath, &rec.PasswordsGenerated, &rec.TopologyType, &rec.NetworkProfileID, &rec.ProxmoxCredentialID, &rec.SSHKeyPairID, &rec.DatabaseName, &rec.AppUsername, &rec.SSTUsername, &rec.HAProxyNamespace, &rec.HAProxyServiceName, &rec.TerraformWorkDir, &rec.AnsibleWorkDir, &rec.CustomerAccountID, &rec.Status, &rec.CreatedAt, &rec.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClusterRecord{}, ErrDatabaseClusterNotFound
 	}
@@ -757,6 +836,17 @@ func (s *Service) KubernetesManifest(clusterID int64) (KubernetesManifestRespons
 }
 
 func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []string, error) {
+	if req.NetworkProfileID <= 0 && req.RegionID > 0 {
+		if err := s.db.QueryRow(
+			`SELECT rn.network_profile_id FROM region_networks rn JOIN regions r ON r.id = rn.region_id WHERE rn.region_id = $1 AND r.enabled = TRUE ORDER BY rn.network_profile_id ASC LIMIT 1`,
+			req.RegionID,
+		).Scan(&req.NetworkProfileID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return networks.Profile{}, nil, nil, errors.New("selected region has no subnet assigned")
+			}
+			return networks.Profile{}, nil, nil, fmt.Errorf("select region subnet: %w", err)
+		}
+	}
 	profile, err := s.networks.GetByID(req.NetworkProfileID)
 	if err != nil {
 		return networks.Profile{}, nil, nil, err
@@ -770,6 +860,12 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 			return networks.Profile{}, nil, nil, errors.New("selected subnet is not assigned to the selected region")
 		}
 	}
+	if strings.TrimSpace(req.NodeIPPoolStart) == "" {
+		req.NodeIPPoolStart, err = s.automaticDatabaseIPStart(profile)
+		if err != nil {
+			return networks.Profile{}, nil, nil, err
+		}
+	}
 	if net.ParseIP(strings.TrimSpace(req.NodeIPPoolStart)).To4() == nil {
 		return networks.Profile{}, nil, nil, errors.New("node_ip_pool_start must be a valid IPv4 address")
 	}
@@ -780,6 +876,10 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 	} else {
 		enabled, err = s.inventory.ListEnabledNodes()
 	}
+	if err != nil {
+		return networks.Profile{}, nil, nil, err
+	}
+	enabled, storageWarnings, err := s.eligibleDatabasePlacementNodes(enabled)
 	if err != nil {
 		return networks.Profile{}, nil, nil, err
 	}
@@ -829,6 +929,7 @@ func (s *Service) buildPlan(req PlanRequest) (networks.Profile, []NodeRecord, []
 		"open TCP ports 3306, 4444, 4567, and 4568 between database VMs before bootstrap",
 		"prefer a single writer or application-level retry handling for Galera deadlocks in production",
 	}
+	warnings = append(warnings, storageWarnings...)
 	return profile, nodes, warnings, nil
 }
 
@@ -846,6 +947,125 @@ func (s *Service) regionAllowsNetwork(regionID, networkProfileID int64) (bool, e
 		return false, fmt.Errorf("check selected region subnet: %w", err)
 	}
 	return allowed, nil
+}
+
+func databasePlacementKey(credentialID int64, nodeName string) string {
+	return fmt.Sprintf("%d:%s", credentialID, strings.ToLower(strings.TrimSpace(nodeName)))
+}
+
+func (s *Service) eligibleDatabasePlacementNodes(nodes []proxmox.Node) ([]proxmox.Node, []string, error) {
+	storage, err := s.proxmoxCredentials.ListStorageInventory()
+	if err != nil {
+		return nil, nil, fmt.Errorf("list shared storage inventory: %w", err)
+	}
+	available := map[string]bool{}
+	for _, item := range storage.Items {
+		if strings.EqualFold(strings.TrimSpace(item.StorageID), "cloud-images") && item.Enabled && item.Active && (item.Shared || strings.EqualFold(strings.TrimSpace(item.Type), "nfs")) {
+			available[databasePlacementKey(item.CredentialID, item.NodeName)] = true
+		}
+	}
+	eligible := make([]proxmox.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if strings.TrimSpace(node.Status) != "" && !strings.EqualFold(strings.TrimSpace(node.Status), "online") {
+			continue
+		}
+		if !node.LastDiscoveredAt.IsZero() && time.Since(node.LastDiscoveredAt) > 15*time.Minute {
+			continue
+		}
+		if node.CredentialID <= 0 || !available[databasePlacementKey(node.CredentialID, node.NodeName)] {
+			continue
+		}
+		eligible = append(eligible, node)
+	}
+	if len(eligible) < nodeCount {
+		return nil, nil, fmt.Errorf("selected region requires %d eligible database hosts; found %d with online fresh inventory, credentials, and active cloud-images NFS storage", nodeCount, len(eligible))
+	}
+	return eligible, nil, nil
+}
+
+func (s *Service) automaticDatabaseIPStart(profile networks.Profile) (string, error) {
+	usage, err := s.networks.GetIPUsage(profile.ID)
+	if err != nil {
+		return "", fmt.Errorf("inspect subnet address usage: %w", err)
+	}
+	used := map[string]bool{}
+	for _, entry := range usage.Entries {
+		used[strings.TrimSpace(entry.IPAddress)] = true
+	}
+	_, cidr, err := net.ParseCIDR(strings.TrimSpace(profile.CIDR))
+	if err != nil || cidr == nil {
+		return "", errors.New("selected region subnet has an invalid IPv4 CIDR")
+	}
+	base := cidr.IP.To4()
+	if base == nil {
+		return "", errors.New("selected region subnet must use IPv4")
+	}
+	for offset := 10; offset < 65536; offset++ {
+		first, addErr := addIPv4(base.String(), offset)
+		if addErr != nil || !cidr.Contains(net.ParseIP(first)) {
+			break
+		}
+		free := true
+		for index := 0; index < nodeCount; index++ {
+			candidate, candidateErr := addIPv4(first, index)
+			if candidateErr != nil || !cidr.Contains(net.ParseIP(candidate)) || used[candidate] || candidate == strings.TrimSpace(profile.Gateway) {
+				free = false
+				break
+			}
+		}
+		if free {
+			return first, nil
+		}
+	}
+	return "", errors.New("selected region subnet has no three-address block available for the database cluster")
+}
+
+func (s *Service) resolveAndVerifyUbuntuImage(req *ProvisionRequest, nodes []NodeRecord) error {
+	if req.CloudInitImageID <= 0 {
+		return errors.New("select an Ubuntu operating system image")
+	}
+	var distribution string
+	if err := s.db.QueryRow(
+		`SELECT image_path, distribution FROM vps_cloud_init_images WHERE id = $1 AND available = TRUE`,
+		req.CloudInitImageID,
+	).Scan(&req.UbuntuImage, &distribution); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("selected operating system image is no longer available")
+		}
+		return fmt.Errorf("load selected operating system image: %w", err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(distribution), "ubuntu") || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.UbuntuImage)), "cloud-images:import/") {
+		return errors.New("database clusters require an Ubuntu image from cloud-images import storage")
+	}
+	for _, node := range nodes {
+		cred, err := s.proxmoxCredentials.GetCredentialWithSecrets(node.ProxmoxCredentialID)
+		if err != nil {
+			return fmt.Errorf("load credential for database host %s: %w", node.ProxmoxNodeName, err)
+		}
+		content, err := s.proxmoxCredentials.ListStorageContent(cred, node.ProxmoxNodeName, "cloud-images", "import")
+		if err != nil {
+			return fmt.Errorf("verify operating system image on database host %s: %w", node.ProxmoxNodeName, err)
+		}
+		found := false
+		for _, item := range content {
+			if strings.EqualFold(strings.TrimSpace(item.VolID), strings.TrimSpace(req.UbuntuImage)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("selected operating system image is not available on database host %s", node.ProxmoxNodeName)
+		}
+	}
+	return nil
+}
+
+func generateDatabasePassword() (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate database password: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 func selectProxmoxNodes(enabled []proxmox.Node, credentialID int64, requested []string) ([]proxmox.Node, error) {
@@ -1156,7 +1376,16 @@ func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
 		return nil
 	}
 	if req.SSHKeyPairID <= 0 {
-		return errors.New("ssh_public_key or ssh_key_pair_id is required")
+		pair, err := s.sshKeys.GetAutomationKey()
+		if err != nil {
+			return fmt.Errorf("load database automation SSH key: %w", err)
+		}
+		req.SSHKeyPairID = pair.ID
+		req.SSHPublicKey = strings.TrimSpace(pair.PublicKey)
+		if req.SSHPublicKey == "" {
+			return errors.New("database automation SSH key has an empty public key")
+		}
+		return nil
 	}
 	pair, err := s.sshKeys.GetByID(req.SSHKeyPairID)
 	if err != nil {
@@ -1172,7 +1401,7 @@ func (s *Service) resolveProvisionSSHKey(req *ProvisionRequest) error {
 func (s *Service) resolveBootstrapSSH(req BootstrapRequest) (string, string, error) {
 	sshUser := strings.TrimSpace(req.SSHUser)
 	if sshUser == "" {
-		sshUser = "ubuntu"
+		sshUser = "root"
 	}
 	if strings.TrimSpace(req.SSHPrivateKey) != "" {
 		return strings.TrimSpace(req.SSHPrivateKey), sshUser, nil
@@ -1182,9 +1411,7 @@ func (s *Service) resolveBootstrapSSH(req BootstrapRequest) (string, string, err
 		if err != nil {
 			return "", "", err
 		}
-		if strings.TrimSpace(pair.SSHUser) != "" {
-			sshUser = strings.TrimSpace(pair.SSHUser)
-		}
+		sshUser = "root"
 		if strings.TrimSpace(pair.PrivateKey) == "" {
 			return "", "", errors.New("selected ssh key pair has empty private key")
 		}
@@ -1244,6 +1471,22 @@ func (s *Service) loadDatabaseSecrets(clusterID int64) (databaseSecrets, error) 
 	return databaseSecrets{RootPassword: string(root), AppPassword: string(app), SSTPassword: string(sst)}, nil
 }
 
+func (s *Service) Credentials(clusterID int64) (CredentialsResponse, error) {
+	cluster, err := s.Get(clusterID)
+	if err != nil {
+		return CredentialsResponse{}, err
+	}
+	values, err := s.loadDatabaseSecrets(clusterID)
+	if err != nil {
+		return CredentialsResponse{}, err
+	}
+	_ = s.insertEvent(clusterID, "credentials-access", "info", "Database credentials were securely revealed in the portal", "")
+	return CredentialsResponse{
+		ClusterID: clusterID, DatabaseName: cluster.DatabaseName, RootUsername: "root", RootPassword: values.RootPassword,
+		AppUsername: cluster.AppUsername, AppPassword: values.AppPassword, Generated: cluster.PasswordsGenerated,
+	}, nil
+}
+
 func (s *Service) insertCluster(req ProvisionRequest, rootRef, appRef, sstRef, workDir string, nodes []NodeRecord) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1251,10 +1494,10 @@ func (s *Service) insertCluster(req ProvisionRequest, rootRef, appRef, sstRef, w
 	}
 	defer tx.Rollback()
 	var clusterID int64
-	err = tx.QueryRow(`INSERT INTO database_clusters (name, region_id, engine, mariadb_version, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, root_password_secret_ref, app_password_secret_ref, sst_username, sst_password_secret_ref, haproxy_namespace, haproxy_service_name, terraform_work_dir, customer_account_id, status)
-		VALUES ($1, NULLIF($2, 0), $3, $4, 'tri', $5, $6, NULLIF($7, 0), $8, $9, $10, $11, $12, $13, $14, $15, $16, NULLIF($17, 0), 'planned')
+	err = tx.QueryRow(`INSERT INTO database_clusters (name, region_id, engine, mariadb_version, cloud_init_image_id, cloud_init_image_path, passwords_generated, topology_type, network_profile_id, proxmox_credential_id, ssh_key_pair_id, database_name, app_username, root_password_secret_ref, app_password_secret_ref, sst_username, sst_password_secret_ref, haproxy_namespace, haproxy_service_name, terraform_work_dir, customer_account_id, status)
+		VALUES ($1, NULLIF($2, 0), $3, $4, NULLIF($5, 0), $6, $7, 'tri', $8, $9, NULLIF($10, 0), $11, $12, $13, $14, $15, $16, $17, $18, $19, NULLIF($20, 0), 'planned')
 		RETURNING id`,
-		req.Name, req.RegionID, engineMariaDBGalera, req.MariaDBVersion, req.NetworkProfileID, req.ProxmoxCredentialID, req.SSHKeyPairID, req.DatabaseName, req.AppUsername, rootRef, appRef, req.SSTUsername, sstRef, req.HAProxyNamespace, req.HAProxyServiceName, workDir, req.CustomerAccountID).Scan(&clusterID)
+		req.Name, req.RegionID, engineMariaDBGalera, req.MariaDBVersion, req.CloudInitImageID, req.UbuntuImage, req.GeneratePasswords, req.NetworkProfileID, req.ProxmoxCredentialID, req.SSHKeyPairID, req.DatabaseName, req.AppUsername, rootRef, appRef, req.SSTUsername, sstRef, req.HAProxyNamespace, req.HAProxyServiceName, workDir, req.CustomerAccountID).Scan(&clusterID)
 	if err != nil {
 		return 0, fmt.Errorf("insert database cluster: %w", err)
 	}

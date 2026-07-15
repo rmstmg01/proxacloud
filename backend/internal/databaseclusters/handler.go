@@ -88,7 +88,7 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	resp, err := h.service.Provision(req)
+	resp, err := h.service.ProvisionAndBootstrap(req)
 	if err != nil {
 		if errors.Is(err, ErrDatabaseClusterExists) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -97,7 +97,24 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, resp)
+	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func (h *Handler) Credentials(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.authorizeCluster(w, r, id); !ok {
+		return
+	}
+	resp, err := h.service.Credentials(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) Bootstrap(w http.ResponseWriter, r *http.Request) {

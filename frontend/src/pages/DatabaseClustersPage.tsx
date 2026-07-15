@@ -1,10 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Database, FileCode, Play, Plus, Power, RefreshCw, Rocket, RotateCcw, Trash2 } from 'lucide-react';
+import { CheckCircle2, Copy, Database, Eye, EyeOff, FileCode, Loader2, Play, Plus, Power, RefreshCw, Rocket, RotateCcw, Trash2 } from 'lucide-react';
 import {
   bootstrapDatabaseCluster,
   deleteDatabaseCluster,
   getDatabaseCluster,
+  getDatabaseClusterCredentials,
   getDatabaseClusterEvents,
   getDatabaseClusterK8sManifest,
   getDatabaseClusters,
@@ -15,10 +16,8 @@ import {
   type DatabaseCluster,
   type DatabaseClusterEvent,
 } from '../api/databaseClusters';
-import { getNetworks } from '../api/networks';
-import { getNodes } from '../api/proxmox';
-import { getSSHKeys } from '../api/sshKeys';
 import { getRegions } from '../api/regions';
+import { discoverVPSCloudInitImagesForRegion } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -27,37 +26,33 @@ import { PageSpinner } from '../components/ui/Spinner';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
 import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
-import type { NetworkProfile, ProxmoxNode, Region, SSHKeyPair } from '../types';
+import { architectureLabel, DistributionLogo } from '../components/DistributionLogo';
+import { useAuth } from '../context/AuthContext';
+import type { Region, VPSCloudInitImage } from '../types';
 
 const initialForm = {
   name: '',
   region_id: '',
-  network_profile_id: '',
-  node_1: '',
-  node_2: '',
-  node_3: '',
-  node_ip_pool_start: '',
   cpu: '4',
   memory_mb: '8192',
   disk_gb: '100',
   mariadb_version: '11.4',
-  ubuntu_image: 'local:iso/ubuntu-24.04-server-cloudimg-amd64.img',
-  ssh_key_pair_id: '',
+  cloud_init_image_id: '',
   database_name: 'pscs',
   app_username: 'pscs',
   app_password: '',
   root_password: '',
   sst_username: 'sstuser',
   sst_password: '',
+  generate_passwords: true,
   haproxy_namespace: 'pscs',
   haproxy_service_name: 'external-mariadb',
-  applyTerraform: true,
-  bootstrapAfterProvision: true,
-  applyAnsible: true,
 };
 
 export function DatabaseClustersPage() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
   const [selectedID, setSelectedID] = useState<number | null>(null);
   const [manifestID, setManifestID] = useState<number | null>(null);
   const [showDeploy, setShowDeploy] = useState(false);
@@ -76,15 +71,31 @@ export function DatabaseClustersPage() {
     queryFn: getDatabaseClusters,
     refetchInterval: 30_000,
   });
-  const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
-  const { data: proxmoxNodes } = useQuery({ queryKey: ['proxmox-nodes'], queryFn: getNodes });
   const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
-  const { data: sshKeys } = useQuery({ queryKey: ['ssh-keys'], queryFn: getSSHKeys });
+  const selectedRegionID = Number(form.region_id);
+  const { data: images, error: imageError, isLoading: imagesLoading } = useQuery({
+    queryKey: ['database-cluster-images', selectedRegionID],
+    queryFn: () => discoverVPSCloudInitImagesForRegion(selectedRegionID),
+    enabled: selectedRegionID > 0,
+    staleTime: 0,
+  });
+  const ubuntuImages = useMemo(() => (images ?? [])
+    .filter((image) => image.available !== false && image.image_path.toLowerCase().startsWith('cloud-images:import/'))
+    .filter((image) => image.distribution === 'ubuntu' || (!image.distribution && image.os_type === 'ubuntu'))
+    .sort((a, b) => (a.version || a.name).localeCompare(b.version || b.name, undefined, { numeric: true })), [images]);
+  useEffect(() => {
+    const current = ubuntuImages.some((image) => image.id === Number(form.cloud_init_image_id));
+    if (!current) {
+      const preferred = ubuntuImages.find((image) => image.is_default) ?? ubuntuImages[0];
+      setForm((value) => ({ ...value, cloud_init_image_id: preferred ? String(preferred.id) : '' }));
+    }
+  }, [ubuntuImages, form.cloud_init_image_id]);
   const selectedCluster = clusters?.find((cluster) => cluster.id === selectedID) ?? null;
   const detailQuery = useQuery({
     queryKey: ['database-cluster', selectedID],
     queryFn: () => getDatabaseCluster(selectedID ?? 0),
     enabled: selectedID !== null,
+    refetchInterval: selectedID !== null ? 5_000 : false,
   });
   const manifestQuery = useQuery({
     queryKey: ['database-cluster-manifest', manifestID],
@@ -94,14 +105,9 @@ export function DatabaseClustersPage() {
   const eventsQuery = useQuery({
     queryKey: ['database-cluster-events', selectedID],
     queryFn: () => getDatabaseClusterEvents(selectedID ?? 0),
-    enabled: selectedID !== null,
+    enabled: selectedID !== null && isAdmin,
     refetchInterval: selectedID !== null ? 5_000 : false,
   });
-  const selectedRegion = regions?.find((region) => region.id === Number(form.region_id));
-  const regionNodeIDs = new Set(selectedRegion?.nodes.map((node) => node.id) ?? []);
-  const regionNetworkIDs = new Set(selectedRegion?.networks.map((network) => network.id) ?? []);
-  const availableNodes = proxmoxNodes?.filter((node) => node.enabled && regionNodeIDs.has(node.id)) ?? [];
-  const availableNetworks = networks?.filter((network) => regionNetworkIDs.has(network.id)) ?? [];
   const invalidateClusterQueries = (clusterID?: number) => {
     queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
     if (clusterID) {
@@ -113,29 +119,11 @@ export function DatabaseClustersPage() {
     mutationFn: provisionDatabaseCluster,
     onSuccess: async (resp) => {
       queryClient.invalidateQueries({ queryKey: ['database-clusters'] });
-      let message = form.applyTerraform
-        ? `Terraform finished with status ${resp.status}.`
-        : `Terraform workspace generated at ${resp.terraform_work_dir}.`;
+      const message = `Database cluster deployment started with status ${resp.status}.`;
       setSelectedID(resp.cluster_id);
       setManifestID(resp.cluster_id);
-      try {
-        if (form.bootstrapAfterProvision) {
-          const boot = await bootstrapDatabaseCluster(resp.cluster_id, {
-            ssh_key_pair_id: Number(form.ssh_key_pair_id),
-            apply: form.applyAnsible,
-          });
-          message += form.applyAnsible
-            ? ` Galera bootstrap started; watch the Event Log for live progress.`
-            : ` Bootstrap workspace generated at ${boot.ansible_work_dir}.`;
-          queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
-          queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
-        }
-      } catch {
-        message += ' Galera bootstrap failed; select the cluster and review the event log.';
-      } finally {
-        queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
-        queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
-      }
+      queryClient.invalidateQueries({ queryKey: ['database-cluster', resp.cluster_id] });
+      queryClient.invalidateQueries({ queryKey: ['database-cluster-events', resp.cluster_id] });
       setLastResult({ clusterID: resp.cluster_id, message, manifest: resp.kubernetes_yaml });
       setShowDeploy(false);
       setForm(initialForm);
@@ -202,36 +190,29 @@ export function DatabaseClustersPage() {
 
   const updateField = (field: keyof typeof initialForm, value: string | boolean) => {
     setForm((current) => field === 'region_id'
-      ? { ...current, region_id: String(value), network_profile_id: '', node_1: '', node_2: '', node_3: '' }
+      ? { ...current, region_id: String(value), cloud_init_image_id: '' }
       : { ...current, [field]: value });
   };
 
   const submitDeploy = (event: FormEvent) => {
     event.preventDefault();
-    const nodeNames = [form.node_1, form.node_2, form.node_3].map((v) => v.trim()).filter(Boolean);
-    const primaryNode = availableNodes.find((node) => node.node_name === form.node_1);
     provisionMutation.mutate({
       name: form.name.trim(),
       region_id: Number(form.region_id),
-      network_profile_id: Number(form.network_profile_id),
-      proxmox_credential_id: primaryNode?.credential_id ?? 0,
-      proxmox_node_names: nodeNames,
-      node_ip_pool_start: form.node_ip_pool_start.trim(),
       cpu: Number(form.cpu),
       memory_mb: Number(form.memory_mb),
       disk_gb: Number(form.disk_gb),
       mariadb_version: form.mariadb_version.trim(),
-      ubuntu_image: form.ubuntu_image.trim(),
-      ssh_key_pair_id: Number(form.ssh_key_pair_id),
+      cloud_init_image_id: Number(form.cloud_init_image_id),
       database_name: form.database_name.trim(),
       app_username: form.app_username.trim(),
       app_password: form.app_password,
       root_password: form.root_password,
       sst_username: form.sst_username.trim(),
       sst_password: form.sst_password,
+      generate_passwords: form.generate_passwords,
       haproxy_namespace: form.haproxy_namespace.trim(),
       haproxy_service_name: form.haproxy_service_name.trim(),
-      apply: form.applyTerraform,
     });
   };
 
@@ -278,9 +259,6 @@ export function DatabaseClustersPage() {
       {startMutation.error && <ErrorMessage error={startMutation.error} />}
       {restartMutation.error && <ErrorMessage error={restartMutation.error} />}
       {stopMutation.error && <ErrorMessage error={stopMutation.error} />}
-      <Alert variant="info" className="mb-6" title="Deploy creates infrastructure by default">
-        Database cluster deploy now runs Terraform and Galera bootstrap when the form options are enabled. Uncheck the apply options only when you want reviewable workspaces without changing Proxmox.
-      </Alert>
       {lastResult && (
         <Alert variant="success" className="mb-6" title="Database deploy submitted">
           {lastResult.message}
@@ -290,9 +268,9 @@ export function DatabaseClustersPage() {
         <DeployDatabaseForm
           form={form}
           regions={(regions ?? []).filter((region) => region.enabled)}
-          networks={availableNetworks}
-          nodes={availableNodes}
-          sshKeys={sshKeys ?? []}
+          images={ubuntuImages}
+          imageError={imageError}
+          imagesLoading={imagesLoading}
           loading={provisionMutation.isPending}
           onChange={updateField}
           onSubmit={submitDeploy}
@@ -333,7 +311,7 @@ export function DatabaseClustersPage() {
                           {cluster.haproxy_service_name}.{cluster.haproxy_namespace}
                         </td>
                         <td className="px-6 py-4">
-                          <StatusBadge status={cluster.status} />
+                          <div className="flex items-center gap-2">{isDatabaseDeploymentActive(cluster.status) && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}<StatusBadge status={cluster.status} /></div>
                         </td>
                         <td className="px-6 py-4 text-slate-500">
                           {new Date(cluster.created_at).toLocaleDateString()}
@@ -410,7 +388,7 @@ export function DatabaseClustersPage() {
           </Card>
 
           <ClusterDetail cluster={detailQuery.data ?? selectedCluster} loading={detailQuery.isFetching} />
-          <EventLog events={eventsQuery.data ?? []} loading={eventsQuery.isFetching} />
+          {isAdmin && <EventLog events={eventsQuery.data ?? []} loading={eventsQuery.isFetching} />}
           {manifestQuery.data && (
             <Card>
               <CardHeader>
@@ -495,6 +473,15 @@ function DeleteDatabaseClusterModal({
 }
 
 function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; loading: boolean }) {
+  const [credentialsRequested, setCredentialsRequested] = useState(false);
+  const [showRoot, setShowRoot] = useState(false);
+  const [showApp, setShowApp] = useState(false);
+  const credentialsQuery = useQuery({
+    queryKey: ['database-cluster-credentials', cluster?.id],
+    queryFn: () => getDatabaseClusterCredentials(cluster?.id ?? 0),
+    enabled: Boolean(cluster?.id && credentialsRequested),
+    staleTime: 0,
+  });
   if (!cluster) {
     return (
       <Card>
@@ -514,14 +501,25 @@ function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; 
         <CardTitle>Details</CardTitle>
       </CardHeader>
       <CardContent>
+        {isDatabaseDeploymentActive(cluster.status) && <div className="mb-5 rounded-md border border-blue-200 bg-blue-50 p-4"><div className="flex items-center gap-2 text-sm font-medium text-blue-900"><Loader2 className="h-4 w-4 animate-spin" />{databaseStageLabel(cluster.status)}</div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="deployment-progress-bar h-full rounded-full bg-blue-600" /></div><p className="mt-2 text-xs text-blue-700">Deployment is continuing automatically.</p></div>}
         {loading && <p className="mb-3 text-xs text-slate-400">Refreshing details...</p>}
         <dl className="space-y-3 text-sm">
           <Field label="Database" value={cluster.database_name} />
           <Field label="Region" value={cluster.region_name || 'Legacy / unassigned'} />
           <Field label="App user" value={cluster.app_username} />
+          <Field label="Operating system" value={cluster.cloud_init_image_path || 'Legacy image'} />
           <Field label="Terraform" value={cluster.terraform_work_dir || 'Not generated'} />
           <Field label="Ansible" value={cluster.ansible_work_dir || 'Not generated'} />
         </dl>
+        <div className="mt-5 border-t border-slate-100 pt-4">
+          <div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Access and credentials</p>{!credentialsRequested && <Button size="sm" variant="secondary" onClick={() => setCredentialsRequested(true)}><Eye className="h-3.5 w-3.5" /> Reveal credentials</Button>}</div>
+          {credentialsQuery.error && <div className="mt-3"><ErrorMessage error={credentialsQuery.error} /></div>}
+          {credentialsQuery.isFetching && <p className="mt-3 text-sm text-slate-500">Loading credentials securely...</p>}
+          {credentialsQuery.data && <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <SecretField label="Root password" value={credentialsQuery.data.root_password} shown={showRoot} onToggle={() => setShowRoot((value) => !value)} />
+            <SecretField label={`${credentialsQuery.data.app_username} password`} value={credentialsQuery.data.app_password} shown={showApp} onToggle={() => setShowApp((value) => !value)} />
+          </div>}
+        </div>
         <div className="mt-5 border-t border-slate-100 pt-4">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Nodes</p>
           <div className="space-y-2">
@@ -541,6 +539,25 @@ function ClusterDetail({ cluster, loading }: { cluster: DatabaseCluster | null; 
       </CardContent>
     </Card>
   );
+}
+
+function SecretField({ label, value, shown, onToggle }: { label: string; value: string; shown: boolean; onToggle: () => void }) {
+  return <div className="rounded-md border border-slate-200 p-3"><p className="text-xs font-medium text-slate-500">{label}</p><div className="mt-2 flex items-center gap-2"><code className="min-w-0 flex-1 truncate text-sm text-slate-800">{shown ? value : '••••••••••••••••'}</code><button type="button" className="text-slate-500 hover:text-slate-900" onClick={onToggle} aria-label={shown ? 'Hide password' : 'Show password'}>{shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button><button type="button" className="text-slate-500 hover:text-slate-900" onClick={() => navigator.clipboard.writeText(value)} aria-label="Copy password"><Copy className="h-4 w-4" /></button></div></div>;
+}
+
+function isDatabaseDeploymentActive(status: string) {
+  return ['validating', 'placing', 'planned', 'provisioning', 'applied', 'waiting_for_nodes', 'bootstrapping', 'configuring_endpoint'].includes(status.toLowerCase());
+}
+
+function databaseStageLabel(status: string) {
+  switch (status.toLowerCase()) {
+    case 'planned': case 'placing': return 'Selecting regional database capacity';
+    case 'provisioning': case 'applied': return 'Creating database servers';
+    case 'waiting_for_nodes': return 'Waiting for server access';
+    case 'bootstrapping': return 'Configuring MariaDB Galera';
+    case 'configuring_endpoint': return 'Configuring the database endpoint';
+    default: return 'Validating database cluster configuration';
+  }
 }
 
 function EventLog({ events, loading }: { events: DatabaseClusterEvent[]; loading: boolean }) {
@@ -598,121 +615,94 @@ function eventLevelClass(level: string) {
 function DeployDatabaseForm({
   form,
   regions,
-  networks,
-  nodes,
-  sshKeys,
+  images,
+  imageError,
+  imagesLoading,
   loading,
   onChange,
   onSubmit,
 }: {
   form: typeof initialForm;
   regions: Region[];
-  networks: NetworkProfile[];
-  nodes: ProxmoxNode[];
-  sshKeys: SSHKeyPair[];
+  images: VPSCloudInitImage[];
+  imageError: unknown;
+  imagesLoading: boolean;
   loading: boolean;
   onChange: (field: keyof typeof initialForm, value: string | boolean) => void;
   onSubmit: (event: FormEvent) => void;
 }) {
-  const selectedNodes = [form.node_1, form.node_2, form.node_3].filter(Boolean);
-  const duplicateNodes = new Set(selectedNodes).size !== selectedNodes.length;
+  const selectedRegion = regions.find((region) => region.id === Number(form.region_id));
   return (
     <Card className="mb-6">
       <CardHeader>
         <div className="flex items-center justify-between gap-4">
           <div>
             <CardTitle>Deploy MariaDB Galera</CardTitle>
-            <p className="mt-1 text-sm text-slate-500">Create three database VMs across three Proxmox nodes.</p>
+            <p className="mt-1 text-sm text-slate-500">Three eligible database hosts and the region subnet are selected automatically.</p>
           </div>
           <Rocket className="h-5 w-5 text-indigo-500" />
         </div>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="Cluster name" value={form.name} onChange={(e) => onChange('name', e.target.value)} placeholder="pscs-prod-db" required />
             <Select label="Region" value={form.region_id} onChange={(e) => onChange('region_id', e.target.value)} required>
               <option value="">Select region</option>
               {regions.map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
             </Select>
-            <Select label="Subnet" value={form.network_profile_id} onChange={(e) => onChange('network_profile_id', e.target.value)} required>
-              <option value="">Select subnet</option>
-              {networks.map((network) => (
-                <option key={network.id} value={network.id}>
-                  {network.vpc_name || 'default-vpc'} / {network.name} ({network.cidr})
-                </option>
-              ))}
-            </Select>
           </div>
+          {selectedRegion && <Alert variant="info">The backend will select 3 of {selectedRegion.nodes.filter((node) => node.enabled).length} enabled region nodes using current availability and free RAM.</Alert>}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <NodeSelect label="DB node 1" value={form.node_1} nodes={nodes} onChange={(value) => onChange('node_1', value)} />
-            <NodeSelect label="DB node 2" value={form.node_2} nodes={nodes} onChange={(value) => onChange('node_2', value)} />
-            <NodeSelect label="DB node 3" value={form.node_3} nodes={nodes} onChange={(value) => onChange('node_3', value)} />
-          </div>
-          {duplicateNodes && <Alert variant="warning">Choose three distinct Proxmox nodes.</Alert>}
-          {nodes.length < 3 && (
-            <Alert variant="warning">At least three enabled Proxmox nodes are required.</Alert>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <Input label="First DB IP" value={form.node_ip_pool_start} onChange={(e) => onChange('node_ip_pool_start', e.target.value)} placeholder="192.168.8.201" required />
             <Input label="CPU cores" type="number" min="1" value={form.cpu} onChange={(e) => onChange('cpu', e.target.value)} required />
             <Input label="Memory MB" type="number" min="4096" value={form.memory_mb} onChange={(e) => onChange('memory_mb', e.target.value)} required />
             <Input label="Disk GB" type="number" min="40" value={form.disk_gb} onChange={(e) => onChange('disk_gb', e.target.value)} required />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card>
+            <CardHeader><CardTitle>Select Operating System</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              {Boolean(imageError) && <ErrorMessage error={imageError} />}
+              {!form.region_id ? <Alert variant="info">Select a region to discover supported Ubuntu images.</Alert> :
+                images.length === 0 ? <Alert variant="warning" title={imagesLoading ? 'Checking shared images' : 'No shared images'}>{imagesLoading ? 'Synchronizing the OS image catalogue with shared NFS storage.' : 'No supported Ubuntu image is currently available in cloud-images import storage for this region.'}</Alert> :
+                <><div className="flex items-center gap-2 border-b border-slate-200 pb-2"><DistributionLogo distribution="ubuntu" className="h-6 w-6" /><h3 className="font-semibold text-slate-900">Ubuntu</h3><span className="text-xs text-slate-500">supported database images</span></div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{images.map((image) => {
+                    const selected = String(image.id) === form.cloud_init_image_id;
+                    return <button key={image.id} type="button" onClick={() => onChange('cloud_init_image_id', String(image.id))} className={`rounded-md border p-4 text-left ${selected ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-100' : 'border-slate-200 hover:bg-slate-50'}`}>
+                      <div className="flex gap-3"><DistributionLogo distribution="ubuntu" className="h-6 w-6 shrink-0" /><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><p className="font-medium text-slate-900">{image.display_name || image.name}</p>{selected && <CheckCircle2 className="h-4 w-4 text-indigo-600" />}</div><p className="mt-1 text-[10px] text-slate-500">{architectureLabel(image.architecture)}</p></div></div>
+                    </button>;
+                  })}</div></>}
+            </CardContent>
+          </Card>
+
+          <div className="grid grid-cols-1 gap-4">
             <Input label="MariaDB version" value={form.mariadb_version} onChange={(e) => onChange('mariadb_version', e.target.value)} required />
-            <Input
-              label="Ubuntu image"
-              value={form.ubuntu_image}
-              onChange={(e) => onChange('ubuntu_image', e.target.value)}
-              placeholder="local:iso/ubuntu-24.04-server-cloudimg-amd64.img"
-              helperText="Default Ubuntu 24.04 cloud image path; edit if your Proxmox storage path is different."
-              required
-            />
-            <Select label="SSH key" value={form.ssh_key_pair_id} onChange={(e) => onChange('ssh_key_pair_id', e.target.value)} required>
-              <option value="">Select SSH key</option>
-              {sshKeys.map((key) => (
-                <option key={key.id} value={key.id}>
-                  {key.name} ({key.ssh_user})
-                </option>
-              ))}
-            </Select>
+          </div>
+
+          <div className="rounded-md border border-slate-200 p-4">
+            <label className="flex items-start gap-3 text-sm text-slate-700">
+              <input className="mt-1" type="checkbox" checked={form.generate_passwords} onChange={(e) => onChange('generate_passwords', e.target.checked)} />
+              <span><span className="font-medium text-slate-900">Generate secure database passwords automatically</span><span className="mt-1 block text-xs text-slate-500">Recommended. Root, application and Galera synchronization passwords are generated and stored securely.</span></span>
+            </label>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Input label="Database name" value={form.database_name} onChange={(e) => onChange('database_name', e.target.value)} required />
             <Input label="App user" value={form.app_username} onChange={(e) => onChange('app_username', e.target.value)} required />
-            <Input label="App password" type="password" value={form.app_password} onChange={(e) => onChange('app_password', e.target.value)} required />
-            <Input label="Root password" type="password" value={form.root_password} onChange={(e) => onChange('root_password', e.target.value)} required />
             <Input label="SST user" value={form.sst_username} onChange={(e) => onChange('sst_username', e.target.value)} required />
-            <Input label="SST password" type="password" value={form.sst_password} onChange={(e) => onChange('sst_password', e.target.value)} required />
           </div>
+          {!form.generate_passwords && <div className="grid grid-cols-1 md:grid-cols-2 gap-4"><Input label="Root password" type="password" value={form.root_password} onChange={(e) => onChange('root_password', e.target.value)} required /><Input label="Application password" type="password" value={form.app_password} onChange={(e) => onChange('app_password', e.target.value)} required /></div>}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="Kubernetes namespace" value={form.haproxy_namespace} onChange={(e) => onChange('haproxy_namespace', e.target.value)} required />
             <Input label="Database service name" value={form.haproxy_service_name} onChange={(e) => onChange('haproxy_service_name', e.target.value)} required />
           </div>
 
-          <div className="flex flex-wrap gap-4 border-t border-slate-100 pt-4">
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={form.applyTerraform} onChange={(e) => onChange('applyTerraform', e.target.checked)} />
-              Create Proxmox VMs now
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={form.bootstrapAfterProvision} onChange={(e) => onChange('bootstrapAfterProvision', e.target.checked)} />
-              Generate Galera bootstrap workspace
-            </label>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={form.applyAnsible} onChange={(e) => onChange('applyAnsible', e.target.checked)} disabled={!form.bootstrapAfterProvision} />
-              Bootstrap Galera now
-            </label>
-          </div>
+          {loading && <div className="rounded-md border border-blue-200 bg-blue-50 p-4"><div className="flex items-center gap-2 text-sm font-medium text-blue-900"><Loader2 className="h-4 w-4 animate-spin" />Creating database servers</div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="deployment-progress-bar h-full rounded-full bg-blue-600" /></div><p className="mt-2 text-xs text-blue-700">Placement, provisioning and Galera setup are running automatically. Keep this page open.</p></div>}
 
           <div className="flex justify-end">
-            <Button type="submit" loading={loading} disabled={loading}>
+            <Button type="submit" loading={loading} disabled={loading || !form.cloud_init_image_id}>
               <Rocket className="h-4 w-4" />
               Deploy Database Cluster
             </Button>
@@ -720,29 +710,6 @@ function DeployDatabaseForm({
         </form>
       </CardContent>
     </Card>
-  );
-}
-
-function NodeSelect({
-  label,
-  value,
-  nodes,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  nodes: ProxmoxNode[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <Select label={label} value={value} onChange={(e) => onChange(e.target.value)} required>
-      <option value="">Select node</option>
-      {nodes.map((node) => (
-        <option key={node.id} value={node.node_name}>
-          {node.node_name} ({Math.max(0, Math.round((node.memory_total_bytes - node.memory_used_bytes) / 1024 / 1024 / 1024))} GB free)
-        </option>
-      ))}
-    </Select>
   );
 }
 
