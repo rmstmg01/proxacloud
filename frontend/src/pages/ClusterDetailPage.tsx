@@ -2065,6 +2065,7 @@ function ImagePullSecretsTab({ id }: { id: number }) {
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Registry</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Username</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Scope</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-600">Last updated</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-600">Last applied</th>
                     <th className="px-4 py-2" />
                   </tr>
@@ -2077,6 +2078,7 @@ function ImagePullSecretsTab({ id }: { id: number }) {
                       <td className="px-4 py-2 text-slate-600">{secret.registry_server}</td>
                       <td className="px-4 py-2 text-slate-600">{secret.username}</td>
                       <td className="px-4 py-2 text-slate-600">{secret.is_global ? 'Global' : 'Cluster'}</td>
+                      <td className="px-4 py-2 text-slate-500">{new Date(secret.updated_at).toLocaleString()}</td>
                       <td className="px-4 py-2 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : '-'}</td>
                       <td className="px-4 py-2">
                         <div className="flex justify-end gap-2">

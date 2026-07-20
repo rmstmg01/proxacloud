@@ -209,6 +209,7 @@ export function ClusterImagePullSecretsPage() {
                       <th className="px-4 py-3 text-left font-medium text-slate-600">Namespace</th>
                       <th className="px-4 py-3 text-left font-medium text-slate-600">Registry</th>
                       <th className="px-4 py-3 text-left font-medium text-slate-600">Username</th>
+                      <th className="px-4 py-3 text-left font-medium text-slate-600">Last updated</th>
                       <th className="px-4 py-3 text-left font-medium text-slate-600">Last applied</th>
                       <th className="px-4 py-3" />
                     </tr>
@@ -220,6 +221,7 @@ export function ClusterImagePullSecretsPage() {
                         <td className="px-4 py-3 text-slate-600">{secret.namespace}</td>
                         <td className="px-4 py-3 text-slate-600">{secret.registry_server}</td>
                         <td className="px-4 py-3 text-slate-600">{secret.username}</td>
+                        <td className="px-4 py-3 text-slate-500">{new Date(secret.updated_at).toLocaleString()}</td>
                         <td className="px-4 py-3 text-slate-500">{secret.last_applied_at ? new Date(secret.last_applied_at).toLocaleString() : 'Not applied'}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-2">

@@ -3775,7 +3775,7 @@ func (s *Service) ApplyClusterImagePullSecret(clusterID, secretID int64) (ApplyC
 	if err != nil {
 		return ApplyClusterImagePullSecretResponse{}, err
 	}
-	output, err := s.applyClusterImagePullSecretRecord(rec)
+	output, err := s.applyClusterImagePullSecretRecord(clusterID, rec)
 	if err != nil {
 		return ApplyClusterImagePullSecretResponse{}, err
 	}
@@ -5297,10 +5297,10 @@ func (s *Service) applyClusterSecretRecordWithContext(ctx context.Context, kubec
 	return string(output), nil
 }
 
-func (s *Service) applyClusterImagePullSecretRecord(rec ClusterImagePullSecretRecord) (string, error) {
+func (s *Service) applyClusterImagePullSecretRecord(targetClusterID int64, rec ClusterImagePullSecretRecord) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	kubeconfigPath, err := s.resolveClusterKubeconfigPath(rec.ClusterID)
+	kubeconfigPath, err := s.resolveClusterKubeconfigPath(targetClusterID)
 	if err != nil {
 		return "", err
 	}
