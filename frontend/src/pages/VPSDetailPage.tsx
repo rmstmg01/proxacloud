@@ -357,16 +357,29 @@ export function VPSDetailPage() {
 
       {vps && (
         <div className="space-y-6">
+          {vps.admin_suspended_at && (
+            <Alert variant="error" title="Administratively suspended">
+              This VPS was suspended by {vps.admin_suspended_by || 'an administrator'}
+              {vps.admin_suspension_reason ? `: ${vps.admin_suspension_reason}` : '.'}
+              {' '}Only an administrator can remove this lock.
+            </Alert>
+          )}
+
+          {vps.admin_suspension_error && (
+            <Alert variant="warning" title="VPS shutdown needs attention">
+              The administrative lock is active, but Proxmox reported: {vps.admin_suspension_error}
+            </Alert>
+          )}
           <div className="flex flex-wrap gap-2">
             <Button variant="primary" onClick={openConsole}>
               <Monitor className="h-4 w-4" />
               Console
             </Button>
-            <Button variant="secondary" onClick={() => startMutation.mutate(vps.id)} loading={startMutation.isPending}>
+            <Button variant="secondary" onClick={() => startMutation.mutate(vps.id)} loading={startMutation.isPending} disabled={Boolean(vps.admin_suspended_at)}>
               <Play className="h-4 w-4" />
               Start
             </Button>
-            <Button variant="secondary" onClick={() => restartMutation.mutate(vps.id)} loading={restartMutation.isPending}>
+            <Button variant="secondary" onClick={() => restartMutation.mutate(vps.id)} loading={restartMutation.isPending} disabled={Boolean(vps.admin_suspended_at)}>
               <RotateCcw className="h-4 w-4" />
               Restart
             </Button>
@@ -408,6 +421,7 @@ export function VPSDetailPage() {
                   value={
                     <div className="inline-flex items-center gap-2">
                       <StatusBadge status={vps.status} />
+                      {vps.admin_suspended_at && <Badge variant="danger">Admin suspended</Badge>}
                       <button
                         type="button"
                         onClick={() => refreshMutation.mutate(vps.id)}

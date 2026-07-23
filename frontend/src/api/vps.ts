@@ -10,12 +10,28 @@ import type {
   VPSResetRootPasswordResponse,
   VPSTunnelAttachment,
 } from '../types';
+export type ManagedVPSInstance = VPSInstance & {
+  ownership_type: 'customer' | 'admin' | 'legacy';
+  created_by_username?: string;
+  admin_suspended_at?: string;
+  admin_suspended_by?: string;
+  admin_suspension_reason?: string;
+  admin_suspension_error?: string;
+};
+
+export interface VPSAssignmentOption {
+  user_id: number;
+  customer_account_id: number;
+  username: string;
+  full_name: string;
+}
+
 
 export const getVPSInstances = () =>
-  client.get<VPSInstance[]>('/vps').then((r) => r.data);
+  client.get<ManagedVPSInstance[]>('/vps').then((r) => r.data);
 
 export const getVPSInstance = (id: number) =>
-  client.get<VPSInstance>(`/vps/${id}`).then((r) => r.data);
+  client.get<ManagedVPSInstance>(`/vps/${id}`).then((r) => r.data);
 
 export const getVPSEvents = (id: number) =>
   client.get<VPSEvent[]>(`/vps/${id}/events`).then((r) => r.data);
@@ -95,7 +111,7 @@ export const createVPSInstance = (body: {
 }) => client.post<VPSCreateResponse>('/vps', body).then((r) => r.data);
 
 export const updateVPSInstance = (id: number, body: { name: string }) =>
-  client.patch<VPSInstance>(`/vps/${id}`, body).then((r) => r.data);
+  client.patch<ManagedVPSInstance>(`/vps/${id}`, body).then((r) => r.data);
 
 export const deployVPSInstance = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/deploy`).then((r) => r.data);
@@ -117,6 +133,18 @@ export const restartVPSInstance = (id: number) =>
 
 export const shutdownVPSInstance = (id: number) =>
   client.post<VPSActionResponse>(`/vps/${id}/shutdown`).then((r) => r.data);
+
+export const getVPSAssignmentOptions = () =>
+  client.get<VPSAssignmentOption[]>('/vps/assignment-options').then((r) => r.data);
+
+export const assignVPSInstance = (id: number, targetUserID: number, reason: string) =>
+  client.put<ManagedVPSInstance>(`/vps/${id}/assignment`, { target_user_id: targetUserID, reason }).then((r) => r.data);
+
+export const suspendVPSAdministratively = (id: number, reason: string) =>
+  client.post<ManagedVPSInstance>(`/vps/${id}/administrative-suspension`, { reason }).then((r) => r.data);
+
+export const unsuspendVPSAdministratively = (id: number) =>
+  client.delete<ManagedVPSInstance>(`/vps/${id}/administrative-suspension`).then((r) => r.data);
 
 export const deleteVPSInstance = (id: number, confirmationName: string) =>
   client

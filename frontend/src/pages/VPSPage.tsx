@@ -1,25 +1,29 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, Pencil, Play, Plus, Power, RotateCcw, Trash2 } from 'lucide-react';
+import { Ban, ChevronRight, Pencil, Play, Plus, Power, RotateCcw, ShieldCheck, Trash2, UserRoundCog } from 'lucide-react';
 import {
+  assignVPSInstance,
   deleteVPSInstance,
+  getVPSAssignmentOptions,
   getVPSInstances,
   restartVPSInstance,
   shutdownVPSInstance,
   startVPSInstance,
+  suspendVPSAdministratively,
+  unsuspendVPSAdministratively,
   updateVPSInstance,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent } from '../components/ui/Card';
-import { StatusBadge } from '../components/ui/Badge';
+import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { Input } from '../components/ui/Input';
+import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { ErrorMessage } from '../components/ui/Alert';
 import { PageSpinner } from '../components/ui/Spinner';
 import { useAuth } from '../context/AuthContext';
-import type { VPSInstance } from '../types';
+import type { ManagedVPSInstance as VPSInstance } from '../api/vps';
 
 export function VPSPage() {
   const queryClient = useQueryClient();
@@ -29,10 +33,21 @@ export function VPSPage() {
   const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [editTarget, setEditTarget] = useState<VPSInstance | null>(null);
   const [editName, setEditName] = useState('');
+  const [assignTarget, setAssignTarget] = useState<VPSInstance | null>(null);
+  const [assignmentUserID, setAssignmentUserID] = useState(0);
+  const [assignmentReason, setAssignmentReason] = useState('');
+  const [suspendTarget, setSuspendTarget] = useState<VPSInstance | null>(null);
+  const [suspensionReason, setSuspensionReason] = useState('');
+  const [unsuspendTarget, setUnsuspendTarget] = useState<VPSInstance | null>(null);
   const { data: instances, isLoading, error, dataUpdatedAt } = useQuery({
     queryKey: ['vps'],
     queryFn: getVPSInstances,
     refetchInterval: 30_000,
+  });
+  const { data: assignmentOptions = [] } = useQuery({
+    queryKey: ['vps', 'assignment-options'],
+    queryFn: getVPSAssignmentOptions,
+    enabled: showAssignedTo,
   });
 
   const invalidate = () => {
@@ -61,6 +76,30 @@ export function VPSPage() {
     },
   });
 
+  const assignmentMutation = useMutation({
+    mutationFn: ({ id, targetUserID, reason }: { id: number; targetUserID: number; reason: string }) =>
+      assignVPSInstance(id, targetUserID, reason),
+    onSuccess: () => {
+      invalidate();
+      setAssignTarget(null);
+      setAssignmentReason('');
+    },
+  });
+  const suspensionMutation = useMutation({
+    mutationFn: ({ id, reason }: { id: number; reason: string }) => suspendVPSAdministratively(id, reason),
+    onSuccess: () => {
+      invalidate();
+      setSuspendTarget(null);
+      setSuspensionReason('');
+    },
+  });
+  const unsuspensionMutation = useMutation({
+    mutationFn: unsuspendVPSAdministratively,
+    onSuccess: () => {
+      invalidate();
+      setUnsuspendTarget(null);
+    },
+  });
   useEffect(() => {
     if (!dataUpdatedAt) return;
     if (!startMutation.isPending) startMutation.reset();
@@ -88,6 +127,27 @@ export function VPSPage() {
     updateMutation.mutate({ id: editTarget.id, name });
   };
 
+  const confirmAssignment = (event: FormEvent) => {
+    event.preventDefault();
+    if (!assignTarget) return;
+    assignmentMutation.mutate({
+      id: assignTarget.id,
+      targetUserID: assignmentUserID,
+      reason: assignmentReason.trim(),
+    });
+  };
+
+  const confirmSuspension = (event: FormEvent) => {
+    event.preventDefault();
+    if (!suspendTarget || !suspensionReason.trim()) return;
+    suspensionMutation.mutate({ id: suspendTarget.id, reason: suspensionReason.trim() });
+  };
+
+  const openAssignment = (item: VPSInstance) => {
+    setAssignTarget(item);
+    setAssignmentUserID(assignmentOptions.find((option) => option.username === item.owner_username)?.user_id ?? 0);
+    setAssignmentReason('');
+  };
   return (
     <Layout>
       <PageHeader
@@ -135,7 +195,7 @@ export function VPSPage() {
                     <th className="text-left px-6 py-3 font-medium text-slate-600">IP</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Resources</th>
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Status</th>
-                    {showAssignedTo && <th className="text-left px-6 py-3 font-medium text-slate-600">Assigned To</th>}
+                    {showAssignedTo && <th className="text-left px-6 py-3 font-medium text-slate-600">Owner</th>}
                     <th className="text-left px-6 py-3 font-medium text-slate-600">Created</th>
                     <th className="px-6 py-3" />
                   </tr>
@@ -152,11 +212,19 @@ export function VPSPage() {
                         {item.cpu} vCPU / {item.memory_mb} MB / {item.disk_gb} GB
                       </td>
                       <td className="px-6 py-4">
-                        <StatusBadge status={item.status} />
+                        <div className="flex flex-wrap gap-1.5">
+                          <StatusBadge status={item.status} />
+                          {item.admin_suspended_at && <Badge variant="danger">Admin suspended</Badge>}
+                        </div>
                       </td>
                       {showAssignedTo && (
                         <td className="px-6 py-4 text-slate-600">
-                          {item.owner_username || 'Unassigned'}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span>{item.owner_username || 'Legacy platform'}</span>
+                            <Badge variant={item.ownership_type === 'customer' ? 'info' : item.ownership_type === 'admin' ? 'success' : 'warning'}>
+                              {item.ownership_type === 'customer' ? 'Customer' : item.ownership_type === 'admin' ? 'Admin owned' : 'Claim owner'}
+                            </Badge>
+                          </div>
                         </td>
                       )}
                       <td className="px-6 py-4 text-slate-500">{new Date(item.created_at).toLocaleDateString()}</td>
@@ -178,6 +246,7 @@ export function VPSPage() {
                             variant="secondary"
                             size="sm"
                             onClick={() => startMutation.mutate(item.id)}
+                            disabled={Boolean(item.admin_suspended_at)}
                             loading={startMutation.isPending && startMutation.variables === item.id}
                           >
                             <Play className="h-3.5 w-3.5" />
@@ -187,6 +256,7 @@ export function VPSPage() {
                             variant="secondary"
                             size="sm"
                             onClick={() => restartMutation.mutate(item.id)}
+                            disabled={Boolean(item.admin_suspended_at)}
                             loading={restartMutation.isPending && restartMutation.variables === item.id}
                           >
                             <RotateCcw className="h-3.5 w-3.5" />
@@ -201,6 +271,29 @@ export function VPSPage() {
                             <Power className="h-3.5 w-3.5" />
                             Shutdown
                           </Button>
+                          {showAssignedTo && (
+                            <>
+                              <Button variant="secondary" size="sm" onClick={() => openAssignment(item)}>
+                                <UserRoundCog className="h-3.5 w-3.5" /> Assign
+                              </Button>
+                              {item.admin_suspended_at ? (
+                                <Button variant="secondary" size="sm" onClick={() => setUnsuspendTarget(item)}>
+                                  <ShieldCheck className="h-3.5 w-3.5" /> Unsuspend
+                                </Button>
+                              ) : (
+                                <Button
+                                  variant="danger"
+                                  size="sm"
+                                  onClick={() => {
+                                    setSuspendTarget(item);
+                                    setSuspensionReason('');
+                                  }}
+                                >
+                                  <Ban className="h-3.5 w-3.5" /> Suspend
+                                </Button>
+                              )}
+                            </>
+                          )}
                           <Button
                             variant="danger"
                             size="sm"
@@ -258,6 +351,106 @@ export function VPSPage() {
           </form>
         )}
       </Modal>
+      <Modal
+        open={!!assignTarget}
+        onClose={() => !assignmentMutation.isPending && setAssignTarget(null)}
+        title="Assign VPS"
+        maxWidth="lg"
+      >
+        {assignTarget && (
+          <form onSubmit={confirmAssignment} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Change the control-panel and billing owner for <span className="font-semibold">{assignTarget.name}</span>.
+            </p>
+            <Select
+              label="New owner"
+              value={assignmentUserID}
+              onChange={(event) => setAssignmentUserID(Number(event.target.value))}
+            >
+              <option value={0}>Administrator owned (claim as me)</option>
+              {assignmentOptions.map((option) => (
+                <option key={option.user_id} value={option.user_id}>
+                  {option.username}{option.full_name !== option.username ? ` — ${option.full_name}` : ''}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Reason"
+              value={assignmentReason}
+              onChange={(event) => setAssignmentReason(event.target.value)}
+              placeholder="Optional audit note"
+            />
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Assignment clears the previous customer SSH-key reference and transfers current VPS, tunnel, backup, and future billing ownership. Historical invoices and jobs are unchanged.
+              Existing SSH keys already installed inside the guest OS must be rotated separately before handing over access.
+            </div>
+            {assignmentMutation.error && <ErrorMessage error={assignmentMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setAssignTarget(null)}>Cancel</Button>
+              <Button type="submit" loading={assignmentMutation.isPending}>
+                <UserRoundCog className="h-4 w-4" /> Save owner
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!suspendTarget}
+        onClose={() => !suspensionMutation.isPending && setSuspendTarget(null)}
+        title="Suspend VPS"
+        maxWidth="lg"
+      >
+        {suspendTarget && (
+          <form onSubmit={confirmSuspension} className="space-y-4">
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              This immediately applies an administrative lock and requests a graceful Proxmox shutdown. The customer cannot start or restart the VPS until an administrator removes the lock.
+            </div>
+            <Input
+              label="Suspension reason"
+              value={suspensionReason}
+              onChange={(event) => setSuspensionReason(event.target.value)}
+              placeholder="Required"
+              required
+            />
+            {suspensionMutation.error && <ErrorMessage error={suspensionMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setSuspendTarget(null)}>Cancel</Button>
+              <Button type="submit" variant="danger" loading={suspensionMutation.isPending} disabled={!suspensionReason.trim()}>
+                <Ban className="h-4 w-4" /> Suspend and shut down
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!unsuspendTarget}
+        onClose={() => !unsuspensionMutation.isPending && setUnsuspendTarget(null)}
+        title="Unsuspend VPS"
+        maxWidth="lg"
+      >
+        {unsuspendTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Remove the administrative lock from <span className="font-semibold">{unsuspendTarget.name}</span>? This does not start the VPS automatically.
+            </p>
+            {unsuspendTarget.admin_suspension_reason && (
+              <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
+                Suspension reason: {unsuspendTarget.admin_suspension_reason}
+              </p>
+            )}
+            {unsuspensionMutation.error && <ErrorMessage error={unsuspensionMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setUnsuspendTarget(null)}>Cancel</Button>
+              <Button onClick={() => unsuspensionMutation.mutate(unsuspendTarget.id)} loading={unsuspensionMutation.isPending}>
+                <ShieldCheck className="h-4 w-4" /> Unsuspend
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
 
       <Modal
         open={!!deleteTarget}

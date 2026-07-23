@@ -547,6 +547,33 @@ func (s *Service) EnsureCanAffordBackup(accountID int64, previousPlan, nextPlan 
 	return nil
 }
 
+func (s *Service) EnsureCanAffordVPSAssignment(accountID int64, cpu, memoryMB, diskGB int, backupPlan string) error {
+	balance, err := s.Balance(accountID)
+	if err != nil {
+		return err
+	}
+	_, existingMonthly, err := s.EstimateMonthlyCharges(accountID)
+	if err != nil {
+		return err
+	}
+	vpsMonthly, err := s.EstimateResource("vps", cpu, memoryMB, diskGB)
+	if err != nil {
+		return err
+	}
+	backupMonthly := 0
+	if strings.TrimSpace(backupPlan) != "" {
+		backupMonthly, err = s.EstimateResource(backupPlan, 0, 0, diskGB)
+		if err != nil {
+			return err
+		}
+	}
+	required := existingMonthly + vpsMonthly + backupMonthly
+	if balance < required {
+		return fmt.Errorf("%w: balance $%.2f, required $%.2f", ErrInsufficientCredit, float64(balance)/100, float64(required)/100)
+	}
+	return nil
+}
+
 func (s *Service) insertLedger(accountID int64, amountCents int, entryType, description, source, sourceID string, actorID int64, idempotencyKey string) (LedgerEntry, error) {
 	var actor any
 	if actorID > 0 {

@@ -20,6 +20,7 @@ type Handler struct {
 	service *Service
 	billing interface {
 		EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
+		EnsureCanAffordVPSAssignment(accountID int64, cpu, memoryMB, diskGB int, backupPlan string) error
 	}
 	resolver interface {
 		TenantScope(username string, role rbac.Role) (tenant.Scope, error)
@@ -34,6 +35,7 @@ func NewHandler(service *Service, resolver interface {
 	TenantScope(username string, role rbac.Role) (tenant.Scope, error)
 }, billingGuard interface {
 	EnsureCanAfford(accountID int64, resourceType string, cpu, memoryMB, diskGB int) error
+	EnsureCanAffordVPSAssignment(accountID int64, cpu, memoryMB, diskGB int, backupPlan string) error
 }) *Handler {
 	return &Handler{service: service, resolver: resolver, billing: billingGuard}
 }
@@ -82,6 +84,12 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ctxUser, exists := auth.UserFromContext(r.Context())
+	if !exists {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	req.ActorUsername = ctxUser.Username
 	if scope.IsCustomer() {
 		req.CustomerAccountID = scope.CustomerAccountID
 		if h.billing != nil {
@@ -223,6 +231,112 @@ func (h *Handler) RefreshStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListAssignmentOptions(w http.ResponseWriter, _ *http.Request) {
+	options, err := h.service.ListAssignmentOptions()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, options)
+}
+
+func (h *Handler) Assign(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req AssignmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	targetAccountID := int64(0)
+	if req.TargetUserID > 0 {
+		target, err := h.service.ResolveAssignmentTarget(req.TargetUserID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		targetAccountID = target.CustomerAccountID
+		rec, err := h.service.Get(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		backupPlan, err := h.service.BackupPlanForVPS(id)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if h.billing != nil && rec.CustomerAccountID != targetAccountID {
+			if err := h.billing.EnsureCanAffordVPSAssignment(targetAccountID, rec.CPU, rec.MemoryMB, rec.DiskGB, backupPlan); err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, billing.ErrInsufficientCredit) {
+					status = http.StatusPaymentRequired
+				}
+				writeJSON(w, status, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
+	resp, err := h.service.Assign(id, targetAccountID, ctxUser.Username, string(ctxUser.Role), req.Reason)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, ErrVPSNotFound) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) SuspendAdministratively(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	var req AdministrativeSuspensionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	resp, err := h.service.SuspendAdministratively(id, ctxUser.Username, string(ctxUser.Role), req.Reason)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) UnsuspendAdministratively(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	ctxUser, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	resp, err := h.service.UnsuspendAdministratively(id, ctxUser.Username, string(ctxUser.Role))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) Console(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r)
 	if !ok {
@@ -299,8 +413,23 @@ func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action str
 	if !ok {
 		return
 	}
-	if _, ok := h.authorizeInstance(w, r, id); !ok {
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
 		return
+	}
+	if blockedByAdministrativeSuspension(action, true) {
+		rec, err := h.service.Get(id, scope)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if blockedByAdministrativeSuspension(action, rec.AdminSuspendedAt != nil) {
+			writeJSON(w, http.StatusLocked, map[string]any{
+				"error": ErrVPSAdministrativelySuspended.Error(), "code": "vps_admin_suspended",
+				"suspended_at": rec.AdminSuspendedAt, "reason": rec.AdminSuspensionReason,
+			})
+			return
+		}
 	}
 	resp, err := h.service.PowerAction(id, action)
 	if err != nil {
@@ -464,6 +593,10 @@ func (h *Handler) scope(w http.ResponseWriter, r *http.Request) (tenant.Scope, b
 		return tenant.Scope{}, false
 	}
 	return scope, true
+}
+
+func blockedByAdministrativeSuspension(action string, suspended bool) bool {
+	return suspended && (action == "start" || action == "restart")
 }
 
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {

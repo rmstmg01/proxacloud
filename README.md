@@ -498,6 +498,14 @@ Typical flow:
 6. Open console through noVNC when needed.
 7. Review VPS events for lifecycle history.
 
+For `super_user` and `super_admin` roles, the VPS list also provides:
+
+- Explicit customer or administrator ownership, including the administrator username for newly created administrator-owned VPS instances.
+- A claim-owner state for legacy platform VPS records whose original creator was not stored.
+- Assignment or reassignment to active normal-user customer accounts, including billing-affordability validation.
+- Administrative suspension with a required reason and graceful Proxmox shutdown.
+- Administrative unsuspension. A suspended VPS cannot be started or restarted through the ordinary API until this explicit action is completed.
+
 ### Container Workflow
 
 Container provisioning is similar to VPS provisioning but targets Proxmox LXC. The UI tracks template path, network profile, resources, nesting/unprivileged options, deployment status, and events.

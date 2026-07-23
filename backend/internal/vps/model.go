@@ -150,32 +150,38 @@ type CreateCloudInitImageRequest struct {
 }
 
 type Instance struct {
-	ID                  int64     `json:"id"`
-	CustomerAccountID   int64     `json:"customer_account_id,omitempty"`
-	OwnerUsername       string    `json:"owner_username,omitempty"`
-	Name                string    `json:"name"`
-	Description         string    `json:"description"`
-	ProxmoxCredentialID int64     `json:"proxmox_credential_id"`
-	ProxmoxNodeName     string    `json:"proxmox_node_name"`
-	RegionID            int64     `json:"region_id,omitempty"`
-	RegionName          string    `json:"region_name,omitempty"`
-	NetworkProfileID    int64     `json:"network_profile_id"`
-	NetworkName         string    `json:"network_name,omitempty"`
-	CloudInitImageID    int64     `json:"cloud_init_image_id"`
-	CloudInitImagePath  string    `json:"cloud_init_image_path"`
-	SSHKeyPairID        int64     `json:"ssh_key_pair_id"`
-	VMName              string    `json:"vm_name"`
-	Hostname            string    `json:"hostname"`
-	IPMode              string    `json:"ip_mode"`
-	IPAddress           string    `json:"ip_address"`
-	CPU                 int       `json:"cpu"`
-	MemoryMB            int       `json:"memory_mb"`
-	DiskGB              int       `json:"disk_gb"`
-	SSHUser             string    `json:"ssh_user"`
-	TerraformWorkDir    string    `json:"terraform_work_dir"`
-	Status              string    `json:"status"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                    int64      `json:"id"`
+	CustomerAccountID     int64      `json:"customer_account_id,omitempty"`
+	OwnerUsername         string     `json:"owner_username,omitempty"`
+	OwnershipType         string     `json:"ownership_type"`
+	CreatedByUsername     string     `json:"created_by_username,omitempty"`
+	AdminSuspendedAt      *time.Time `json:"admin_suspended_at,omitempty"`
+	AdminSuspendedBy      string     `json:"admin_suspended_by,omitempty"`
+	AdminSuspensionReason string     `json:"admin_suspension_reason,omitempty"`
+	AdminSuspensionError  string     `json:"admin_suspension_error,omitempty"`
+	Name                  string     `json:"name"`
+	Description           string     `json:"description"`
+	ProxmoxCredentialID   int64      `json:"proxmox_credential_id"`
+	ProxmoxNodeName       string     `json:"proxmox_node_name"`
+	RegionID              int64      `json:"region_id,omitempty"`
+	RegionName            string     `json:"region_name,omitempty"`
+	NetworkProfileID      int64      `json:"network_profile_id"`
+	NetworkName           string     `json:"network_name,omitempty"`
+	CloudInitImageID      int64      `json:"cloud_init_image_id"`
+	CloudInitImagePath    string     `json:"cloud_init_image_path"`
+	SSHKeyPairID          int64      `json:"ssh_key_pair_id"`
+	VMName                string     `json:"vm_name"`
+	Hostname              string     `json:"hostname"`
+	IPMode                string     `json:"ip_mode"`
+	IPAddress             string     `json:"ip_address"`
+	CPU                   int        `json:"cpu"`
+	MemoryMB              int        `json:"memory_mb"`
+	DiskGB                int        `json:"disk_gb"`
+	SSHUser               string     `json:"ssh_user"`
+	TerraformWorkDir      string     `json:"terraform_work_dir"`
+	Status                string     `json:"status"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 type Event struct {
@@ -208,6 +214,7 @@ type CreateRequest struct {
 	RootPassword        string `json:"root_password"`
 	Apply               bool   `json:"apply"`
 	CustomerAccountID   int64  `json:"-"`
+	ActorUsername       string `json:"-"`
 }
 
 type UpdateRequest struct {
@@ -217,6 +224,24 @@ type UpdateRequest struct {
 type UpdateHostnameRequest struct {
 	Hostname string `json:"hostname"`
 }
+
+type AssignmentOption struct {
+	UserID            int64  `json:"user_id"`
+	CustomerAccountID int64  `json:"customer_account_id"`
+	Username          string `json:"username"`
+	FullName          string `json:"full_name"`
+}
+
+type AssignmentRequest struct {
+	TargetUserID int64  `json:"target_user_id"`
+	Reason       string `json:"reason"`
+}
+
+type AdministrativeSuspensionRequest struct {
+	Reason string `json:"reason"`
+}
+
+var ErrVPSAdministrativelySuspended = errors.New("VPS is administratively suspended")
 
 type CreateResponse struct {
 	VPSID            int64             `json:"vps_id"`
@@ -281,7 +306,7 @@ func NewService(db *sql.DB, networkStore NetworkStore, nodeInventory NodeInvento
 }
 
 func (s *Service) List(scope tenant.Scope) ([]Instance, error) {
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), COALESCE(owner.username, ''), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id LEFT JOIN customer_accounts ca ON ca.id = v.customer_account_id LEFT JOIN users owner ON owner.id = ca.owner_user_id`
+	query := instanceSelectSQL()
 	args := []any{}
 	if scope.IsCustomer() {
 		query += ` WHERE v.customer_account_id = $1`
@@ -311,7 +336,7 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		scope = scopes[0]
 	}
 	var rec Instance
-	query := `SELECT v.id, COALESCE(v.customer_account_id, 0), COALESCE(owner.username, ''), v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name, COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id, COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path, COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name), v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user, v.terraform_work_dir, v.status, v.created_at, v.updated_at FROM vps_instances v LEFT JOIN regions r ON r.id = v.region_id LEFT JOIN network_profiles n ON n.id = v.network_profile_id LEFT JOIN customer_accounts ca ON ca.id = v.customer_account_id LEFT JOIN users owner ON owner.id = ca.owner_user_id WHERE v.id = $1`
+	query := instanceSelectSQL() + ` WHERE v.id = $1`
 	args := []any{id}
 	if scope.IsCustomer() {
 		query += ` AND v.customer_account_id = $2`
@@ -321,6 +346,12 @@ func (s *Service) Get(id int64, scopes ...tenant.Scope) (Instance, error) {
 		&rec.ID,
 		&rec.CustomerAccountID,
 		&rec.OwnerUsername,
+		&rec.OwnershipType,
+		&rec.CreatedByUsername,
+		&rec.AdminSuspendedAt,
+		&rec.AdminSuspendedBy,
+		&rec.AdminSuspensionReason,
+		&rec.AdminSuspensionError,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
@@ -720,8 +751,8 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	var vpsID int64
 	err = s.db.QueryRow(
-		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, region_id, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, customer_ssh_key_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status)
-		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, NULLIF($10, 0), NULLIF($11, 0), $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'created')
+		`INSERT INTO vps_instances (name, customer_account_id, description, proxmox_credential_id, proxmox_node_name, region_id, network_profile_id, cloud_init_image_id, cloud_init_image_path, ssh_key_pair_id, customer_ssh_key_id, vm_name, hostname, ip_mode, ip_address, cpu, memory_mb, disk_gb, ssh_user, root_password_secret_ref, terraform_work_dir, status, created_by_user_id, admin_owner_user_id)
+		 VALUES ($1, NULLIF($2, 0), $3, $4, $5, NULLIF($6, 0), $7, NULLIF($8, 0), $9, NULLIF($10, 0), NULLIF($11, 0), $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'created', (SELECT id FROM users WHERE username = $22), CASE WHEN NULLIF($2, 0) IS NULL THEN (SELECT id FROM users WHERE username = $22) ELSE NULL END)
 		 RETURNING id`,
 		req.Name,
 		req.CustomerAccountID,
@@ -744,6 +775,7 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 		sshUser,
 		rootPasswordRef,
 		workDir,
+		req.ActorUsername,
 	).Scan(&vpsID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate") {
@@ -1660,6 +1692,170 @@ func (s *Service) updateStatus(id int64, status string) error {
 	return err
 }
 
+func (s *Service) ListAssignmentOptions() ([]AssignmentOption, error) {
+	rows, err := s.db.Query(`
+		SELECT u.id, ca.id, u.username, COALESCE(NULLIF(u.full_name, ''), u.username)
+		  FROM users u
+		  JOIN roles r ON r.id = u.role_id AND r.name = 'normal_user'
+		  JOIN customer_accounts ca ON ca.owner_user_id = u.id
+		 WHERE u.status = 'active' AND ca.status = 'active'
+		 ORDER BY u.username`)
+	if err != nil {
+		return nil, fmt.Errorf("list VPS assignment options: %w", err)
+	}
+	defer rows.Close()
+	out := []AssignmentOption{}
+	for rows.Next() {
+		var item AssignmentOption
+		if err := rows.Scan(&item.UserID, &item.CustomerAccountID, &item.Username, &item.FullName); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) ResolveAssignmentTarget(userID int64) (AssignmentOption, error) {
+	var item AssignmentOption
+	err := s.db.QueryRow(`
+		SELECT u.id, ca.id, u.username, COALESCE(NULLIF(u.full_name, ''), u.username)
+		  FROM users u
+		  JOIN roles r ON r.id = u.role_id AND r.name = 'normal_user'
+		  JOIN customer_accounts ca ON ca.owner_user_id = u.id
+		 WHERE u.id = $1 AND u.status = 'active' AND ca.status = 'active'`, userID).
+		Scan(&item.UserID, &item.CustomerAccountID, &item.Username, &item.FullName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AssignmentOption{}, errors.New("assignment target must be an active normal user")
+	}
+	return item, err
+}
+
+func (s *Service) BackupPlanForVPS(id int64) (string, error) {
+	var plan string
+	err := s.db.QueryRow(`SELECT plan_code FROM vps_backup_policies WHERE vps_id = $1 AND enabled = TRUE`, id).Scan(&plan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return plan, err
+}
+
+func (s *Service) Assign(id int64, targetCustomerAccountID int64, actorUsername, actorRole, reason string) (Instance, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Instance{}, err
+	}
+	defer tx.Rollback()
+	var currentAccountID int64
+	if err := tx.QueryRow(`SELECT COALESCE(customer_account_id, 0) FROM vps_instances WHERE id = $1 FOR UPDATE`, id).Scan(&currentAccountID); errors.Is(err, sql.ErrNoRows) {
+		return Instance{}, ErrVPSNotFound
+	} else if err != nil {
+		return Instance{}, err
+	}
+	var actorID int64
+	if err := tx.QueryRow(`SELECT id FROM users WHERE username = $1`, actorUsername).Scan(&actorID); err != nil {
+		return Instance{}, errors.New("acting administrator was not found")
+	}
+	if targetCustomerAccountID > 0 {
+		var valid bool
+		if err := tx.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM customer_accounts ca
+				JOIN users u ON u.id = ca.owner_user_id
+				JOIN roles r ON r.id = u.role_id
+				WHERE ca.id = $1 AND ca.status = 'active' AND u.status = 'active' AND r.name = 'normal_user'
+			)`, targetCustomerAccountID).Scan(&valid); err != nil || !valid {
+			return Instance{}, errors.New("assignment target must be an active normal user")
+		}
+	}
+	_, err = tx.Exec(`
+		UPDATE vps_instances
+		   SET customer_account_id = NULLIF($2, 0),
+		       admin_owner_user_id = CASE WHEN $2 = 0 THEN $3 ELSE NULL END,
+		       customer_ssh_key_id = CASE WHEN COALESCE(customer_account_id, 0) <> $2 THEN NULL ELSE customer_ssh_key_id END,
+		       updated_at = NOW()
+		 WHERE id = $1`, id, targetCustomerAccountID, actorID)
+	if err != nil {
+		return Instance{}, fmt.Errorf("assign VPS: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE vps_tunnel_attachments SET customer_account_id = NULLIF($2, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
+		return Instance{}, fmt.Errorf("update VPS tunnel ownership: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE vps_backup_policies SET customer_account_id = NULLIF($2, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
+		return Instance{}, fmt.Errorf("update VPS backup ownership: %w", err)
+	}
+	action := "ownership-assigned"
+	message := "VPS assigned to customer account"
+	if targetCustomerAccountID == 0 {
+		action = "ownership-unassigned"
+		message = "VPS changed to administrator ownership"
+	}
+	output := fmt.Sprintf("previous_customer_account_id=%d target_customer_account_id=%d reason=%s", currentAccountID, targetCustomerAccountID, strings.TrimSpace(reason))
+	if _, err := tx.Exec(`
+		INSERT INTO vps_events (vps_id, action, level, message, output, actor_user_id, actor_username, actor_role)
+		VALUES ($1, $2, 'info', $3, $4, $5, $6, $7)`, id, action, message, output, actorID, actorUsername, actorRole); err != nil {
+		return Instance{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Instance{}, err
+	}
+	return s.Get(id)
+}
+
+func (s *Service) SuspendAdministratively(id int64, actorUsername, actorRole, reason string) (Instance, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return Instance{}, errors.New("suspension reason is required")
+	}
+	var actorID int64
+	if err := s.db.QueryRow(`SELECT id FROM users WHERE username = $1`, actorUsername).Scan(&actorID); err != nil {
+		return Instance{}, errors.New("acting administrator was not found")
+	}
+	result, err := s.db.Exec(`
+		UPDATE vps_instances SET admin_suspended_at = COALESCE(admin_suspended_at, NOW()),
+		       admin_suspended_by_user_id = $2, admin_suspension_reason = $3,
+		       admin_suspension_error = '', updated_at = NOW() WHERE id = $1`, id, actorID, reason)
+	if err != nil {
+		return Instance{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return Instance{}, ErrVPSNotFound
+	}
+	_ = s.insertActorEvent(id, "admin-suspended", "warning", "VPS administratively suspended", reason, actorID, actorUsername, actorRole)
+	if _, err := s.PowerAction(id, "shutdown"); err != nil {
+		_, _ = s.db.Exec(`UPDATE vps_instances SET admin_suspension_error = $2, updated_at = NOW() WHERE id = $1`, id, err.Error())
+		_ = s.insertActorEvent(id, "admin-suspend-shutdown", "error", "Administrative suspension was saved but Proxmox shutdown failed", err.Error(), actorID, actorUsername, actorRole)
+		return s.Get(id)
+	}
+	return s.Get(id)
+}
+
+func (s *Service) UnsuspendAdministratively(id int64, actorUsername, actorRole string) (Instance, error) {
+	var actorID int64
+	if err := s.db.QueryRow(`SELECT id FROM users WHERE username = $1`, actorUsername).Scan(&actorID); err != nil {
+		return Instance{}, errors.New("acting administrator was not found")
+	}
+	result, err := s.db.Exec(`
+		UPDATE vps_instances SET admin_suspended_at = NULL, admin_suspended_by_user_id = NULL,
+		       admin_suspension_reason = '', admin_suspension_error = '', updated_at = NOW()
+		 WHERE id = $1 AND admin_suspended_at IS NOT NULL`, id)
+	if err != nil {
+		return Instance{}, err
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		if _, getErr := s.Get(id); getErr != nil {
+			return Instance{}, getErr
+		}
+		return Instance{}, errors.New("VPS is not administratively suspended")
+	}
+	_ = s.insertActorEvent(id, "admin-unsuspended", "info", "VPS administrative suspension removed", "", actorID, actorUsername, actorRole)
+	return s.Get(id)
+}
+
+func (s *Service) insertActorEvent(id int64, action, level, message, output string, actorID int64, actorUsername, actorRole string) error {
+	_, err := s.db.Exec(`INSERT INTO vps_events (vps_id, action, level, message, output, actor_user_id, actor_username, actor_role) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, action, level, message, output, actorID, actorUsername, actorRole)
+	return err
+}
+
 func (s *Service) insertEvent(id int64, action, level, message, output string) error {
 	_, err := s.db.Exec(`INSERT INTO vps_events (vps_id, action, level, message, output) VALUES ($1, $2, $3, $4, $5)`, id, action, level, message, output)
 	return err
@@ -1707,6 +1903,12 @@ func scanInstance(rows interface {
 		&rec.ID,
 		&rec.CustomerAccountID,
 		&rec.OwnerUsername,
+		&rec.OwnershipType,
+		&rec.CreatedByUsername,
+		&rec.AdminSuspendedAt,
+		&rec.AdminSuspendedBy,
+		&rec.AdminSuspensionReason,
+		&rec.AdminSuspensionError,
 		&rec.Name,
 		&rec.Description,
 		&rec.ProxmoxCredentialID,
@@ -1731,6 +1933,29 @@ func scanInstance(rows interface {
 		&rec.CreatedAt,
 		&rec.UpdatedAt,
 	)
+}
+
+func instanceSelectSQL() string {
+	return `SELECT v.id, COALESCE(v.customer_account_id, 0),
+		COALESCE(customer_owner.username, admin_owner.username, ''),
+		CASE WHEN v.customer_account_id IS NOT NULL THEN 'customer'
+		     WHEN v.admin_owner_user_id IS NOT NULL THEN 'admin' ELSE 'legacy' END,
+		COALESCE(creator.username, ''), v.admin_suspended_at,
+		COALESCE(suspender.username, ''), v.admin_suspension_reason, v.admin_suspension_error,
+		v.name, v.description, v.proxmox_credential_id, v.proxmox_node_name,
+		COALESCE(v.region_id, 0), COALESCE(r.name, ''), v.network_profile_id,
+		COALESCE(n.name, ''), COALESCE(v.cloud_init_image_id, 0), v.cloud_init_image_path,
+		COALESCE(v.ssh_key_pair_id, 0), v.vm_name, COALESCE(NULLIF(v.hostname, ''), v.vm_name),
+		v.ip_mode, v.ip_address, v.cpu, v.memory_mb, v.disk_gb, v.ssh_user,
+		v.terraform_work_dir, v.status, v.created_at, v.updated_at
+		FROM vps_instances v
+		LEFT JOIN regions r ON r.id = v.region_id
+		LEFT JOIN network_profiles n ON n.id = v.network_profile_id
+		LEFT JOIN customer_accounts ca ON ca.id = v.customer_account_id
+		LEFT JOIN users customer_owner ON customer_owner.id = ca.owner_user_id
+		LEFT JOIN users admin_owner ON admin_owner.id = v.admin_owner_user_id
+		LEFT JOIN users creator ON creator.id = v.created_by_user_id
+		LEFT JOIN users suspender ON suspender.id = v.admin_suspended_by_user_id`
 }
 
 func scanCloudInitImage(rows interface {
