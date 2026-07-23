@@ -13,7 +13,7 @@ func TestBlockedByAdministrativeSuspension(t *testing.T) {
 	}{
 		{name: "suspended VPS cannot start", action: "start", suspended: true, want: true},
 		{name: "suspended VPS cannot restart", action: "restart", suspended: true, want: true},
-		{name: "suspended VPS may shut down", action: "shutdown", suspended: true, want: false},
+		{name: "suspended VPS cannot shut down", action: "shutdown", suspended: true, want: true},
 		{name: "unlocked VPS may start", action: "start", suspended: false, want: false},
 	}
 	for _, test := range tests {

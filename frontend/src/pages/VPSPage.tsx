@@ -149,6 +149,7 @@ export function VPSPage() {
                             variant="secondary"
                             size="sm"
                             onClick={() => shutdownMutation.mutate(item.id)}
+                            disabled={Boolean(item.admin_suspended_at)}
                             loading={shutdownMutation.isPending && shutdownMutation.variables === item.id}
                           >
                             <Power className="h-3.5 w-3.5" />

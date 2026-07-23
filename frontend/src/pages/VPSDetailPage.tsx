@@ -240,6 +240,7 @@ export function VPSDetailPage() {
   const firewallMutation = useMutation({
     mutationFn: async () => {
       if (!vps) throw new Error('VPS is not loaded');
+      if (vps.admin_suspended_at) throw new Error('VPS is administratively suspended');
       const hasPorts = firewallRuleForm.protocol === 'tcp' || firewallRuleForm.protocol === 'udp';
       const body = {
         direction: firewallRuleForm.direction,
@@ -475,7 +476,12 @@ export function VPSDetailPage() {
               <RotateCcw className="h-4 w-4" />
               Restart
             </Button>
-            <Button variant="secondary" onClick={() => shutdownMutation.mutate(vps.id)} loading={shutdownMutation.isPending}>
+            <Button
+              variant="secondary"
+              onClick={() => shutdownMutation.mutate(vps.id)}
+              loading={shutdownMutation.isPending}
+              disabled={Boolean(vps.admin_suspended_at)}
+            >
               <Power className="h-4 w-4" />
               Shutdown
             </Button>
@@ -486,6 +492,7 @@ export function VPSDetailPage() {
                 setRedeployConfirmationName('');
               }}
               loading={redeployMutation.isPending}
+              disabled={Boolean(vps.admin_suspended_at)}
             >
               <RefreshCw className="h-4 w-4" />
               Redeploy
@@ -496,11 +503,15 @@ export function VPSDetailPage() {
                 Events
               </Button>
             )}
-            <Button variant={showFirewallRules ? 'primary' : 'secondary'} onClick={() => setShowFirewallRules((current) => !current)}>
+            <Button
+              variant={showFirewallRules ? 'primary' : 'secondary'}
+              onClick={() => setShowFirewallRules((current) => !current)}
+              disabled={Boolean(vps.admin_suspended_at)}
+            >
               <Shield className="h-4 w-4" />
               Firewall
             </Button>
-            <Button variant="secondary" onClick={openEdit}>
+            <Button variant="secondary" onClick={openEdit} disabled={Boolean(vps.admin_suspended_at)}>
               <Pencil className="h-4 w-4" />
               Edit
             </Button>
@@ -537,6 +548,7 @@ export function VPSDetailPage() {
                 setDeleteConfirmationName('');
                 setDeleteOpen(true);
               }}
+              disabled={Boolean(vps.admin_suspended_at)}
             >
               <Trash2 className="h-4 w-4" />
               Delete
@@ -750,7 +762,7 @@ export function VPSDetailPage() {
             </CardContent>
           </Card>
 
-          {showFirewallRules && (
+          {showFirewallRules && !vps.admin_suspended_at && (
             <Card>
               <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>

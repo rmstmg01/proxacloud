@@ -129,6 +129,9 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
+		return
+	}
 	resp, err := h.service.Update(id, req, scope)
 	if err != nil {
 		if errors.Is(err, ErrVPSNotFound) {
@@ -192,7 +195,11 @@ func (h *Handler) Redeploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.authorizeInstance(w, r, id); !ok {
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
 		return
 	}
 	resp, err := h.service.Redeploy(id)
@@ -418,16 +425,7 @@ func (h *Handler) powerAction(w http.ResponseWriter, r *http.Request, action str
 		return
 	}
 	if blockedByAdministrativeSuspension(action, true) {
-		rec, err := h.service.Get(id, scope)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if blockedByAdministrativeSuspension(action, rec.AdminSuspendedAt != nil) {
-			writeJSON(w, http.StatusLocked, map[string]any{
-				"error": ErrVPSAdministrativelySuspended.Error(), "code": "vps_admin_suspended",
-				"suspended_at": rec.AdminSuspendedAt, "reason": rec.AdminSuspensionReason,
-			})
+		if h.rejectAdministrativelySuspended(w, id, scope) {
 			return
 		}
 	}
@@ -449,7 +447,11 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
 		return
 	}
-	if _, ok := h.authorizeInstance(w, r, id); !ok {
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
 		return
 	}
 	if err := h.service.Delete(id, req.ConfirmationName); err != nil {
@@ -596,7 +598,23 @@ func (h *Handler) scope(w http.ResponseWriter, r *http.Request) (tenant.Scope, b
 }
 
 func blockedByAdministrativeSuspension(action string, suspended bool) bool {
-	return suspended && (action == "start" || action == "restart")
+	return suspended && (action == "start" || action == "restart" || action == "shutdown")
+}
+
+func (h *Handler) rejectAdministrativelySuspended(w http.ResponseWriter, id int64, scope tenant.Scope) bool {
+	rec, err := h.service.Get(id, scope)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return true
+	}
+	if rec.AdminSuspendedAt == nil {
+		return false
+	}
+	writeJSON(w, http.StatusLocked, map[string]any{
+		"error": ErrVPSAdministrativelySuspended.Error(), "code": "vps_admin_suspended",
+		"suspended_at": rec.AdminSuspendedAt, "reason": rec.AdminSuspensionReason,
+	})
+	return true
 }
 
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
