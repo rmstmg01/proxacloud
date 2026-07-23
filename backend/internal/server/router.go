@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
@@ -136,6 +137,7 @@ func NewApp() (*App, error) {
 		PayPalClientSecret:  cfg.PayPalClientSecret,
 		PayPalEnvironment:   cfg.PayPalEnvironment,
 	})
+	backupService.SetBillingGuard(billingService)
 	cloudflareTunnelService := cloudflaretunnels.NewService(database, secretStore, clusterService)
 	proxacloudTunnelService := proxacloudtunnels.NewService(database, secretStore, clusterService)
 	monitoringService := monitoring.NewService(database, clusterService)
@@ -205,7 +207,7 @@ func NewApp() (*App, error) {
 	vpsHandler := vps.NewHandler(vpsService, userService, billingService)
 	containerHandler := containers.NewHandler(containerService, userService, billingService)
 	firewallHandler := firewalls.NewHandler(firewallService)
-	backupHandler := backups.NewHandler(backupService)
+	backupHandler := backups.NewHandler(backupService, userService)
 	billingHandler := billing.NewHandler(billingService, userService)
 	cloudflareTunnelHandler := cloudflaretunnels.NewHandler(cloudflareTunnelService)
 	proxacloudTunnelHandler := proxacloudtunnels.NewHandler(proxacloudTunnelService)
@@ -231,6 +233,8 @@ func NewApp() (*App, error) {
 	reconciliationWorker := clusters.NewReconciliationWorker(database, healthChecker, proxmoxService)
 	reconciliationWorker.SetService(clusterService) // Wire in the service for recovery operations
 	go reconciliationWorker.Start(30 * time.Second) // Run health checks every 30 seconds
+
+	go backupService.RunVPSBackupWorkers(context.Background(), 30*time.Second)
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -374,6 +378,10 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/shutdown", vpsHandler.Shutdown)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/console", vpsHandler.Console)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/vps/{id}/refresh-status", vpsHandler.RefreshStatus)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/{id}/backup", backupHandler.VPSOverview)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Put("/vps/{id}/backup/policy", backupHandler.UpsertVPSPolicy)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Delete("/vps/{id}/backup/policy", backupHandler.DisableVPSPolicy)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/vps/{id}/backup/run", backupHandler.StartVPSBackup)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers", containerHandler.List)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/containers", containerHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/containers/templates", containerHandler.ListTemplates)

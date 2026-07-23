@@ -464,6 +464,18 @@ func (s *Service) EstimateMonthlyCharges(accountID int64) ([]ResourceCharge, int
 	if err := addRows("vps", `SELECT id, name, cpu, memory_mb, disk_gb FROM vps_instances WHERE customer_account_id = $1 AND status NOT IN ('deleted')`); err != nil {
 		return nil, 0, err
 	}
+	backupQuery := func(plan string) string {
+		return fmt.Sprintf(`SELECT p.id, v.name || ' backup', 0, 0, v.disk_gb
+			FROM vps_backup_policies p
+			JOIN vps_instances v ON v.id = p.vps_id
+			WHERE p.customer_account_id = $1 AND p.enabled = TRUE
+			  AND p.plan_code = '%s' AND v.status NOT IN ('deleted')`, plan)
+	}
+	for _, plan := range []string{"vps_backup_monthly", "vps_backup_weekly", "vps_backup_daily"} {
+		if err := addRows(plan, backupQuery(plan)); err != nil {
+			return nil, 0, err
+		}
+	}
 	if err := addRows("container", `SELECT id, name, cpu, memory_mb, disk_gb FROM container_instances WHERE customer_account_id = $1 AND status NOT IN ('deleted')`); err != nil {
 		return nil, 0, err
 	}
@@ -502,6 +514,33 @@ func (s *Service) EnsureCanAfford(accountID int64, resourceType string, cpu, mem
 		return err
 	}
 	required := existingMonthly + nextMonthly
+	if balance < required {
+		return fmt.Errorf("%w: balance $%.2f, required $%.2f", ErrInsufficientCredit, float64(balance)/100, float64(required)/100)
+	}
+	return nil
+}
+
+func (s *Service) EnsureCanAffordBackup(accountID int64, previousPlan, nextPlan string, diskGB int) error {
+	balance, err := s.Balance(accountID)
+	if err != nil {
+		return err
+	}
+	_, existingMonthly, err := s.EstimateMonthlyCharges(accountID)
+	if err != nil {
+		return err
+	}
+	previousMonthly := 0
+	if strings.TrimSpace(previousPlan) != "" {
+		previousMonthly, err = s.EstimateResource(previousPlan, 0, 0, diskGB)
+		if err != nil {
+			return err
+		}
+	}
+	nextMonthly, err := s.EstimateResource(nextPlan, 0, 0, diskGB)
+	if err != nil {
+		return err
+	}
+	required := existingMonthly - previousMonthly + nextMonthly
 	if balance < required {
 		return fmt.Errorf("%w: balance $%.2f, required $%.2f", ErrInsufficientCredit, float64(balance)/100, float64(required)/100)
 	}

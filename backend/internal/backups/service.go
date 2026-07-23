@@ -22,12 +22,13 @@ type Service struct {
 	db      *sql.DB
 	secrets secrets.Store
 	proxmox ProxmoxBackupper
+	billing BackupBillingGuard
 }
 
 type ProxmoxBackupper interface {
 	GetCredentialWithSecrets(id int64) (proxmox.Credential, error)
-	BackupVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, storageID string, mode string) (string, error)
-	BackupContainerByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, storageID string, mode string) (string, error)
+	BackupVMByName(cred proxmox.Credential, proxmoxNodeName string, vmName string, storageID string, mode string, retentionCount int) (string, error)
+	BackupContainerByName(cred proxmox.Credential, proxmoxNodeName string, containerName string, storageID string, mode string, retentionCount int) (string, error)
 	GetTaskStatus(cred proxmox.Credential, proxmoxNodeName string, upid string) (proxmox.TaskStatus, error)
 	ListStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, content string) ([]proxmox.StorageContent, error)
 	DownloadStorageContent(cred proxmox.Credential, proxmoxNodeName string, storageID string, volID string, destinationPath string) error
@@ -110,7 +111,9 @@ func (s *Service) ListJobs() ([]Job, error) {
 		`SELECT j.id, j.target_id, COALESCE(t.name, ''), j.source_type, j.source_id, j.source_name,
 		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.staging_storage_id,
 		        j.artifact_volid, j.artifact_path, j.upload_method, j.upload_status, j.remote_path,
-		        j.upload_output, j.upload_error, j.output, j.error, j.created_at, j.updated_at
+		        j.upload_output, j.upload_error, j.output, j.error,
+		        COALESCE(j.policy_id, 0), COALESCE(j.customer_account_id, 0), j.trigger_type,
+		        j.scheduled_for, j.started_at, j.finished_at, j.created_at, j.updated_at
 		   FROM backup_jobs j
 		   LEFT JOIN backup_targets t ON t.id = j.target_id
 		  ORDER BY j.created_at DESC
@@ -145,6 +148,12 @@ func (s *Service) ListJobs() ([]Job, error) {
 			&job.UploadError,
 			&job.Output,
 			&job.Error,
+			&job.PolicyID,
+			&job.CustomerAccountID,
+			&job.TriggerType,
+			&job.ScheduledFor,
+			&job.StartedAt,
+			&job.FinishedAt,
 			&job.CreatedAt,
 			&job.UpdatedAt,
 		); err != nil {
@@ -193,7 +202,7 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 		return Job{}, err
 	}
 	uploadMethod := backupUploadMethod(target)
-	job, err := s.insertJob(target.ID, in.SourceType, in.SourceID, source.name, mode, source.nodeName, storageID, uploadMethod)
+	job, err := s.insertJob(target.ID, in, source.name, mode, source.nodeName, storageID, uploadMethod)
 	if err != nil {
 		return Job{}, err
 	}
@@ -207,9 +216,9 @@ func (s *Service) StartJob(in JobInput) (Job, error) {
 	var taskID string
 	switch in.SourceType {
 	case SourceVPS:
-		taskID, err = s.proxmox.BackupVMByName(cred, source.nodeName, source.proxmoxName, storageID, mode)
+		taskID, err = s.proxmox.BackupVMByName(cred, source.nodeName, source.proxmoxName, storageID, mode, in.RetentionCount)
 	case SourceContainer:
-		taskID, err = s.proxmox.BackupContainerByName(cred, source.nodeName, source.proxmoxName, storageID, mode)
+		taskID, err = s.proxmox.BackupContainerByName(cred, source.nodeName, source.proxmoxName, storageID, mode, in.RetentionCount)
 	case SourceCluster:
 		err = errors.New("full cluster backup is not implemented yet; use etcd snapshot for cluster state and back up node VMs individually")
 	default:
@@ -436,7 +445,7 @@ func (s *Service) resolveBackupSource(sourceType SourceType, sourceID int64) (ba
 	}
 }
 
-func (s *Service) insertJob(targetID int64, sourceType SourceType, sourceID int64, sourceName string, mode string, nodeName string, stagingStorageID string, uploadMethod string) (Job, error) {
+func (s *Service) insertJob(targetID int64, in JobInput, sourceName string, mode string, nodeName string, stagingStorageID string, uploadMethod string) (Job, error) {
 	var job Job
 	uploadStatus := "not_required"
 	if strings.TrimSpace(uploadMethod) != "" {
@@ -444,22 +453,32 @@ func (s *Service) insertJob(targetID int64, sourceType SourceType, sourceID int6
 	}
 	err := s.db.QueryRow(
 		`INSERT INTO backup_jobs
-		 (target_id, source_type, source_id, source_name, mode, status, proxmox_node_name, staging_storage_id, upload_method, upload_status)
-		 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9)
+		 (target_id, source_type, source_id, source_name, mode, status, proxmox_node_name,
+		  staging_storage_id, upload_method, upload_status, policy_id, customer_account_id,
+		  trigger_type, scheduled_for, idempotency_key, started_at)
+		 VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, NULLIF($10, 0),
+		         NULLIF($11, 0), $12, $13, $14, NOW())
 		 RETURNING id, target_id, source_type, source_id, source_name, mode, status, proxmox_node_name,
 		           proxmox_task_id, staging_storage_id, artifact_volid, artifact_path, upload_method,
-		           upload_status, remote_path, upload_output, upload_error, output, error, created_at, updated_at`,
+		           upload_status, remote_path, upload_output, upload_error, output, error,
+		           COALESCE(policy_id, 0), COALESCE(customer_account_id, 0), trigger_type,
+		           scheduled_for, started_at, finished_at, created_at, updated_at`,
 		targetID,
-		string(sourceType),
-		sourceID,
+		string(in.SourceType),
+		in.SourceID,
 		strings.TrimSpace(sourceName),
 		mode,
 		strings.TrimSpace(nodeName),
 		strings.TrimSpace(stagingStorageID),
 		strings.TrimSpace(uploadMethod),
 		uploadStatus,
-	).Scan(&job.ID, &job.TargetID, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+		in.PolicyID, in.CustomerAccountID, defaultTrigger(in.TriggerType), in.ScheduledFor,
+		strings.TrimSpace(in.IdempotencyKey),
+	).Scan(&job.ID, &job.TargetID, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.PolicyID, &job.CustomerAccountID, &job.TriggerType, &job.ScheduledFor, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "idempotency") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return Job{}, ErrBackupInProgress
+		}
 		return Job{}, fmt.Errorf("insert backup job: %w", err)
 	}
 	return job, nil
@@ -468,7 +487,9 @@ func (s *Service) insertJob(targetID int64, sourceType SourceType, sourceID int6
 func (s *Service) finishJob(jobID int64, status string, taskID string, output string, errText string) error {
 	_, err := s.db.Exec(
 		`UPDATE backup_jobs
-		    SET status = $2, proxmox_task_id = $3, output = $4, error = $5, updated_at = NOW()
+		    SET status = $2, proxmox_task_id = $3, output = $4, error = $5,
+		        finished_at = CASE WHEN $2 IN ('succeeded', 'failed', 'cancelled') THEN NOW() ELSE finished_at END,
+		        updated_at = NOW()
 		  WHERE id = $1`,
 		jobID,
 		status,
@@ -485,12 +506,14 @@ func (s *Service) getJob(id int64) (Job, error) {
 		`SELECT j.id, j.target_id, COALESCE(t.name, ''), j.source_type, j.source_id, j.source_name,
 		        j.mode, j.status, j.proxmox_node_name, j.proxmox_task_id, j.staging_storage_id,
 		        j.artifact_volid, j.artifact_path, j.upload_method, j.upload_status, j.remote_path,
-		        j.upload_output, j.upload_error, j.output, j.error, j.created_at, j.updated_at
+		        j.upload_output, j.upload_error, j.output, j.error,
+		        COALESCE(j.policy_id, 0), COALESCE(j.customer_account_id, 0), j.trigger_type,
+		        j.scheduled_for, j.started_at, j.finished_at, j.created_at, j.updated_at
 		   FROM backup_jobs j
 		   LEFT JOIN backup_targets t ON t.id = j.target_id
 		  WHERE j.id = $1`,
 		id,
-	).Scan(&job.ID, &job.TargetID, &job.TargetName, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.CreatedAt, &job.UpdatedAt)
+	).Scan(&job.ID, &job.TargetID, &job.TargetName, &job.SourceType, &job.SourceID, &job.SourceName, &job.Mode, &job.Status, &job.ProxmoxNodeName, &job.ProxmoxTaskID, &job.StagingStorageID, &job.ArtifactVolID, &job.ArtifactPath, &job.UploadMethod, &job.UploadStatus, &job.RemotePath, &job.UploadOutput, &job.UploadError, &job.Output, &job.Error, &job.PolicyID, &job.CustomerAccountID, &job.TriggerType, &job.ScheduledFor, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, errors.New("backup job not found")
 	}
@@ -1012,4 +1035,12 @@ func cleanupSecrets(store secrets.Store, ctx context.Context, refs ...string) {
 			_ = store.Delete(ctx, ref)
 		}
 	}
+}
+
+func defaultTrigger(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "scheduled" {
+		return value
+	}
+	return "manual"
 }

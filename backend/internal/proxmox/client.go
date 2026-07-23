@@ -905,7 +905,7 @@ func (c *Client) ClearContainerFirewallByName(cred Credential, proxmoxNodeName s
 	return fmt.Sprintf("removed managed firewall rule(s) from container %s (%d)", containerName, container.VMID), nil
 }
 
-func (c *Client) BackupVMByName(cred Credential, proxmoxNodeName string, vmName string, storageID string, mode string) (string, error) {
+func (c *Client) BackupVMByName(cred Credential, proxmoxNodeName string, vmName string, storageID string, mode string, retentionCount int) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	vmName = strings.TrimSpace(vmName)
 	if proxmoxNodeName == "" {
@@ -924,10 +924,10 @@ func (c *Client) BackupVMByName(cred Credential, proxmoxNodeName string, vmName 
 	if err != nil {
 		return "", err
 	}
-	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, vm.VMID, storageID, mode)
+	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, vm.VMID, storageID, mode, retentionCount)
 }
 
-func (c *Client) BackupContainerByName(cred Credential, proxmoxNodeName string, containerName string, storageID string, mode string) (string, error) {
+func (c *Client) BackupContainerByName(cred Credential, proxmoxNodeName string, containerName string, storageID string, mode string, retentionCount int) (string, error) {
 	proxmoxNodeName = strings.TrimSpace(proxmoxNodeName)
 	containerName = strings.TrimSpace(containerName)
 	if proxmoxNodeName == "" {
@@ -946,10 +946,10 @@ func (c *Client) BackupContainerByName(cred Credential, proxmoxNodeName string, 
 	if err != nil {
 		return "", err
 	}
-	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, container.VMID, storageID, mode)
+	return c.startVZDump(httpClient, base, cred, proxmoxNodeName, container.VMID, storageID, mode, retentionCount)
 }
 
-func (c *Client) startVZDump(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, storageID string, mode string) (string, error) {
+func (c *Client) startVZDump(httpClient *http.Client, base *url.URL, cred Credential, proxmoxNodeName string, vmid int, storageID string, mode string, retentionCount int) (string, error) {
 	storageID = strings.TrimSpace(storageID)
 	mode = strings.TrimSpace(strings.ToLower(mode))
 	if storageID == "" {
@@ -970,6 +970,9 @@ func (c *Client) startVZDump(httpClient *http.Client, base *url.URL, cred Creden
 	form.Set("storage", storageID)
 	form.Set("mode", mode)
 	form.Set("compress", "zstd")
+	if retentionCount > 0 {
+		form.Set("prune-backups", fmt.Sprintf("keep-last=%d", retentionCount))
+	}
 
 	req, err := http.NewRequest(http.MethodPost, reqURL.String(), strings.NewReader(form.Encode()))
 	if err != nil {

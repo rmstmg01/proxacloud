@@ -26,6 +26,7 @@ import {
   updateVPSHostname,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
+import { VPSBackupProtection } from '../components/VPSBackupProtection';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Badge, StatusBadge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -431,6 +432,8 @@ export function VPSDetailPage() {
               </dl>
             </CardContent>
           </Card>
+
+          <VPSBackupProtection vpsID={vps.id} diskGB={vps.disk_gb} />
 
           <Card>
             <CardHeader>

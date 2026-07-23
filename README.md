@@ -657,6 +657,22 @@ Supported target types:
 
 For VPS and containers, `Backup Now` starts a Proxmox `vzdump` task. For Hetzner Storage Box targets, ProxaCloud uses Proxmox staging storage first and then uploads the completed artifact with Restic by default.
 
+Customers can also enable paid backup protection from the VPS details page:
+
+1. Choose a daily, weekly, or monthly plan.
+2. Select the local backup time and, for weekly or monthly plans, the schedule day.
+3. Confirm the detected IANA timezone.
+4. Use `Backup now` at any time while protection is enabled.
+5. Review the latest Proxmox task status from the same VPS page.
+
+Backup protection is included in the existing monthly resource invoice. Default plan prices and retention are:
+
+- Monthly: `$2.00 + $0.01/GB`, retaining the latest 3 backups.
+- Weekly: `$5.00 + $0.02/GB`, retaining the latest 4 backups.
+- Daily: `$10.00 + $0.04/GB`, retaining the latest 7 backups.
+
+Administrators can change or disable the three `vps_backup_*` prices from Billing. Before customers can enable protection, configure at least one enabled `proxmox_storage` target under `Backups`; the oldest enabled target is used. The API worker checks due schedules and running Proxmox tasks every 30 seconds. Only one active backup job is allowed per VPS.
+
 Restic flow:
 
 ```text
