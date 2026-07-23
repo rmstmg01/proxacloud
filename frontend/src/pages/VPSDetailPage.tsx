@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Copy, ExternalLink, Eye, EyeOff, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, Check, Copy, ExternalLink, Eye, EyeOff, History, Monitor, Pencil, Play, Plus, Power, RefreshCw, RotateCcw, Shield, ShieldCheck, Trash2, UserRoundCog } from 'lucide-react';
 import {
   createFirewall,
   createFirewallAttachment,
@@ -12,6 +12,9 @@ import {
   updateFirewallRule,
 } from '../api/firewalls';
 import {
+  assignVPSInstance,
+  deleteVPSInstance,
+  getVPSAssignmentOptions,
   getVPSEvents,
   getVPSInstance,
   getVPSLoginDetails,
@@ -23,7 +26,10 @@ import {
   retryVPSTunnel,
   shutdownVPSInstance,
   startVPSInstance,
+  suspendVPSAdministratively,
+  unsuspendVPSAdministratively,
   updateVPSHostname,
+  updateVPSInstance,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { VPSBackupProtection } from '../components/VPSBackupProtection';
@@ -65,9 +71,20 @@ export function VPSDetailPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const vpsID = Number(id);
-  const canViewEvents = user?.role === 'super_user' || user?.role === 'super_admin';
+  const isAdmin = user?.role === 'super_user' || user?.role === 'super_admin';
+  const canViewEvents = isAdmin;
   const [redeployOpen, setRedeployOpen] = useState(false);
   const [redeployConfirmationName, setRedeployConfirmationName] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [assignmentOpen, setAssignmentOpen] = useState(false);
+  const [assignmentUserID, setAssignmentUserID] = useState(0);
+  const [assignmentReason, setAssignmentReason] = useState('');
+  const [suspensionOpen, setSuspensionOpen] = useState(false);
+  const [suspensionReason, setSuspensionReason] = useState('');
+  const [unsuspensionOpen, setUnsuspensionOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirmationName, setDeleteConfirmationName] = useState('');
   const [showEvents, setShowEvents] = useState(false);
   const [showFirewallRules, setShowFirewallRules] = useState(false);
   const [firewallRuleOpen, setFirewallRuleOpen] = useState(false);
@@ -83,6 +100,11 @@ export function VPSDetailPage() {
     queryKey: ['vps', vpsID],
     queryFn: () => getVPSInstance(vpsID),
     enabled: Number.isFinite(vpsID) && vpsID > 0,
+  });
+  const { data: assignmentOptions = [] } = useQuery({
+    queryKey: ['vps', 'assignment-options'],
+    queryFn: getVPSAssignmentOptions,
+    enabled: Number.isFinite(vpsID) && vpsID > 0 && isAdmin,
   });
   const { data: events, error: eventsError, isFetching: eventsFetching } = useQuery({
     queryKey: ['vps', vpsID, 'events'],
@@ -154,6 +176,44 @@ export function VPSDetailPage() {
       invalidate();
       setRedeployOpen(false);
       setRedeployConfirmationName('');
+    },
+  });
+  const updateMutation = useMutation({
+    mutationFn: () => updateVPSInstance(vpsID, { name: editName.trim() }),
+    onSuccess: () => {
+      invalidate();
+      setEditOpen(false);
+      setEditName('');
+    },
+  });
+  const assignmentMutation = useMutation({
+    mutationFn: () => assignVPSInstance(vpsID, assignmentUserID, assignmentReason.trim()),
+    onSuccess: () => {
+      invalidate();
+      setAssignmentOpen(false);
+      setAssignmentReason('');
+    },
+  });
+  const suspensionMutation = useMutation({
+    mutationFn: () => suspendVPSAdministratively(vpsID, suspensionReason.trim()),
+    onSuccess: () => {
+      invalidate();
+      setSuspensionOpen(false);
+      setSuspensionReason('');
+    },
+  });
+  const unsuspensionMutation = useMutation({
+    mutationFn: () => unsuspendVPSAdministratively(vpsID),
+    onSuccess: () => {
+      invalidate();
+      setUnsuspensionOpen(false);
+    },
+  });
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteVPSInstance(vpsID, deleteConfirmationName),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vps'] });
+      navigate('/vps');
     },
   });
   const refreshMutation = useMutation({ mutationFn: refreshVPSStatus, onSuccess: invalidate });
@@ -235,6 +295,38 @@ export function VPSDetailPage() {
     event.preventDefault();
     if (!vps || redeployConfirmationName !== vps.name) return;
     redeployMutation.mutate(vps.id);
+  };
+
+  const openEdit = () => {
+    if (!vps) return;
+    updateMutation.reset();
+    setEditName(vps.name);
+    setEditOpen(true);
+  };
+
+  const confirmEdit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!editName.trim()) return;
+    updateMutation.mutate();
+  };
+
+  const openAssignment = () => {
+    if (!vps) return;
+    assignmentMutation.reset();
+    setAssignmentUserID(assignmentOptions.find((option) => option.username === vps.owner_username)?.user_id ?? 0);
+    setAssignmentReason('');
+    setAssignmentOpen(true);
+  };
+
+  const confirmAssignment = (event: FormEvent) => {
+    event.preventDefault();
+    assignmentMutation.mutate();
+  };
+
+  const confirmSuspension = (event: FormEvent) => {
+    event.preventDefault();
+    if (!suspensionReason.trim()) return;
+    suspensionMutation.mutate();
   };
 
   const openHostnameEdit = () => {
@@ -359,8 +451,8 @@ export function VPSDetailPage() {
         <div className="space-y-6">
           {vps.admin_suspended_at && (
             <Alert variant="error" title="Administratively suspended">
-              This VPS was suspended by {vps.admin_suspended_by || 'an administrator'}
-              {vps.admin_suspension_reason ? `: ${vps.admin_suspension_reason}` : '.'}
+              This VPS was suspended by Admin.
+              {vps.admin_suspension_reason && <> Reason: {vps.admin_suspension_reason}.</>}
               {' '}Only an administrator can remove this lock.
             </Alert>
           )}
@@ -407,6 +499,47 @@ export function VPSDetailPage() {
             <Button variant={showFirewallRules ? 'primary' : 'secondary'} onClick={() => setShowFirewallRules((current) => !current)}>
               <Shield className="h-4 w-4" />
               Firewall
+            </Button>
+            <Button variant="secondary" onClick={openEdit}>
+              <Pencil className="h-4 w-4" />
+              Edit
+            </Button>
+            {isAdmin && (
+              <>
+                <Button variant="secondary" onClick={openAssignment}>
+                  <UserRoundCog className="h-4 w-4" />
+                  Assign
+                </Button>
+                {vps.admin_suspended_at ? (
+                  <Button variant="secondary" onClick={() => setUnsuspensionOpen(true)}>
+                    <ShieldCheck className="h-4 w-4" />
+                    Unsuspend
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => {
+                      suspensionMutation.reset();
+                      setSuspensionReason('');
+                      setSuspensionOpen(true);
+                    }}
+                  >
+                    <Ban className="h-4 w-4" />
+                    Suspend
+                  </Button>
+                )}
+              </>
+            )}
+            <Button
+              variant="danger"
+              onClick={() => {
+                deleteMutation.reset();
+                setDeleteConfirmationName('');
+                setDeleteOpen(true);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
             </Button>
           </div>
 
@@ -743,6 +876,189 @@ export function VPSDetailPage() {
           )}
         </div>
       )}
+      <Modal
+        open={editOpen}
+        onClose={() => {
+          if (!updateMutation.isPending) {
+            setEditOpen(false);
+            setEditName('');
+          }
+        }}
+        title="Edit VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <form onSubmit={confirmEdit} className="space-y-4">
+            <Input
+              label="Name"
+              value={editName}
+              onChange={(event) => setEditName(event.target.value)}
+              autoFocus
+              autoComplete="off"
+              required
+            />
+            {updateMutation.error && <ErrorMessage error={updateMutation.error} />}
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setEditOpen(false)} disabled={updateMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={updateMutation.isPending} disabled={editName.trim() === ''}>
+                <Pencil className="h-4 w-4" />
+                Save
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      <Modal
+        open={assignmentOpen}
+        onClose={() => !assignmentMutation.isPending && setAssignmentOpen(false)}
+        title="Assign VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <form onSubmit={confirmAssignment} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Change the control-panel and billing owner for <span className="font-semibold">{vps.name}</span>.
+            </p>
+            <Select
+              label="New owner"
+              value={assignmentUserID}
+              onChange={(event) => setAssignmentUserID(Number(event.target.value))}
+            >
+              <option value={0}>Administrator owned (claim as me)</option>
+              {assignmentOptions.map((option) => (
+                <option key={option.user_id} value={option.user_id}>
+                  {option.username}{option.full_name !== option.username ? ` — ${option.full_name}` : ''}
+                </option>
+              ))}
+            </Select>
+            <Input
+              label="Reason"
+              value={assignmentReason}
+              onChange={(event) => setAssignmentReason(event.target.value)}
+              placeholder="Optional audit note"
+            />
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Assignment transfers the VPS, tunnel, backup, and future billing ownership. Historical invoices and jobs are unchanged.
+              Existing SSH keys installed inside the guest OS must be rotated separately before handing over access.
+            </div>
+            {assignmentMutation.error && <ErrorMessage error={assignmentMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setAssignmentOpen(false)} disabled={assignmentMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" loading={assignmentMutation.isPending}>
+                <UserRoundCog className="h-4 w-4" />
+                Save owner
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      <Modal
+        open={suspensionOpen}
+        onClose={() => !suspensionMutation.isPending && setSuspensionOpen(false)}
+        title="Suspend VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <form onSubmit={confirmSuspension} className="space-y-4">
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              This immediately applies an administrative lock and requests a graceful Proxmox shutdown. The customer cannot start or restart the VPS until an administrator removes the lock.
+            </div>
+            <Input
+              label="Suspension reason"
+              value={suspensionReason}
+              onChange={(event) => setSuspensionReason(event.target.value)}
+              placeholder="Required"
+              required
+            />
+            {suspensionMutation.error && <ErrorMessage error={suspensionMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setSuspensionOpen(false)} disabled={suspensionMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="danger" loading={suspensionMutation.isPending} disabled={!suspensionReason.trim()}>
+                <Ban className="h-4 w-4" />
+                Suspend and shut down
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
+      <Modal
+        open={unsuspensionOpen}
+        onClose={() => !unsuspensionMutation.isPending && setUnsuspensionOpen(false)}
+        title="Unsuspend VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Remove the administrative lock from <span className="font-semibold">{vps.name}</span>? This does not start the VPS automatically.
+            </p>
+            {vps.admin_suspension_reason && (
+              <p className="rounded-md bg-slate-50 p-3 text-sm text-slate-600">
+                Suspension reason: {vps.admin_suspension_reason}
+              </p>
+            )}
+            {unsuspensionMutation.error && <ErrorMessage error={unsuspensionMutation.error} />}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setUnsuspensionOpen(false)} disabled={unsuspensionMutation.isPending}>
+                Cancel
+              </Button>
+              <Button onClick={() => unsuspensionMutation.mutate()} loading={unsuspensionMutation.isPending}>
+                <ShieldCheck className="h-4 w-4" />
+                Unsuspend
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <Modal
+        open={deleteOpen}
+        onClose={() => {
+          if (!deleteMutation.isPending) {
+            setDeleteOpen(false);
+            setDeleteConfirmationName('');
+          }
+        }}
+        title="Delete VPS"
+        maxWidth="lg"
+      >
+        {vps && (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (deleteConfirmationName === vps.name) deleteMutation.mutate();
+            }}
+            className="space-y-4"
+          >
+            <p className="text-sm text-slate-600">
+              Terraform destroy will be attempted before metadata is removed. Type{' '}
+              <span className="font-semibold text-slate-900">{vps.name}</span> to continue.
+            </p>
+            <Input
+              label="VPS name confirmation"
+              value={deleteConfirmationName}
+              onChange={(event) => setDeleteConfirmationName(event.target.value)}
+              autoFocus
+              autoComplete="off"
+            />
+            {deleteMutation.error && <ErrorMessage error={deleteMutation.error} />}
+            <div className="flex items-center justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setDeleteOpen(false)} disabled={deleteMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="danger" loading={deleteMutation.isPending} disabled={deleteConfirmationName !== vps.name}>
+                <Trash2 className="h-4 w-4" />
+                Delete VPS
+              </Button>
+            </div>
+          </form>
+        )}
+      </Modal>
       <Modal
         open={hostnameEditOpen}
         onClose={() => {

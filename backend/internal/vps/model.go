@@ -1769,18 +1769,18 @@ func (s *Service) Assign(id int64, targetCustomerAccountID int64, actorUsername,
 	}
 	_, err = tx.Exec(`
 		UPDATE vps_instances
-		   SET customer_account_id = NULLIF($2, 0),
-		       admin_owner_user_id = CASE WHEN $2 = 0 THEN $3 ELSE NULL END,
-		       customer_ssh_key_id = CASE WHEN COALESCE(customer_account_id, 0) <> $2 THEN NULL ELSE customer_ssh_key_id END,
+		   SET customer_account_id = NULLIF($2::bigint, 0),
+		       admin_owner_user_id = CASE WHEN $2::bigint = 0 THEN $3::bigint ELSE NULL::bigint END,
+		       customer_ssh_key_id = CASE WHEN COALESCE(customer_account_id, 0) <> $2::bigint THEN NULL ELSE customer_ssh_key_id END,
 		       updated_at = NOW()
 		 WHERE id = $1`, id, targetCustomerAccountID, actorID)
 	if err != nil {
 		return Instance{}, fmt.Errorf("assign VPS: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE vps_tunnel_attachments SET customer_account_id = NULLIF($2, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
+	if _, err := tx.Exec(`UPDATE vps_tunnel_attachments SET customer_account_id = NULLIF($2::bigint, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
 		return Instance{}, fmt.Errorf("update VPS tunnel ownership: %w", err)
 	}
-	if _, err := tx.Exec(`UPDATE vps_backup_policies SET customer_account_id = NULLIF($2, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
+	if _, err := tx.Exec(`UPDATE vps_backup_policies SET customer_account_id = NULLIF($2::bigint, 0), updated_at = NOW() WHERE vps_id = $1`, id, targetCustomerAccountID); err != nil {
 		return Instance{}, fmt.Errorf("update VPS backup ownership: %w", err)
 	}
 	action := "ownership-assigned"
