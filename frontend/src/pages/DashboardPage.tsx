@@ -322,7 +322,8 @@ export function DashboardPage() {
   const failedVPS = vpsList.filter((vps) => isFailedStatus(vps.status));
   const readyDatabaseClusters = databaseClusterList.filter((cluster) => isReadyStatus(cluster.status));
   const failedDatabaseClusters = databaseClusterList.filter((cluster) => isFailedStatus(cluster.status));
-  const unavailableNodes = nodeList.filter((node) => !node.enabled || isFailedStatus(node.status));
+  const enabledNodes = nodeList.filter((node) => node.enabled);
+  const unavailableNodes = enabledNodes.filter((node) => isFailedStatus(node.status));
 
   const clusterCPU = totalClusterCPU(clusterList);
   const clusterMemoryGB = totalClusterMemoryGB(clusterList);
@@ -387,7 +388,7 @@ export function DashboardPage() {
       : []),
   ];
   const alertCount = attentionItems.length;
-  const totalResources = clusterList.length + vpsList.length + databaseClusterList.length + (isAdmin ? nodeList.length : 0);
+  const totalResources = clusterList.length + vpsList.length + databaseClusterList.length + (isAdmin ? enabledNodes.length : 0);
   const clusterItems: DetailItem[] = clusterList.map((cluster) => ({
     key: `cluster-${cluster.id}`,
     name: cluster.name,
@@ -431,7 +432,8 @@ export function DashboardPage() {
     })),
   ];
   const alertItems: DetailItem[] = attentionItems.map((item) => ({ ...item }));
-  const healthItems = alertItems.length > 0 ? alertItems : [...computeItems, ...(isAdmin ? infrastructureItems : [])];
+  const healthInfrastructureItems = infrastructureItems.filter((item) => item.status !== 'disabled');
+  const healthItems = alertItems.length > 0 ? alertItems : [...computeItems, ...(isAdmin ? healthInfrastructureItems : [])];
 
   const panelTitle = activePanel === 'health'
     ? 'Overall Health'
