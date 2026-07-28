@@ -23,6 +23,7 @@ import (
 	"proxacloud/backend/internal/db"
 	"proxacloud/backend/internal/firewalls"
 	"proxacloud/backend/internal/mailer"
+	"proxacloud/backend/internal/managedstorefront"
 	"proxacloud/backend/internal/monitoring"
 	"proxacloud/backend/internal/networks"
 	"proxacloud/backend/internal/proxacloudtunnelapi"
@@ -193,6 +194,17 @@ func NewApp() (*App, error) {
 		},
 	}, tunnelAPIClient, mailSender)
 	clusterService.SetTunnelInfrastructure(vpsService.TunnelInfrastructure(), cfg.ProxacloudTunnelPublicPortStart, cfg.ProxacloudTunnelPublicPortEnd)
+	managedStorefrontService := managedstorefront.New(
+		database,
+		managedstorefront.Config{
+			Enabled: cfg.ManagedStorefrontEnabled, APIToken: cfg.ManagedStorefrontAPIToken,
+			BaseDomain: cfg.ManagedStorefrontBaseDomain, TunnelID: cfg.ManagedStorefrontTunnelID,
+			TargetURL: cfg.ManagedStorefrontTargetURL,
+		},
+		tunnelAPIClient,
+		vpsService.TunnelInfrastructure(),
+	)
+	managedStorefrontHandler := managedstorefront.NewHandler(managedStorefrontService)
 	clusterService.SetMailer(mailSender)
 	databaseClusterService.SetMailer(mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
@@ -257,6 +269,12 @@ func NewApp() (*App, error) {
 		api.Post("/auth/password-reset/request", userHandler.RequestPasswordReset)
 		api.Post("/auth/password-reset/confirm", userHandler.ResetPassword)
 		api.Post("/billing/webhooks/stripe", billingHandler.StripeWebhook)
+		api.Route("/integrations/bikri/storefronts", func(integration chi.Router) {
+			integration.Use(managedstorefront.TokenMiddleware(managedStorefrontService))
+			integration.Put("/{publicationID}", managedStorefrontHandler.Ensure)
+			integration.Get("/{publicationID}", managedStorefrontHandler.Get)
+			integration.Delete("/{publicationID}", managedStorefrontHandler.Disable)
+		})
 
 		api.Group(func(console chi.Router) {
 			console.Use(auth.QueryTokenMiddleware(tokens, "token"))

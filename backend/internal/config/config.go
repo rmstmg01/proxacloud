@@ -56,6 +56,11 @@ type Config struct {
 	CloudflareDNSTarget             string
 	CloudflareDNSRecordType         string
 	CloudflareDNSProxied            bool
+	ManagedStorefrontEnabled        bool
+	ManagedStorefrontAPIToken       string
+	ManagedStorefrontBaseDomain     string
+	ManagedStorefrontTunnelID       string
+	ManagedStorefrontTargetURL      string
 
 	DefaultNetworkName    string
 	DefaultNetworkCIDR    string
@@ -114,6 +119,11 @@ func Load() Config {
 		CloudflareDNSTarget:             getenv("CLOUDFLARE_DNS_TARGET", ""),
 		CloudflareDNSRecordType:         getenv("CLOUDFLARE_DNS_RECORD_TYPE", ""),
 		CloudflareDNSProxied:            getenvBool("CLOUDFLARE_DNS_PROXIED", false),
+		ManagedStorefrontEnabled:        getenvBool("MANAGED_STOREFRONT_ENABLED", false),
+		ManagedStorefrontAPIToken:       getenv("MANAGED_STOREFRONT_API_TOKEN", ""),
+		ManagedStorefrontBaseDomain:     getenv("MANAGED_STOREFRONT_BASE_DOMAIN", "store.proxaops.com"),
+		ManagedStorefrontTunnelID:       getenv("MANAGED_STOREFRONT_TUNNEL_ID", ""),
+		ManagedStorefrontTargetURL:      getenv("MANAGED_STOREFRONT_TARGET_URL", "http://127.0.0.1:3000"),
 		DefaultNetworkName:              getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
 		DefaultNetworkCIDR:              getenv("DEFAULT_NETWORK_CIDR", "192.168.8.0/24"),
 		DefaultNetworkGateway:           getenv("DEFAULT_NETWORK_GATEWAY", "192.168.8.1"),
