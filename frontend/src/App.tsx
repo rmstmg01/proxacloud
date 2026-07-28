@@ -39,6 +39,7 @@ import { ContainerDetailPage } from './pages/ContainerDetailPage';
 import { StoragePage } from './pages/StoragePage';
 import { BackupsPage } from './pages/BackupsPage';
 import { BillingPage } from './pages/BillingPage';
+import { ManagedHTTPEndpointsPage } from './pages/ManagedHTTPEndpointsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -306,6 +307,14 @@ export function App() {
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
                   <ClusterManifestsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/managed-http-endpoints"
+              element={
+                <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>
+                  <ManagedHTTPEndpointsPage />
                 </ProtectedRoute>
               }
             />

@@ -50,6 +50,7 @@ type Service struct {
 
 type Endpoint struct {
 	ID               int64     `json:"id"`
+	Provider         string    `json:"provider"`
 	ExternalID       string    `json:"externalId"`
 	Hostname         string    `json:"hostname"`
 	TunnelID         string    `json:"tunnelId"`
@@ -161,7 +162,7 @@ func (s *Service) Ensure(ctx context.Context, externalID, hostname string) (Endp
 		    dns_record_content = $5, dns_proxied = $6, status = 'active',
 		    last_error = '', updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, external_id, hostname, tunnel_id, target_url, http_route_id,
+		RETURNING id, provider, external_id, hostname, tunnel_id, target_url, http_route_id,
 		          dns_record_id, dns_record_type, dns_record_content, dns_proxied,
 		          status, last_error, created_at, updated_at
 	`, endpoint.ID, route.ID, dnsResult.RecordID, dnsResult.RecordType,
@@ -175,13 +176,40 @@ func (s *Service) Ensure(ctx context.Context, externalID, hostname string) (Endp
 func (s *Service) Get(ctx context.Context, externalID string) (Endpoint, error) {
 	var endpoint Endpoint
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, external_id, hostname, tunnel_id, target_url, http_route_id,
+		SELECT id, provider, external_id, hostname, tunnel_id, target_url, http_route_id,
 		       dns_record_id, dns_record_type, dns_record_content, dns_proxied,
 		       status, last_error, created_at, updated_at
 		FROM managed_storefront_endpoints
 		WHERE provider = 'bikri' AND external_id = $1
 	`, strings.TrimSpace(externalID)).Scan(endpointScanDest(&endpoint)...)
 	return endpoint, err
+}
+
+func (s *Service) List(ctx context.Context) ([]Endpoint, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, provider, external_id, hostname, tunnel_id, target_url, http_route_id,
+		       dns_record_id, dns_record_type, dns_record_content, dns_proxied,
+		       status, last_error, created_at, updated_at
+		FROM managed_storefront_endpoints
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 500
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list managed storefront endpoints: %w", err)
+	}
+	defer rows.Close()
+	endpoints := make([]Endpoint, 0)
+	for rows.Next() {
+		var endpoint Endpoint
+		if err := rows.Scan(endpointScanDest(&endpoint)...); err != nil {
+			return nil, fmt.Errorf("scan managed storefront endpoint: %w", err)
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list managed storefront endpoints: %w", err)
+	}
+	return endpoints, nil
 }
 
 func (s *Service) Disable(ctx context.Context, externalID string) error {
@@ -227,7 +255,7 @@ func (s *Service) reserve(ctx context.Context, externalID, hostname string) (End
 		SET hostname = EXCLUDED.hostname, tunnel_id = EXCLUDED.tunnel_id,
 		    target_url = EXCLUDED.target_url, status = 'pending',
 		    last_error = '', updated_at = NOW()
-		RETURNING id, external_id, hostname, tunnel_id, target_url, http_route_id,
+		RETURNING id, provider, external_id, hostname, tunnel_id, target_url, http_route_id,
 		          dns_record_id, dns_record_type, dns_record_content, dns_proxied,
 		          status, last_error, created_at, updated_at
 	`, externalID, hostname, s.cfg.TunnelID, s.cfg.TargetURL).Scan(endpointScanDest(&endpoint)...)
@@ -274,7 +302,7 @@ func TokenMiddleware(service *Service) func(http.Handler) http.Handler {
 
 func endpointScanDest(endpoint *Endpoint) []any {
 	return []any{
-		&endpoint.ID, &endpoint.ExternalID, &endpoint.Hostname, &endpoint.TunnelID,
+		&endpoint.ID, &endpoint.Provider, &endpoint.ExternalID, &endpoint.Hostname, &endpoint.TunnelID,
 		&endpoint.TargetURL, &endpoint.HTTPRouteID, &endpoint.DNSRecordID,
 		&endpoint.DNSRecordType, &endpoint.DNSRecordContent, &endpoint.DNSProxied,
 		&endpoint.Status, &endpoint.LastError, &endpoint.CreatedAt, &endpoint.UpdatedAt,

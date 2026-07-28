@@ -47,6 +47,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, endpoint)
 }
 
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	endpoints, err := h.service.List(r.Context())
+	if err != nil {
+		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	WriteJSON(w, http.StatusOK, endpoints)
+}
+
 func (h *Handler) Disable(w http.ResponseWriter, r *http.Request) {
 	if err := h.service.Disable(r.Context(), strings.TrimSpace(chi.URLParam(r, "publicationID"))); err != nil {
 		WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

@@ -23,6 +23,7 @@ import {
   HardDrive,
   LockKeyhole,
   MapPin,
+  Globe2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import type { Role } from '../types';
@@ -100,6 +101,12 @@ const navGroups: NavGroup[] = [
       { to: '/secrets', icon: KeyRound, label: 'Secrets', roles: adminRoles },
       { to: '/image-pull-secrets', icon: LockKeyhole, label: 'Pull Secrets', roles: adminRoles },
       { to: '/manifests', icon: FileCode, label: 'Manifests', roles: adminRoles },
+    ],
+  },
+  {
+    label: 'Managed Services',
+    items: [
+      { to: '/managed-http-endpoints', icon: Globe2, label: 'HTTP Endpoints', roles: adminRoles },
     ],
   },
 ];
