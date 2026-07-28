@@ -19,6 +19,8 @@ type tunnelAPI interface {
 	Enabled() bool
 	CreateTunnel(context.Context, proxacloudtunnelapi.CreateTunnelRequest) (proxacloudtunnelapi.Tunnel, error)
 	CreateHTTPRoute(context.Context, string, proxacloudtunnelapi.CreateHTTPRouteRequest) (proxacloudtunnelapi.Route, error)
+	ListHTTPRoutes(context.Context, string) ([]proxacloudtunnelapi.Route, error)
+	UpdateHTTPRoute(context.Context, string, proxacloudtunnelapi.UpdateHTTPRouteRequest) (proxacloudtunnelapi.Route, error)
 	CreateTCPRoute(context.Context, string, proxacloudtunnelapi.CreateTCPRouteRequest) (proxacloudtunnelapi.TCPRoute, error)
 	CreateToken(context.Context, string, proxacloudtunnelapi.CreateTokenRequest) (proxacloudtunnelapi.TokenResponse, error)
 	DeleteTunnel(context.Context, string) error
@@ -186,12 +188,20 @@ func (s *Service) RetryTunnel(id int64) (TunnelAttachment, error) {
 			_ = s.insertEvent(id, "cloudflare-dns", "error", "Cloudflare DNS sync failed", syncErr.Error())
 			return TunnelAttachment{}, syncErr
 		}
+		if syncErr := s.syncAllTunnelHTTPRoutes(ctx, updated); syncErr != nil {
+			_ = s.insertEvent(id, "tunnel-http-routes", "error", "HTTP route synchronization failed", syncErr.Error())
+			return TunnelAttachment{}, syncErr
+		}
 		_ = s.insertEvent(id, "cloudflare-dns", "success", "Cloudflare DNS synced", updated.CloudflareDNSSummary())
 		return updated, nil
 	}
 	_, updated, err := s.provisionTunnelAttachment(ctx, attachment, rec.Name)
 	if err != nil {
 		_ = s.markTunnelAttachmentFailed(ctx, attachment.ID, err)
+		return TunnelAttachment{}, err
+	}
+	if err := s.syncAllTunnelHTTPRoutes(ctx, updated); err != nil {
+		_ = s.insertEvent(id, "tunnel-http-routes", "error", "HTTP route synchronization failed", err.Error())
 		return TunnelAttachment{}, err
 	}
 	_ = s.insertEvent(id, "tunnel-retry", "success", "Proxacloud tunnel routes configured", updated.AccessSummary())
@@ -330,12 +340,48 @@ func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment Tunn
 		return "", TunnelAttachment{}, fmt.Errorf("update vps tunnel attachment: %w", err)
 	}
 	out.populateAccessFields()
+	if err := s.upsertPrimaryTunnelHTTPRoute(ctx, out); err != nil {
+		return "", TunnelAttachment{}, err
+	}
 	return installCommand, out, nil
 }
 
 func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment TunnelAttachment) error {
 	if attachment.ID == 0 {
 		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT cloudflare_dns_record_id
+		FROM vps_tunnel_http_routes
+		WHERE tunnel_attachment_id = $1 AND cloudflare_dns_record_id <> ''
+	`, attachment.ID)
+	if err != nil {
+		return fmt.Errorf("list HTTP route DNS records: %w", err)
+	}
+	routeDNSRecordIDs := make([]string, 0)
+	for rows.Next() {
+		var recordID string
+		if err := rows.Scan(&recordID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan HTTP route DNS record: %w", err)
+		}
+		routeDNSRecordIDs = append(routeDNSRecordIDs, recordID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list HTTP route DNS records: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close HTTP route DNS records: %w", err)
+	}
+	for _, recordID := range routeDNSRecordIDs {
+		if recordID == attachment.CloudflareDNSRecordID {
+			continue
+		}
+		if err := s.deleteCloudflareDNSRecord(ctx, recordID); err != nil {
+			return fmt.Errorf("delete HTTP route Cloudflare DNS record: %w", err)
+		}
 	}
 
 	if strings.TrimSpace(attachment.CloudflareDNSRecordID) != "" {
@@ -558,7 +604,9 @@ func (s *Service) hostnameForVPS(name string) (string, error) {
 	if base == "" {
 		base = "vps"
 	}
-	if s.tunnelInfra != nil { return s.tunnelInfra.Hostname(base) }
+	if s.tunnelInfra != nil {
+		return s.tunnelInfra.Hostname(base)
+	}
 	if suffix := strings.TrimSpace(s.tunnelConfig.HostnameSuffix); suffix != "" {
 		suffix = strings.TrimPrefix(suffix, ".")
 		return base + "." + suffix, nil
@@ -620,7 +668,14 @@ func (s *Service) updateTunnelDNSMetadata(ctx context.Context, id int64, dnsResu
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
 		          status, last_error, emailed_at, created_at, updated_at
 	`, id, dnsResult.RecordID, dnsResult.RecordType, dnsResult.Content, dnsResult.Proxied, dnsResult.Status)
-	return scanTunnelAttachment(row)
+	attachment, err := scanTunnelAttachment(row)
+	if err != nil {
+		return TunnelAttachment{}, err
+	}
+	if err := s.upsertPrimaryTunnelHTTPRoute(ctx, attachment); err != nil {
+		return TunnelAttachment{}, err
+	}
+	return attachment, nil
 }
 
 func scanTunnelAttachment(row interface {

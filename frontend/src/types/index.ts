@@ -493,6 +493,28 @@ export interface VPSTunnelAttachment {
   web_url: string;
 }
 
+export interface VPSTunnelHTTPRoute {
+  id: number;
+  tunnel_attachment_id: number;
+  http_route_id: string;
+  name: string;
+  public_hostname: string;
+  target_url: string;
+  tls_mode: 'edge' | 'passthrough' | 'reencrypt';
+  enabled: boolean;
+  cloudflare_dns_record_id?: string;
+  cloudflare_dns_record_type?: string;
+  cloudflare_dns_record_content?: string;
+  cloudflare_dns_proxied: boolean;
+  cloudflare_dns_status?: string;
+  status: string;
+  last_error: string;
+  is_primary: boolean;
+  web_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface VPSCreateResponse {
   vps_id: number;
   status: string;

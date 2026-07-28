@@ -9,6 +9,7 @@ import type {
   VPSLoginDetails,
   VPSResetRootPasswordResponse,
   VPSTunnelAttachment,
+  VPSTunnelHTTPRoute,
 } from '../types';
 export type ManagedVPSInstance = VPSInstance & {
   ownership_type: 'customer' | 'admin' | 'legacy';
@@ -44,6 +45,29 @@ export const getVPSLoginDetails = (id: number) =>
 
 export const retryVPSTunnel = (id: number) =>
   client.post<VPSTunnelAttachment>(`/vps/${id}/tunnel/retry`).then((r) => r.data);
+
+export interface VPSTunnelHTTPRoutePayload {
+  name: string;
+  public_hostname: string;
+  target_url: string;
+  tls_mode: 'edge' | 'passthrough' | 'reencrypt';
+  enabled: boolean;
+}
+
+export const getVPSTunnelHTTPRoutes = (id: number) =>
+  client.get<VPSTunnelHTTPRoute[]>(`/vps/${id}/tunnel/http-routes`).then((r) => r.data);
+
+export const createVPSTunnelHTTPRoute = (id: number, body: VPSTunnelHTTPRoutePayload) =>
+  client.post<VPSTunnelHTTPRoute>(`/vps/${id}/tunnel/http-routes`, body).then((r) => r.data);
+
+export const updateVPSTunnelHTTPRoute = (id: number, routeID: number, body: VPSTunnelHTTPRoutePayload) =>
+  client.patch<VPSTunnelHTTPRoute>(`/vps/${id}/tunnel/http-routes/${routeID}`, body).then((r) => r.data);
+
+export const retryVPSTunnelHTTPRoute = (id: number, routeID: number) =>
+  client.post<VPSTunnelHTTPRoute>(`/vps/${id}/tunnel/http-routes/${routeID}/retry`).then((r) => r.data);
+
+export const deleteVPSTunnelHTTPRoute = (id: number, routeID: number) =>
+  client.delete(`/vps/${id}/tunnel/http-routes/${routeID}`);
 
 export const resetVPSRootPassword = (id: number, password = '') =>
   client.post<VPSResetRootPasswordResponse>(`/vps/${id}/root-password/reset`, { password }).then((r) => r.data);

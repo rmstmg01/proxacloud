@@ -78,6 +78,12 @@ type CreateHTTPRouteRequest struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+type UpdateHTTPRouteRequest struct {
+	Hostname  string `json:"hostname,omitempty"`
+	TargetURL string `json:"targetUrl,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+}
+
 type CreateTCPRouteRequest struct {
 	Name           string `json:"name"`
 	PublicHostname string `json:"publicHostname"`
@@ -120,6 +126,24 @@ func (c *Client) CreateTunnel(ctx context.Context, req CreateTunnelRequest) (Tun
 func (c *Client) CreateHTTPRoute(ctx context.Context, tunnelID string, req CreateHTTPRouteRequest) (Route, error) {
 	var out Route
 	if err := c.do(ctx, http.MethodPost, "/api/v1/tunnels/"+tunnelID+"/routes", req, &out); err != nil {
+		return Route{}, err
+	}
+	return out, nil
+}
+
+func (c *Client) ListHTTPRoutes(ctx context.Context, tunnelID string) ([]Route, error) {
+	var out struct {
+		Items []Route `json:"items"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/tunnels/"+tunnelID+"/routes", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Items, nil
+}
+
+func (c *Client) UpdateHTTPRoute(ctx context.Context, routeID string, req UpdateHTTPRouteRequest) (Route, error) {
+	var out Route
+	if err := c.do(ctx, http.MethodPatch, "/api/v1/routes/"+routeID, req, &out); err != nil {
 		return Route{}, err
 	}
 	return out, nil

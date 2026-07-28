@@ -126,4 +126,6 @@ services:
 
 volumes:
   postgres_data:
+    name: ${POSTGRES_DATA_VOLUME:-proxacloud_postgres_data}
   backend_data:
+    name: ${BACKEND_DATA_VOLUME:-proxacloud_backend_data}

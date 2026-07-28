@@ -517,6 +517,135 @@ func (h *Handler) RetryTunnel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) ListTunnelHTTPRoutes(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	if _, ok := h.authorizeInstance(w, r, id); !ok {
+		return
+	}
+	resp, err := h.service.ListTunnelHTTPRoutes(id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) CreateTunnelHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
+		return
+	}
+	var req CreateTunnelHTTPRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.CreateTunnelHTTPRoute(id, req)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) UpdateTunnelHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	routeID, ok := parseTunnelHTTPRouteID(w, r)
+	if !ok {
+		return
+	}
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
+		return
+	}
+	var req UpdateTunnelHTTPRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	resp, err := h.service.UpdateTunnelHTTPRoute(id, routeID, req)
+	if err != nil {
+		if errors.Is(err, ErrTunnelHTTPRouteNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) RetryTunnelHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	routeID, ok := parseTunnelHTTPRouteID(w, r)
+	if !ok {
+		return
+	}
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
+		return
+	}
+	resp, err := h.service.RetryTunnelHTTPRoute(id, routeID)
+	if err != nil {
+		if errors.Is(err, ErrTunnelHTTPRouteNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) DeleteTunnelHTTPRoute(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return
+	}
+	routeID, ok := parseTunnelHTTPRouteID(w, r)
+	if !ok {
+		return
+	}
+	scope, ok := h.authorizeInstance(w, r, id)
+	if !ok {
+		return
+	}
+	if h.rejectAdministrativelySuspended(w, id, scope) {
+		return
+	}
+	if err := h.service.DeleteTunnelHTTPRoute(id, routeID); err != nil {
+		if errors.Is(err, ErrTunnelHTTPRouteNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) ListImages(w http.ResponseWriter, _ *http.Request) {
 	resp, err := h.service.ListImages()
 	if err != nil {
@@ -621,6 +750,15 @@ func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid vps id"})
+		return 0, false
+	}
+	return id, true
+}
+
+func parseTunnelHTTPRouteID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "routeID"), 10, 64)
+	if err != nil || id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid HTTP route id"})
 		return 0, false
 	}
 	return id, true

@@ -13,23 +13,29 @@ import {
 } from '../api/firewalls';
 import {
   assignVPSInstance,
+  createVPSTunnelHTTPRoute,
+  deleteVPSTunnelHTTPRoute,
   deleteVPSInstance,
   getVPSAssignmentOptions,
   getVPSEvents,
   getVPSInstance,
   getVPSLoginDetails,
   getVPSTunnel,
+  getVPSTunnelHTTPRoutes,
   redeployVPSInstance,
   refreshVPSStatus,
   resetVPSRootPassword,
   restartVPSInstance,
   retryVPSTunnel,
+  retryVPSTunnelHTTPRoute,
   shutdownVPSInstance,
   startVPSInstance,
   suspendVPSAdministratively,
   unsuspendVPSAdministratively,
   updateVPSHostname,
   updateVPSInstance,
+  updateVPSTunnelHTTPRoute,
+  type VPSTunnelHTTPRoutePayload,
 } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { VPSBackupProtection } from '../components/VPSBackupProtection';
@@ -41,7 +47,7 @@ import { Input, Select } from '../components/ui/Input';
 import { Modal } from '../components/ui/Modal';
 import { PageSpinner } from '../components/ui/Spinner';
 import { useAuth } from '../context/AuthContext';
-import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule, VPSTunnelAttachment } from '../types';
+import type { FirewallAction, FirewallDirection, FirewallGroup, FirewallPolicy, FirewallProtocol, FirewallRule, VPSTunnelAttachment, VPSTunnelHTTPRoute } from '../types';
 
 const defaultFirewallRuleForm = {
   name: '',
@@ -57,6 +63,15 @@ const defaultFirewallRuleForm = {
   port_end: '22',
   priority: '100',
   rule_description: 'SSH access',
+  enabled: true,
+};
+
+const defaultTunnelRouteForm = {
+  name: '',
+  public_hostname: '',
+  local_port: '',
+  target_url: '',
+  tls_mode: 'edge' as VPSTunnelHTTPRoutePayload['tls_mode'],
   enabled: true,
 };
 
@@ -95,6 +110,9 @@ export function VPSDetailPage() {
   const [rootPasswordResetNotice, setRootPasswordResetNotice] = useState(false);
   const [hostnameEditOpen, setHostnameEditOpen] = useState(false);
   const [hostnameForm, setHostnameForm] = useState('');
+  const [tunnelRouteOpen, setTunnelRouteOpen] = useState(false);
+  const [editingTunnelRoute, setEditingTunnelRoute] = useState<VPSTunnelHTTPRoute | null>(null);
+  const [tunnelRouteForm, setTunnelRouteForm] = useState(defaultTunnelRouteForm);
 
   const { data: vps, isLoading, error } = useQuery({
     queryKey: ['vps', vpsID],
@@ -123,6 +141,15 @@ export function VPSDetailPage() {
       }
     },
     enabled: Number.isFinite(vpsID) && vpsID > 0,
+  });
+  const {
+    data: tunnelRoutes = [],
+    error: tunnelRoutesError,
+    isFetching: tunnelRoutesFetching,
+  } = useQuery({
+    queryKey: ['vps', vpsID, 'tunnel', 'http-routes'],
+    queryFn: () => getVPSTunnelHTTPRoutes(vpsID),
+    enabled: Number.isFinite(vpsID) && vpsID > 0 && Boolean(tunnel),
   });
   const { data: loginDetails, error: loginDetailsError, isFetching: loginDetailsFetching } = useQuery({
     queryKey: ['vps', vpsID, 'login-details'],
@@ -221,6 +248,37 @@ export function VPSDetailPage() {
   const restartMutation = useMutation({ mutationFn: restartVPSInstance, onSuccess: invalidate });
   const shutdownMutation = useMutation({ mutationFn: shutdownVPSInstance, onSuccess: invalidate });
   const tunnelRetryMutation = useMutation({ mutationFn: retryVPSTunnel, onSuccess: invalidate });
+  const tunnelRouteSaveMutation = useMutation({
+    mutationFn: (body: VPSTunnelHTTPRoutePayload) => (
+      editingTunnelRoute
+        ? updateVPSTunnelHTTPRoute(vpsID, editingTunnelRoute.id, body)
+        : createVPSTunnelHTTPRoute(vpsID, body)
+    ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel'] });
+      setTunnelRouteOpen(false);
+      setEditingTunnelRoute(null);
+      setTunnelRouteForm(defaultTunnelRouteForm);
+    },
+  });
+  const tunnelRouteRetryMutation = useMutation({
+    mutationFn: (routeID: number) => retryVPSTunnelHTTPRoute(vpsID, routeID),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel'] }),
+  });
+  const tunnelRouteDeleteMutation = useMutation({
+    mutationFn: (routeID: number) => deleteVPSTunnelHTTPRoute(vpsID, routeID),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel', 'http-routes'] }),
+  });
+  const tunnelRouteToggleMutation = useMutation({
+    mutationFn: (route: VPSTunnelHTTPRoute) => updateVPSTunnelHTTPRoute(vpsID, route.id, {
+      name: route.name,
+      public_hostname: route.public_hostname,
+      target_url: route.target_url,
+      tls_mode: route.tls_mode,
+      enabled: !route.enabled,
+    }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vps', vpsID, 'tunnel'] }),
+  });
   const resetRootPasswordMutation = useMutation({
     mutationFn: () => resetVPSRootPassword(vpsID),
     onSuccess: () => {
@@ -341,6 +399,63 @@ export function VPSDetailPage() {
     event.preventDefault();
     if (hostnameForm.trim() === '') return;
     updateHostnameMutation.mutate();
+  };
+
+  const openCreateTunnelRoute = () => {
+    tunnelRouteSaveMutation.reset();
+    setEditingTunnelRoute(null);
+    setTunnelRouteForm(defaultTunnelRouteForm);
+    setTunnelRouteOpen(true);
+  };
+
+  const openEditTunnelRoute = (route: VPSTunnelHTTPRoute) => {
+    tunnelRouteSaveMutation.reset();
+    let localPort = '';
+    try {
+      const target = new URL(route.target_url);
+      if ((target.hostname === '127.0.0.1' || target.hostname === 'localhost') && target.pathname === '/') {
+        localPort = target.port;
+      }
+    } catch {
+      localPort = '';
+    }
+    setEditingTunnelRoute(route);
+    setTunnelRouteForm({
+      name: route.name,
+      public_hostname: route.public_hostname,
+      local_port: localPort,
+      target_url: route.target_url,
+      tls_mode: route.tls_mode,
+      enabled: route.enabled,
+    });
+    setTunnelRouteOpen(true);
+  };
+
+  const saveTunnelRoute = (event: FormEvent) => {
+    event.preventDefault();
+    const targetURL = tunnelRouteForm.target_url.trim()
+      || (tunnelRouteForm.local_port ? `http://127.0.0.1:${tunnelRouteForm.local_port}` : '');
+    tunnelRouteSaveMutation.mutate({
+      name: tunnelRouteForm.name.trim(),
+      public_hostname: tunnelRouteForm.public_hostname.trim(),
+      target_url: targetURL,
+      tls_mode: tunnelRouteForm.tls_mode,
+      enabled: tunnelRouteForm.enabled,
+    });
+  };
+
+  const setTunnelRouteLocalPort = (value: string) => {
+    setTunnelRouteForm((current) => ({
+      ...current,
+      local_port: value,
+      target_url: value ? `http://127.0.0.1:${value}` : '',
+    }));
+  };
+
+  const deleteTunnelRoute = (route: VPSTunnelHTTPRoute) => {
+    if (route.is_primary) return;
+    if (!window.confirm(`Delete HTTP route ${route.public_hostname}?`)) return;
+    tunnelRouteDeleteMutation.mutate(route.id);
   };
 
   const openConsole = () => {
@@ -706,11 +821,22 @@ export function VPSDetailPage() {
 
           <Card>
             <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle>Proxacloud Tunnel Access</CardTitle>
-              <Button variant="secondary" onClick={() => tunnelRetryMutation.mutate(vps.id)} loading={tunnelRetryMutation.isPending}>
-                <RefreshCw className="h-4 w-4" />
-                Retry / Sync
-              </Button>
+              <div>
+                <CardTitle>Proxacloud Tunnel Access</CardTitle>
+                <p className="mt-1 text-sm text-slate-500">Publish multiple local HTTP services through this tunnel's single agent connection.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {tunnel && (
+                  <Button onClick={openCreateTunnelRoute} disabled={Boolean(vps.admin_suspended_at)}>
+                    <Plus className="h-4 w-4" />
+                    HTTP Route
+                  </Button>
+                )}
+                <Button variant="secondary" onClick={() => tunnelRetryMutation.mutate(vps.id)} loading={tunnelRetryMutation.isPending}>
+                  <RefreshCw className="h-4 w-4" />
+                  Retry / Sync
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {tunnelFetching && !tunnel ? (
@@ -718,32 +844,9 @@ export function VPSDetailPage() {
               ) : tunnelError ? (
                 <ErrorMessage error={tunnelError} />
               ) : tunnel ? (
-                <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm text-slate-500">{tunnel.public_hostname}</span>
-                  </div>
+                <div className="space-y-5">
                   {tunnel.last_error && <Alert variant="error" title="Tunnel setup failed">{tunnel.last_error}</Alert>}
-                  <dl className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-2">
-                    <Info
-                      label="Web URL"
-                      value={
-                        <span className="inline-flex min-w-0 items-center gap-2">
-                          <a href={tunnel.web_url} target="_blank" rel="noreferrer" className="truncate text-sky-700 hover:text-sky-900">
-                            {tunnel.web_url}
-                          </a>
-                          <ExternalLink className="h-4 w-4 shrink-0 text-slate-400" />
-                        </span>
-                      }
-                    />
-                    <Info label="HTTP target" value={tunnel.http_target_url} />
-                    <Info
-                      label="DNS"
-                      value={
-                        tunnel.cloudflare_dns_status === 'active'
-                          ? tunnel.public_hostname
-                          : tunnel.cloudflare_dns_status || 'not synced'
-                      }
-                    />
+                  <dl className="grid grid-cols-1 gap-4 border-b border-slate-200 pb-5 text-sm lg:grid-cols-2">
                     <Info
                       label="SSH command"
                       value={
@@ -755,6 +858,121 @@ export function VPSDetailPage() {
                     />
                     <Info label="TCP route" value={`${tunnel.public_hostname}:${tunnel.public_port} -> ${tunnel.tcp_target_host}:${tunnel.tcp_target_port}`} />
                   </dl>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-semibold text-slate-900">HTTP routes</h3>
+                      <span className="text-xs text-slate-500">{tunnelRoutes.length} / 20 routes</span>
+                    </div>
+                    {tunnelRoutesError && <ErrorMessage error={tunnelRoutesError} />}
+                    {(tunnelRouteRetryMutation.error || tunnelRouteDeleteMutation.error || tunnelRouteToggleMutation.error) && (
+                      <ErrorMessage
+                        error={
+                          tunnelRouteRetryMutation.error
+                          || tunnelRouteDeleteMutation.error
+                          || tunnelRouteToggleMutation.error
+                        }
+                      />
+                    )}
+                    {tunnelRoutesFetching && tunnelRoutes.length === 0 ? (
+                      <p className="text-sm text-slate-500">Loading HTTP routes...</p>
+                    ) : tunnelRoutes.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-slate-300 px-4 py-6 text-center">
+                        <p className="text-sm text-slate-600">No tracked HTTP routes yet.</p>
+                        <Button size="sm" className="mt-3" onClick={openCreateTunnelRoute} disabled={Boolean(vps.admin_suspended_at)}>
+                          <Plus className="h-4 w-4" />
+                          Add HTTP route
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto rounded-lg border border-slate-200">
+                        <table className="min-w-full divide-y divide-slate-200 text-sm">
+                          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                            <tr>
+                              <th className="px-4 py-3 font-medium">Route</th>
+                              <th className="px-4 py-3 font-medium">Public URL</th>
+                              <th className="px-4 py-3 font-medium">Local target</th>
+                              <th className="px-4 py-3 font-medium">Status</th>
+                              <th className="px-4 py-3 text-right font-medium">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200 bg-white">
+                            {tunnelRoutes.map((route) => (
+                              <tr key={route.id} className="align-top">
+                                <td className="px-4 py-3">
+                                  <div className="font-medium text-slate-900">{route.name}</div>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {route.is_primary && <Badge variant="info">Primary</Badge>}
+                                    <Badge variant={route.enabled ? 'success' : 'default'}>{route.enabled ? 'Enabled' : 'Disabled'}</Badge>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex min-w-56 items-center gap-2">
+                                    <a href={route.web_url} target="_blank" rel="noreferrer" className="truncate text-sky-700 hover:text-sky-900">
+                                      {route.public_hostname}
+                                    </a>
+                                    <ExternalLink className="h-4 w-4 shrink-0 text-slate-400" />
+                                    {copyButton(`route-url-${route.id}`, route.web_url, 'Copy public URL')}
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-500">DNS: {route.cloudflare_dns_status || 'not synced'}</div>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <code className="whitespace-nowrap rounded bg-slate-100 px-2 py-1 text-xs text-slate-800">{route.target_url}</code>
+                                </td>
+                                <td className="px-4 py-3">
+                                  <StatusBadge status={route.status} />
+                                  {route.last_error && <p className="mt-1 max-w-xs text-xs text-red-600">{route.last_error}</p>}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex justify-end gap-1">
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => openEditTunnelRoute(route)}
+                                      disabled={Boolean(vps.admin_suspended_at)}
+                                      title="Edit route"
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => tunnelRouteToggleMutation.mutate(route)}
+                                      disabled={tunnelRouteToggleMutation.isPending || Boolean(vps.admin_suspended_at)}
+                                      title={route.enabled ? 'Disable route' : 'Enable route'}
+                                    >
+                                      {route.enabled ? <Ban className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => tunnelRouteRetryMutation.mutate(route.id)}
+                                      disabled={tunnelRouteRetryMutation.isPending || Boolean(vps.admin_suspended_at)}
+                                      title="Retry route synchronization"
+                                    >
+                                      <RefreshCw className="h-4 w-4" />
+                                    </Button>
+                                    {!route.is_primary && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => deleteTunnelRoute(route)}
+                                        disabled={tunnelRouteDeleteMutation.isPending || Boolean(vps.admin_suspended_at)}
+                                        className="text-red-600 hover:text-red-700"
+                                        title="Delete route"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <p className="text-sm text-slate-500">No Proxacloud tunnel attachment has been created for this VPS.</p>
@@ -888,6 +1106,102 @@ export function VPSDetailPage() {
           )}
         </div>
       )}
+      <Modal
+        open={tunnelRouteOpen}
+        onClose={() => {
+          if (!tunnelRouteSaveMutation.isPending) {
+            setTunnelRouteOpen(false);
+            setEditingTunnelRoute(null);
+            setTunnelRouteForm(defaultTunnelRouteForm);
+          }
+        }}
+        title={editingTunnelRoute ? 'Edit HTTP Route' : 'Add HTTP Route'}
+        maxWidth="lg"
+      >
+        <form onSubmit={saveTunnelRoute} className="space-y-4">
+          <Input
+            label="Route name"
+            value={tunnelRouteForm.name}
+            onChange={(event) => setTunnelRouteForm((current) => ({ ...current, name: event.target.value }))}
+            placeholder="Merchant Admin"
+            required
+          />
+          <Input
+            label="Public hostname"
+            value={tunnelRouteForm.public_hostname}
+            onChange={(event) => setTunnelRouteForm((current) => ({ ...current, public_hostname: event.target.value }))}
+            placeholder="merchant.proxaops.com"
+            helperText="Use a full hostname within the configured Proxacloud DNS domain."
+            disabled={Boolean(editingTunnelRoute?.is_primary)}
+            required
+          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input
+              label="Local port"
+              type="number"
+              min={1}
+              max={65535}
+              value={tunnelRouteForm.local_port}
+              onChange={(event) => setTunnelRouteLocalPort(event.target.value)}
+              placeholder="5173"
+              helperText="Convenience shortcut for a service listening on 127.0.0.1."
+            />
+            <Select
+              label="TLS mode"
+              value={tunnelRouteForm.tls_mode}
+              onChange={(event) => setTunnelRouteForm((current) => ({
+                ...current,
+                tls_mode: event.target.value as VPSTunnelHTTPRoutePayload['tls_mode'],
+              }))}
+              disabled={Boolean(editingTunnelRoute)}
+            >
+              <option value="edge">Edge TLS</option>
+              <option value="reencrypt">Re-encrypt</option>
+              <option value="passthrough">Passthrough</option>
+            </Select>
+          </div>
+          <Input
+            label="Target URL"
+            type="url"
+            value={tunnelRouteForm.target_url}
+            onChange={(event) => setTunnelRouteForm((current) => ({
+              ...current,
+              target_url: event.target.value,
+              local_port: '',
+            }))}
+            placeholder="http://127.0.0.1:5173"
+            helperText="Advanced targets may use another private hostname, IP address, port, or base path."
+            required
+          />
+          <label className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={tunnelRouteForm.enabled}
+              onChange={(event) => setTunnelRouteForm((current) => ({ ...current, enabled: event.target.checked }))}
+              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            Enable this route immediately
+          </label>
+          {tunnelRouteSaveMutation.error && <ErrorMessage error={tunnelRouteSaveMutation.error} />}
+          <div className="flex justify-end gap-3 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setTunnelRouteOpen(false)}
+              disabled={tunnelRouteSaveMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              loading={tunnelRouteSaveMutation.isPending}
+              disabled={!tunnelRouteForm.name.trim() || !tunnelRouteForm.public_hostname.trim() || !tunnelRouteForm.target_url.trim()}
+            >
+              {editingTunnelRoute ? 'Save route' : 'Create route'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
       <Modal
         open={editOpen}
         onClose={() => {
