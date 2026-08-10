@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"proxacloud/backend/internal/manageddomains"
 	"proxacloud/backend/internal/networks"
 	"proxacloud/backend/internal/proxmox"
 	"proxacloud/backend/internal/secrets"
@@ -94,6 +95,7 @@ type Service struct {
 	tunnelConfig       TunnelConfig
 	tunnelClient       tunnelAPI
 	tunnelInfra        *tunnelinfra.Service
+	managedDomains     *manageddomains.Service
 	mailer             tunnelMailer
 	consoleSessionsMu  sync.Mutex
 	consoleSessions    map[string]consoleSessionRecord
@@ -213,6 +215,9 @@ type CreateRequest struct {
 	SSHUser             string `json:"ssh_user"`
 	RootPassword        string `json:"root_password"`
 	Apply               bool   `json:"apply"`
+	CreateTunnel        *bool  `json:"create_tunnel,omitempty"`
+	TunnelDomainID      int64  `json:"tunnel_domain_id,omitempty"`
+	TunnelHostnameLabel string `json:"tunnel_hostname_label,omitempty"`
 	CustomerAccountID   int64  `json:"-"`
 	ActorUsername       string `json:"-"`
 }
@@ -786,7 +791,11 @@ func (s *Service) Create(req CreateRequest) (CreateResponse, error) {
 
 	agentInstallCommand := ""
 	var tunnelAttachment *TunnelAttachment
-	if s.tunnelConfig.Enabled {
+	createTunnel := s.tunnelConfig.Enabled
+	if req.CreateTunnel != nil {
+		createTunnel = *req.CreateTunnel
+	}
+	if createTunnel {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		// Use `root` as the SSH user for tunnel access commands
 		installCommand, attachment, tunnelErr := s.configureTunnelForCreate(ctx, vpsID, req, "root")

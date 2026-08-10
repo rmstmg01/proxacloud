@@ -92,6 +92,10 @@ func (s *Service) CreateTunnelHTTPRoute(vpsID int64, req CreateTunnelHTTPRouteRe
 	if err != nil {
 		return TunnelHTTPRoute{}, err
 	}
+	domainID, err := s.managedDomainIDForHostname(context.Background(), hostname)
+	if err != nil {
+		return TunnelHTTPRoute{}, err
+	}
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
@@ -115,14 +119,14 @@ func (s *Service) CreateTunnelHTTPRoute(vpsID int64, req CreateTunnelHTTPRouteRe
 	var route TunnelHTTPRoute
 	err = s.db.QueryRow(`
 		INSERT INTO vps_tunnel_http_routes (
-			tunnel_attachment_id, name, public_hostname, target_url, tls_mode, enabled, status
+			tunnel_attachment_id, name, public_hostname, target_url, tls_mode, enabled, status, managed_domain_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', NULLIF($7, 0))
 		RETURNING id, tunnel_attachment_id, http_route_id, name, public_hostname, target_url,
 		          tls_mode, enabled, cloudflare_dns_record_id, cloudflare_dns_record_type,
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
 		          status, last_error, FALSE, created_at, updated_at
-	`, attachment.ID, name, hostname, targetURL, tlsMode, enabled).Scan(tunnelHTTPRouteScanDest(&route)...)
+	`, attachment.ID, name, hostname, targetURL, tlsMode, enabled, domainID).Scan(tunnelHTTPRouteScanDest(&route)...)
 	if err != nil {
 		if isDuplicateRouteHostnameError(err) {
 			return TunnelHTTPRoute{}, fmt.Errorf("public hostname %s is already in use", hostname)
@@ -147,6 +151,10 @@ func (s *Service) UpdateTunnelHTTPRoute(vpsID, routeID int64, req UpdateTunnelHT
 	if err != nil {
 		return TunnelHTTPRoute{}, err
 	}
+	domainID, err := s.managedDomainIDForHostname(context.Background(), hostname)
+	if err != nil {
+		return TunnelHTTPRoute{}, err
+	}
 	attachment, route, err := s.getTunnelHTTPRoute(vpsID, routeID)
 	if err != nil {
 		return TunnelHTTPRoute{}, err
@@ -168,9 +176,9 @@ func (s *Service) UpdateTunnelHTTPRoute(vpsID, routeID int64, req UpdateTunnelHT
 		_, err := s.db.ExecContext(ctx, `
 			UPDATE vps_tunnel_http_routes
 			SET name = $2, public_hostname = $3, target_url = $4, tls_mode = $5,
-			    enabled = $6, status = 'pending', last_error = '', updated_at = NOW()
+			    enabled = $6, managed_domain_id = NULLIF($7, 0), status = 'pending', last_error = '', updated_at = NOW()
 			WHERE id = $1
-		`, route.ID, name, hostname, targetURL, tlsMode, req.Enabled)
+		`, route.ID, name, hostname, targetURL, tlsMode, req.Enabled, domainID)
 		if err != nil {
 			if isDuplicateRouteHostnameError(err) {
 				return TunnelHTTPRoute{}, fmt.Errorf("public hostname %s is already in use", hostname)
@@ -213,7 +221,7 @@ func (s *Service) UpdateTunnelHTTPRoute(vpsID, routeID int64, req UpdateTunnelHT
 	route.Status = "pending"
 	route.LastError = ""
 	if oldHostname != route.PublicHostname && route.CloudflareDNSRecordID != "" {
-		if err := s.deleteCloudflareDNSRecord(ctx, route.CloudflareDNSRecordID); err != nil {
+		if err := s.deleteCloudflareDNSRecord(ctx, route.CloudflareDNSRecordID, oldHostname); err != nil {
 			return TunnelHTTPRoute{}, fmt.Errorf("delete previous HTTP route DNS record: %w", err)
 		}
 		route.CloudflareDNSRecordID = ""
@@ -232,15 +240,15 @@ func (s *Service) UpdateTunnelHTTPRoute(vpsID, routeID int64, req UpdateTunnelHT
 		SET name = $2, public_hostname = $3, target_url = $4, tls_mode = $5, enabled = $6,
 		    cloudflare_dns_record_id = $7, cloudflare_dns_record_type = $8,
 		    cloudflare_dns_record_content = $9, cloudflare_dns_proxied = $10,
-		    cloudflare_dns_status = $11, status = 'active', last_error = '', updated_at = NOW()
+		    cloudflare_dns_status = $11, managed_domain_id = NULLIF($12, 0), status = 'active', last_error = '', updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, tunnel_attachment_id, http_route_id, name, public_hostname, target_url,
 		          tls_mode, enabled, cloudflare_dns_record_id, cloudflare_dns_record_type,
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
-		          status, last_error, $12, created_at, updated_at
+		          status, last_error, $13, created_at, updated_at
 	`, route.ID, route.Name, route.PublicHostname, route.TargetURL, route.TLSMode, route.Enabled,
 		route.CloudflareDNSRecordID, route.CloudflareDNSRecordType, route.CloudflareDNSRecordContent,
-		route.CloudflareDNSProxied, route.CloudflareDNSStatus, route.IsPrimary).Scan(tunnelHTTPRouteScanDest(&route)...)
+		route.CloudflareDNSProxied, route.CloudflareDNSStatus, domainID, route.IsPrimary).Scan(tunnelHTTPRouteScanDest(&route)...)
 	if err != nil {
 		if isDuplicateRouteHostnameError(err) {
 			return TunnelHTTPRoute{}, fmt.Errorf("public hostname %s is already in use", hostname)
@@ -302,7 +310,7 @@ func (s *Service) DeleteTunnelHTTPRoute(vpsID, routeID int64) error {
 		}
 	}
 	if route.CloudflareDNSRecordID != "" {
-		if err := s.deleteCloudflareDNSRecord(ctx, route.CloudflareDNSRecordID); err != nil {
+		if err := s.deleteCloudflareDNSRecord(ctx, route.CloudflareDNSRecordID, route.PublicHostname); err != nil {
 			return fmt.Errorf("delete HTTP route DNS record: %w", err)
 		}
 	}
@@ -470,12 +478,18 @@ func (s *Service) validateTunnelHTTPRoute(name, hostname, targetURL, tlsMode str
 	if err := validateTunnelRouteHostname(hostname); err != nil {
 		return "", "", "", "", err
 	}
-	suffix := strings.Trim(strings.ToLower(strings.TrimSpace(s.tunnelConfig.HostnameSuffix)), ".")
-	if suffix == "" {
-		suffix = strings.Trim(strings.ToLower(strings.TrimSpace(s.tunnelConfig.CloudflareDNS.Domain)), ".")
-	}
-	if suffix != "" && hostname != suffix && !strings.HasSuffix(hostname, "."+suffix) {
-		return "", "", "", "", fmt.Errorf("public hostname must be within %s", suffix)
+	if s.managedDomains != nil {
+		if _, err := s.managedDomains.RuntimeForHostname(context.Background(), hostname); err != nil {
+			return "", "", "", "", errors.New("public hostname is not within an active managed domain")
+		}
+	} else {
+		suffix := strings.Trim(strings.ToLower(strings.TrimSpace(s.tunnelConfig.HostnameSuffix)), ".")
+		if suffix == "" {
+			suffix = strings.Trim(strings.ToLower(strings.TrimSpace(s.tunnelConfig.CloudflareDNS.Domain)), ".")
+		}
+		if suffix != "" && hostname != suffix && !strings.HasSuffix(hostname, "."+suffix) {
+			return "", "", "", "", fmt.Errorf("public hostname must be within %s", suffix)
+		}
 	}
 	target, err := url.Parse(strings.TrimSpace(targetURL))
 	if err != nil || target.Scheme == "" || target.Host == "" {
@@ -554,9 +568,9 @@ func (s *Service) upsertPrimaryTunnelHTTPRoute(ctx context.Context, attachment T
 			tunnel_attachment_id, http_route_id, name, public_hostname, target_url, tls_mode,
 			enabled, is_primary, cloudflare_dns_record_id, cloudflare_dns_record_type,
 			cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
-			status, last_error
+			status, last_error, managed_domain_id
 		)
-		VALUES ($1, $2, 'Primary web route', $3, $4, 'edge', TRUE, TRUE, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, 'Primary web route', $3, $4, 'edge', TRUE, TRUE, $5, $6, $7, $8, $9, $10, $11, (SELECT managed_domain_id FROM vps_tunnel_attachments WHERE id=$1))
 		ON CONFLICT (public_hostname) DO UPDATE SET
 			http_route_id = EXCLUDED.http_route_id,
 			target_url = EXCLUDED.target_url,
@@ -567,6 +581,7 @@ func (s *Service) upsertPrimaryTunnelHTTPRoute(ctx context.Context, attachment T
 			cloudflare_dns_status = EXCLUDED.cloudflare_dns_status,
 			status = EXCLUDED.status,
 			last_error = EXCLUDED.last_error,
+			managed_domain_id = EXCLUDED.managed_domain_id,
 			updated_at = NOW()
 		WHERE vps_tunnel_http_routes.tunnel_attachment_id = EXCLUDED.tunnel_attachment_id
 	`, attachment.ID, attachment.HTTPRouteID, attachment.PublicHostname, attachment.HTTPTargetURL,
@@ -580,6 +595,17 @@ func (s *Service) upsertPrimaryTunnelHTTPRoute(ctx context.Context, attachment T
 		return fmt.Errorf("public hostname %s is already assigned to another VPS tunnel", attachment.PublicHostname)
 	}
 	return nil
+}
+
+func (s *Service) managedDomainIDForHostname(ctx context.Context, hostname string) (int64, error) {
+	if s.managedDomains == nil {
+		return 0, nil
+	}
+	runtime, err := s.managedDomains.RuntimeForHostname(ctx, hostname)
+	if err != nil {
+		return 0, errors.New("public hostname is not within an active managed domain")
+	}
+	return runtime.ID, nil
 }
 
 func scanTunnelHTTPRoute(row interface{ Scan(...any) error }) (TunnelHTTPRoute, error) {

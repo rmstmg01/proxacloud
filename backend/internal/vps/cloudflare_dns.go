@@ -63,8 +63,12 @@ type cloudflareDNSListResponse struct {
 }
 
 func (s *Service) ensureCloudflareDNSRecord(ctx context.Context, attachment TunnelAttachment) (cloudflareDNSResult, error) {
-	if s.tunnelInfra != nil {
-		result, err := s.tunnelInfra.EnsureDNS(ctx, attachment.PublicHostname)
+	if s.tunnelInfra != nil || s.managedDomains != nil {
+		infra, err := s.tunnelInfrastructureForHostname(ctx, attachment.PublicHostname)
+		if err != nil {
+			return cloudflareDNSResult{}, err
+		}
+		result, err := infra.EnsureDNS(ctx, attachment.PublicHostname)
 		if err != nil {
 			return cloudflareDNSResult{}, err
 		}
@@ -114,7 +118,7 @@ func (s *Service) ensureCloudflareDNSRecord(ctx context.Context, attachment Tunn
 	}
 
 	if attachment.CloudflareDNSRecordID != "" {
-		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID); err != nil && !isCloudflareMissingRecordError(err.Error()) {
+		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID, attachment.PublicHostname); err != nil && !isCloudflareMissingRecordError(err.Error()) {
 			return cloudflareDNSResult{}, fmt.Errorf("delete old Cloudflare DNS record: %w", err)
 		}
 	}
@@ -133,7 +137,7 @@ func (s *Service) ensureCloudflareDNSRecord(ctx context.Context, attachment Tunn
 				Status:     "active",
 			}, nil
 		}
-		if err := s.deleteCloudflareDNSRecord(ctx, existing.ID); err != nil {
+		if err := s.deleteCloudflareDNSRecord(ctx, existing.ID, attachment.PublicHostname); err != nil {
 			return cloudflareDNSResult{}, fmt.Errorf("delete existing Cloudflare DNS record: %w", err)
 		}
 	}
@@ -270,7 +274,14 @@ func (s *Service) findCloudflareDNSRecord(ctx context.Context, fqdn, recordType 
 	}, nil
 }
 
-func (s *Service) deleteCloudflareDNSRecord(ctx context.Context, recordID string) error {
+func (s *Service) deleteCloudflareDNSRecord(ctx context.Context, recordID string, hostname ...string) error {
+	if (s.tunnelInfra != nil || s.managedDomains != nil) && len(hostname) > 0 {
+		infra, err := s.tunnelInfrastructureForHostname(ctx, hostname[0])
+		if err != nil {
+			return err
+		}
+		return infra.DeleteDNS(ctx, recordID)
+	}
 	if s.tunnelInfra != nil {
 		return s.tunnelInfra.DeleteDNS(ctx, recordID)
 	}

@@ -40,6 +40,7 @@ import { StoragePage } from './pages/StoragePage';
 import { BackupsPage } from './pages/BackupsPage';
 import { BillingPage } from './pages/BillingPage';
 import { ManagedHTTPEndpointsPage } from './pages/ManagedHTTPEndpointsPage';
+import { ManagedDomainsPage } from './pages/ManagedDomainsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -174,6 +175,10 @@ export function App() {
               }
             />
             <Route
+			  path="/managed-domains"
+			  element={<ProtectedRoute requiredRoles={['super_admin']}><ManagedDomainsPage /></ProtectedRoute>}
+			/>
+			<Route
               path="/cloudflare-tunnels"
               element={
                 <ProtectedRoute requiredRoles={['super_user', 'super_admin']}>

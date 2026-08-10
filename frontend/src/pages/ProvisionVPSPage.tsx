@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, KeyRound, Plus } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, Globe2, KeyRound, Plus } from 'lucide-react';
 import { createVPSInstance, discoverVPSCloudInitImagesForRegion } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getRegions } from '../api/regions';
 import { createCustomerSSHKey, getCustomerSSHKeys } from '../api/customerSshKeys';
+import { getAvailableManagedDomains } from '../api/managedDomains';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
@@ -92,6 +93,7 @@ export function ProvisionVPSPage() {
   const { data: networks } = useQuery({ queryKey: ['networks'], queryFn: getNetworks });
   const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
   const { data: sshKeys } = useQuery({ queryKey: ['customer-ssh-keys'], queryFn: getCustomerSSHKeys });
+  const { data: managedDomains = [] } = useQuery({ queryKey: ['managed-domains', 'available'], queryFn: getAvailableManagedDomains });
 
   const [sshModalOpen, setSSHModalOpen] = useState(false);
   const [showRootPassword, setShowRootPassword] = useState(false);
@@ -121,6 +123,9 @@ export function ProvisionVPSPage() {
     disk_gb: 20,
     root_password: '',
     apply: true,
+	create_tunnel: true,
+	tunnel_domain_id: 0,
+	tunnel_hostname_label: '',
   });
 
   const enabledRegions = useMemo(() => (regions ?? []).filter((region) => region.enabled && region.nodes.some((node) => node.enabled)), [regions]);
@@ -161,7 +166,15 @@ export function ProvisionVPSPage() {
     form.network_profile_id === 0 ||
     form.cloud_init_image_path.trim() === '' ||
     !hasCustomerAccess ||
-    passwordError !== '';
+    passwordError !== '' ||
+	(form.create_tunnel && form.tunnel_domain_id === 0);
+
+  const selectedTunnelDomain = useMemo(
+	() => managedDomains.find((domain) => domain.id === form.tunnel_domain_id),
+	[managedDomains, form.tunnel_domain_id],
+  );
+	const tunnelLabel = (form.tunnel_hostname_label || form.name || 'vps').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63);
+	const tunnelHostname = selectedTunnelDomain ? `${tunnelLabel || 'vps'}.${selectedTunnelDomain.base_domain}` : '';
 
   useEffect(() => {
     const defaultRegion = enabledRegions.find((region) => region.is_default) ?? enabledRegions[0];
@@ -169,6 +182,12 @@ export function ProvisionVPSPage() {
       setForm((prev) => ({ ...prev, region_id: defaultRegion.id }));
     }
   }, [enabledRegions, form.region_id]);
+
+	useEffect(() => {
+		if (!form.create_tunnel || form.tunnel_domain_id !== 0 || managedDomains.length === 0) return;
+		const preferred = managedDomains.find((domain) => domain.is_default) ?? managedDomains[0];
+		setForm((current) => ({ ...current, tunnel_domain_id: preferred.id }));
+	}, [form.create_tunnel, form.tunnel_domain_id, managedDomains]);
 
   useEffect(() => {
     if (!selectedRegion) {
@@ -344,6 +363,28 @@ export function ProvisionVPSPage() {
             </Select>
           </CardContent>
         </Card>
+
+		<Card>
+		  <CardHeader>
+			<CardTitle>Public access and tunnel</CardTitle>
+		  </CardHeader>
+		  <CardContent className="space-y-4">
+			<label className="flex items-start gap-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+			  <input type="checkbox" className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600" checked={form.create_tunnel} onChange={(event) => setField('create_tunnel', event.target.checked)} />
+			  <span><span className="block text-sm font-semibold text-slate-900">Create ProxaCloud tunnel</span><span className="mt-1 block text-xs text-slate-500">Publish HTTP access and prepare tunneled SSH access during deployment.</span></span>
+			</label>
+			{form.create_tunnel && <>
+			  {managedDomains.length === 0 ? <Alert variant="warning" title="No managed domains available">A super administrator must add and enable a managed tunnel domain before tunnel creation can be selected.</Alert> : <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+				<Select label="Public domain" value={form.tunnel_domain_id} onChange={(event) => setField('tunnel_domain_id', Number(event.target.value))} required>
+				  <option value={0}>-- Select domain --</option>
+				  {managedDomains.map((domain) => <option key={domain.id} value={domain.id}>{domain.name} — {domain.base_domain}{domain.is_default ? ' (default)' : ''}</option>)}
+				</Select>
+				<Input label="Hostname label" value={form.tunnel_hostname_label} onChange={(event) => setField('tunnel_hostname_label', event.target.value)} placeholder={form.name || 'web-01'} helperText="Leave empty to use the VPS name." />
+			  </div>}
+			  {tunnelHostname && <div className="flex items-center gap-3 rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3"><Globe2 className="h-5 w-5 text-indigo-600"/><div><p className="text-xs font-medium uppercase tracking-wide text-indigo-600">Public hostname</p><p className="text-sm font-semibold text-slate-900">{tunnelHostname}</p></div></div>}
+			</>}
+		  </CardContent>
+		</Card>
 
         <Card>
           <CardHeader>
@@ -550,6 +591,7 @@ export function ProvisionVPSPage() {
               ['Access', form.customer_ssh_key_id > 0 ? `root via SSH public key${form.root_password.trim() ? ' + password' : ''}` : 'root via password'],
               ['Resources', `${form.cpu} vCPU, ${form.memory_mb} MB RAM, ${form.disk_gb} GB disk`],
               ['IP assignment', form.ip_mode === 'manual' ? form.ip_address || 'Manual IP required' : form.ip_mode === 'dhcp' ? 'DHCP' : 'Auto assign from network'],
+			  ['Tunnel', form.create_tunnel ? tunnelHostname || 'Select a managed domain' : 'Disabled'],
             ].map(([label, value]) => (
               <div key={label} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs font-medium uppercase text-slate-500">{label}</p>

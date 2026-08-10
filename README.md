@@ -1,5 +1,31 @@
 # ProxaCloud
 
+## Multiple managed tunnel domains
+
+ProxaCloud tunnel DNS is no longer limited to one Cloudflare zone. After the
+database migrations are applied, a super administrator can open **Zero Trust →
+Managed Domains** and register `biknu.com`, `proxaops.com`, or another Cloudflare
+zone. Cloudflare API tokens are stored through the encrypted managed-secret
+store and are never returned by the API.
+
+When a VPS is created, **Public access and tunnel** provides three choices:
+
+- disable tunnel creation for that VPS;
+- select any active domain marked as available for VPS deployments;
+- enter a hostname label and preview the resulting fully qualified hostname.
+
+The legacy `CLOUDFLARE_DOMAIN`, `CLOUDFLARE_ZONE_ID`,
+`CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_DNS_TARGET` values bootstrap the first
+default managed-domain record when the registry is empty. They remain useful
+for the first deployment, but changing them later does not change registered
+domains. Add, rotate, disable, or select domains through the managed-domain
+registry instead.
+
+Each domain needs a Cloudflare API token with Zone Read and DNS Edit permissions
+for its own zone. Domains referenced by a VPS tunnel or HTTP route cannot be
+deleted, and their base domain, zone ID, and active status are protected while
+they are in use.
+
 ProxaCloud is a private-cloud control plane for Proxmox-based infrastructure. It provides one web portal and API for provisioning and operating VPS instances, LXC containers, Kubernetes clusters, MariaDB/Galera database clusters, networking, firewalls, backups, monitoring, billing records, Cloudflare tunnels, and reusable Kubernetes resource catalogs.
 
 The project is designed for private-cloud operators, small service providers, platform teams, labs, and homelab environments that own Proxmox capacity and want a higher-level self-service and operations layer.

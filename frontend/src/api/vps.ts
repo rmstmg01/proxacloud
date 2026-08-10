@@ -132,6 +132,9 @@ export const createVPSInstance = (body: {
   ssh_user: string;
   root_password?: string;
   apply: boolean;
+	create_tunnel: boolean;
+	tunnel_domain_id: number;
+	tunnel_hostname_label: string;
 }) => client.post<VPSCreateResponse>('/vps', body).then((r) => r.data);
 
 export const updateVPSInstance = (id: number, body: { name: string }) =>

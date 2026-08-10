@@ -41,6 +41,7 @@ type NavGroup = {
 };
 
 const adminRoles: Role[] = ['super_user', 'super_admin'];
+const superAdminRoles: Role[] = ['super_admin'];
 
 const navGroups: NavGroup[] = [
   {
@@ -72,6 +73,7 @@ const navGroups: NavGroup[] = [
     items: [
       { to: '/cloudflare-tunnels', icon: Cloud, label: 'Cloudflare Tunnels', roles: adminRoles },
       { to: '/proxacloud-tunnels', icon: Cloud, label: 'Proxacloud Tunnels', roles: adminRoles },
+	  { to: '/managed-domains', icon: Globe2, label: 'Managed Domains', roles: superAdminRoles },
     ],
   },
   {

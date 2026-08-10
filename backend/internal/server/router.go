@@ -23,6 +23,7 @@ import (
 	"proxacloud/backend/internal/db"
 	"proxacloud/backend/internal/firewalls"
 	"proxacloud/backend/internal/mailer"
+	"proxacloud/backend/internal/manageddomains"
 	"proxacloud/backend/internal/managedstorefront"
 	"proxacloud/backend/internal/monitoring"
 	"proxacloud/backend/internal/networks"
@@ -72,6 +73,15 @@ func NewApp() (*App, error) {
 	regionService := regions.NewService(database)
 	secretStore, err := secrets.NewDBStore(database, cfg.SecretEncryptionKey)
 	if err != nil {
+		_ = database.Close()
+		return nil, err
+	}
+	managedDomainService := manageddomains.New(database, secretStore)
+	if err := managedDomainService.EnsureLegacy(context.Background(), manageddomains.LegacyConfig{
+		Name: "Legacy default domain", BaseDomain: cfg.CloudflareDomain, ZoneID: cfg.CloudflareZoneID,
+		APIToken: cfg.CloudflareAPIToken, DNSTarget: cfg.CloudflareDNSTarget,
+		RecordType: cfg.CloudflareDNSRecordType, Proxied: cfg.CloudflareDNSProxied,
+	}); err != nil {
 		_ = database.Close()
 		return nil, err
 	}
@@ -193,6 +203,7 @@ func NewApp() (*App, error) {
 			Proxied:    cfg.CloudflareDNSProxied,
 		},
 	}, tunnelAPIClient, mailSender)
+	vpsService.SetManagedDomains(managedDomainService)
 	clusterService.SetTunnelInfrastructure(vpsService.TunnelInfrastructure(), cfg.ProxacloudTunnelPublicPortStart, cfg.ProxacloudTunnelPublicPortEnd)
 	managedStorefrontService := managedstorefront.New(
 		database,
@@ -205,6 +216,7 @@ func NewApp() (*App, error) {
 		vpsService.TunnelInfrastructure(),
 	)
 	managedStorefrontHandler := managedstorefront.NewHandler(managedStorefrontService)
+	managedDomainHandler := manageddomains.NewHandler(managedDomainService)
 	clusterService.SetMailer(mailSender)
 	databaseClusterService.SetMailer(mailSender)
 	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
@@ -377,6 +389,12 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Post("/database-clusters/{id}/stop", databaseClusterHandler.Stop)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/database-clusters/{id}/k8s-manifests", databaseClusterHandler.KubernetesManifest)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps", vpsHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/managed-domains/available", managedDomainHandler.ListAvailable)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Get("/managed-domains", managedDomainHandler.List)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/managed-domains", managedDomainHandler.Create)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/managed-domains/{id}", managedDomainHandler.Update)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Delete("/managed-domains/{id}", managedDomainHandler.Delete)
+			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/managed-domains/{id}/hostname-availability", managedDomainHandler.Availability)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).With(userService.RequireActiveCustomer()).Post("/vps", vpsHandler.Create)
 			protected.With(auth.RequireRoles(rbac.RoleNormalUser, rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/cloud-init-images", vpsHandler.ListImages)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/vps/assignment-options", vpsHandler.ListAssignmentOptions)

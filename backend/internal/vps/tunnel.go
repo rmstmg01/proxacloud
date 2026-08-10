@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"proxacloud/backend/internal/manageddomains"
 	"proxacloud/backend/internal/proxacloudtunnelapi"
 	"proxacloud/backend/internal/tunnelinfra"
 )
@@ -141,6 +142,8 @@ func (s *Service) SetTunnelIntegration(cfg TunnelConfig, client tunnelAPI, maile
 	}, client)
 }
 
+func (s *Service) SetManagedDomains(service *manageddomains.Service) { s.managedDomains = service }
+
 func (s *Service) TunnelInfrastructure() *tunnelinfra.Service { return s.tunnelInfra }
 
 func (s *Service) configureTunnelForCreate(ctx context.Context, vpsID int64, req CreateRequest, sshUser string) (string, *TunnelAttachment, error) {
@@ -234,7 +237,7 @@ func (s *Service) tunnelConfigured() bool {
 }
 
 func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req CreateRequest, sshUser string) (TunnelAttachment, error) {
-	hostname, err := s.hostnameForVPS(req.Name)
+	hostname, domainID, hostnameLabel, err := s.hostnameForVPS(ctx, req)
 	if err != nil {
 		return TunnelAttachment{}, err
 	}
@@ -247,9 +250,9 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO vps_tunnel_attachments (
 			vps_id, customer_account_id, public_hostname, public_port, http_target_url,
-			tcp_target_host, tcp_target_port, ssh_user, status
+			tcp_target_host, tcp_target_port, ssh_user, status, managed_domain_id, hostname_label
 		)
-		VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, 'pending')
+		VALUES ($1, NULLIF($2, 0), $3, $4, $5, $6, $7, $8, 'pending', NULLIF($9, 0), $10)
 		ON CONFLICT (vps_id) DO UPDATE SET
 			customer_account_id = EXCLUDED.customer_account_id,
 			public_hostname = EXCLUDED.public_hostname,
@@ -258,6 +261,8 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 			tcp_target_host = EXCLUDED.tcp_target_host,
 			tcp_target_port = EXCLUDED.tcp_target_port,
 			ssh_user = EXCLUDED.ssh_user,
+			managed_domain_id = EXCLUDED.managed_domain_id,
+			hostname_label = EXCLUDED.hostname_label,
 			status = 'pending',
 			last_error = '',
 			updated_at = NOW()
@@ -266,7 +271,7 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 		          install_command_redacted, cloudflare_dns_record_id, cloudflare_dns_record_type,
 		          cloudflare_dns_record_content, cloudflare_dns_proxied, cloudflare_dns_status,
 		          status, last_error, emailed_at, created_at, updated_at
-	`, vpsID, req.CustomerAccountID, hostname, port, s.tunnelConfig.HTTPTargetURL, s.tunnelConfig.SSHHost, s.tunnelConfig.SSHPort, sshUser).Scan(
+	`, vpsID, req.CustomerAccountID, hostname, port, s.tunnelConfig.HTTPTargetURL, s.tunnelConfig.SSHHost, s.tunnelConfig.SSHPort, sshUser, domainID, hostnameLabel).Scan(
 		&out.ID, &out.VPSID, &out.CustomerAccountID, &out.TunnelID, &out.HTTPRouteID, &out.TCPRouteID, &out.TokenID,
 		&out.PublicHostname, &out.PublicPort, &out.HTTPTargetURL, &out.TCPTargetHost, &out.TCPTargetPort, &out.SSHUser,
 		&out.InstallCommandRedacted, &out.CloudflareDNSRecordID, &out.CloudflareDNSRecordType,
@@ -281,14 +286,18 @@ func (s *Service) reserveTunnelAttachment(ctx context.Context, vpsID int64, req 
 }
 
 func (s *Service) provisionTunnelAttachment(ctx context.Context, attachment TunnelAttachment, vpsName string) (string, TunnelAttachment, error) {
-	if s.tunnelInfra == nil {
+	infra, err := s.tunnelInfrastructureForHostname(ctx, attachment.PublicHostname)
+	if err != nil {
+		return "", TunnelAttachment{}, err
+	}
+	if infra == nil {
 		return "", TunnelAttachment{}, errors.New("shared tunnel infrastructure service is not configured")
 	}
 	ports, err := s.candidateTunnelPorts(ctx, attachment.PublicPort)
 	if err != nil {
 		return "", TunnelAttachment{}, err
 	}
-	provisioned, err := s.tunnelInfra.Provision(ctx, tunnelinfra.ProvisionRequest{
+	provisioned, err := infra.Provision(ctx, tunnelinfra.ProvisionRequest{
 		Name: fmt.Sprintf("VPS %s", vpsName), Slug: "vps-" + sanitizeName(vpsName),
 		Description: fmt.Sprintf("Managed VPS tunnel for %s", vpsName),
 		Hostname:    attachment.PublicHostname, PublicPorts: ports,
@@ -352,21 +361,22 @@ func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment Tunnel
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT cloudflare_dns_record_id
+		SELECT cloudflare_dns_record_id, public_hostname
 		FROM vps_tunnel_http_routes
 		WHERE tunnel_attachment_id = $1 AND cloudflare_dns_record_id <> ''
 	`, attachment.ID)
 	if err != nil {
 		return fmt.Errorf("list HTTP route DNS records: %w", err)
 	}
-	routeDNSRecordIDs := make([]string, 0)
+	type dnsRecordRef struct{ id, hostname string }
+	routeDNSRecords := make([]dnsRecordRef, 0)
 	for rows.Next() {
-		var recordID string
-		if err := rows.Scan(&recordID); err != nil {
+		var record dnsRecordRef
+		if err := rows.Scan(&record.id, &record.hostname); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan HTTP route DNS record: %w", err)
 		}
-		routeDNSRecordIDs = append(routeDNSRecordIDs, recordID)
+		routeDNSRecords = append(routeDNSRecords, record)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -375,17 +385,17 @@ func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment Tunnel
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close HTTP route DNS records: %w", err)
 	}
-	for _, recordID := range routeDNSRecordIDs {
-		if recordID == attachment.CloudflareDNSRecordID {
+	for _, record := range routeDNSRecords {
+		if record.id == attachment.CloudflareDNSRecordID {
 			continue
 		}
-		if err := s.deleteCloudflareDNSRecord(ctx, recordID); err != nil {
+		if err := s.deleteCloudflareDNSRecord(ctx, record.id, record.hostname); err != nil {
 			return fmt.Errorf("delete HTTP route Cloudflare DNS record: %w", err)
 		}
 	}
 
 	if strings.TrimSpace(attachment.CloudflareDNSRecordID) != "" {
-		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID); err != nil {
+		if err := s.deleteCloudflareDNSRecord(ctx, attachment.CloudflareDNSRecordID, attachment.PublicHostname); err != nil {
 			return fmt.Errorf("delete Cloudflare DNS record: %w", err)
 		}
 		_ = s.insertEvent(attachment.VPSID, "tunnel-cleanup", "success", "Cloudflare DNS record deleted", attachment.CloudflareDNSSummary())
@@ -599,22 +609,47 @@ func (s *Service) candidateTunnelPorts(ctx context.Context, preferred int) ([]in
 	return ports, nil
 }
 
-func (s *Service) hostnameForVPS(name string) (string, error) {
-	base := sanitizeName(name)
+func (s *Service) hostnameForVPS(ctx context.Context, req CreateRequest) (string, int64, string, error) {
+	base := sanitizeName(req.TunnelHostnameLabel)
+	if base == "" {
+		base = sanitizeName(req.Name)
+	}
 	if base == "" {
 		base = "vps"
 	}
+	if s.managedDomains != nil {
+		runtime, err := s.managedDomains.RuntimeByID(ctx, req.TunnelDomainID)
+		if err != nil {
+			return "", 0, "", err
+		}
+		hostname, err := manageddomains.BuildHostname(base, runtime)
+		return hostname, runtime.ID, base, err
+	}
 	if s.tunnelInfra != nil {
-		return s.tunnelInfra.Hostname(base)
+		hostname, err := s.tunnelInfra.Hostname(base)
+		return hostname, 0, base, err
 	}
 	if suffix := strings.TrimSpace(s.tunnelConfig.HostnameSuffix); suffix != "" {
 		suffix = strings.TrimPrefix(suffix, ".")
-		return base + "." + suffix, nil
+		return base + "." + suffix, 0, base, nil
 	}
 	if host := strings.TrimSpace(s.tunnelConfig.PublicHostname); host != "" {
-		return strings.ToLower(host), nil
+		return strings.ToLower(host), 0, base, nil
 	}
-	return "", errors.New("set PROXACLOUD_TUNNEL_HOSTNAME_SUFFIX or PROXACLOUD_TUNNEL_PUBLIC_HOSTNAME")
+	return "", 0, "", errors.New("select a managed tunnel domain or configure a legacy hostname suffix")
+}
+
+func (s *Service) tunnelInfrastructureForHostname(ctx context.Context, hostname string) (*tunnelinfra.Service, error) {
+	if s.managedDomains == nil {
+		return s.tunnelInfra, nil
+	}
+	runtime, err := s.managedDomains.RuntimeForHostname(ctx, hostname)
+	if err != nil {
+		return nil, err
+	}
+	cfg := tunnelinfra.Config{Enabled: true, APIURL: s.tunnelConfig.APIURL, GatewayURL: s.tunnelConfig.GatewayURL, HostnameSuffix: runtime.BaseDomain, AgentBinaryURL: s.tunnelConfig.AgentBinaryURL,
+		Cloudflare: tunnelinfra.CloudflareConfig{Enabled: true, APIToken: runtime.CloudflareAPIToken, ZoneID: runtime.CloudflareZoneID, Domain: runtime.BaseDomain, Target: runtime.DNSTarget, RecordType: runtime.DNSRecordType, Proxied: runtime.DNSProxied}}
+	return tunnelinfra.New(cfg, s.tunnelClient), nil
 }
 
 func (s *Service) agentInstallCommand(tunnelID, token string) string {
