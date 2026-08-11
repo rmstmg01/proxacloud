@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"proxacloud/backend/internal/manageddomains"
 	"proxacloud/backend/internal/proxacloudtunnelapi"
 	"proxacloud/backend/internal/tunnelinfra"
 )
@@ -42,10 +43,11 @@ type dnsAPI interface {
 }
 
 type Service struct {
-	db     *sql.DB
-	cfg    Config
-	tunnel tunnelAPI
-	dns    dnsAPI
+	db      *sql.DB
+	cfg     Config
+	tunnel  tunnelAPI
+	dns     dnsAPI
+	domains *manageddomains.Service
 }
 
 type Endpoint struct {
@@ -74,10 +76,18 @@ func New(db *sql.DB, cfg Config, tunnel tunnelAPI, dns dnsAPI) *Service {
 	return &Service{db: db, cfg: cfg, tunnel: tunnel, dns: dns}
 }
 
+// SetManagedDomains enables domain-aware DNS provisioning. The legacy DNS
+// service remains available as a fallback for existing single-domain installs.
+func (s *Service) SetManagedDomains(domains *manageddomains.Service) {
+	if s != nil {
+		s.domains = domains
+	}
+}
+
 func (s *Service) Enabled() bool {
 	return s != nil && s.cfg.Enabled && s.db != nil && s.tunnel != nil &&
-		s.tunnel.Enabled() && s.dns != nil && s.cfg.APIToken != "" &&
-		s.cfg.BaseDomain != "" && s.cfg.TunnelID != "" && s.cfg.TargetURL != ""
+		s.tunnel.Enabled() && (s.domains != nil || s.dns != nil) && s.cfg.APIToken != "" &&
+		(s.domains != nil || s.cfg.BaseDomain != "") && s.cfg.TunnelID != "" && s.cfg.TargetURL != ""
 }
 
 func (s *Service) Authorize(token string) bool {
@@ -97,7 +107,7 @@ func (s *Service) Ensure(ctx context.Context, externalID, hostname string) (Endp
 	if externalID == "" || len(externalID) > 128 {
 		return Endpoint{}, errors.New("publication id is required and cannot exceed 128 characters")
 	}
-	hostname, err := s.validateHostname(hostname)
+	hostname, dns, err := s.resolveHostnameAndDNS(ctx, hostname)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -144,7 +154,7 @@ func (s *Service) Ensure(ctx context.Context, externalID, hostname string) (Endp
 		return fail(fmt.Errorf("reconcile tunnel route: %w", err))
 	}
 
-	dnsResult, err := s.dns.EnsureDNS(ctx, hostname)
+	dnsResult, err := dns.EnsureDNS(ctx, hostname)
 	if err != nil {
 		return fail(fmt.Errorf("reconcile DNS record: %w", err))
 	}
@@ -230,7 +240,11 @@ func (s *Service) Disable(ctx context.Context, externalID string) error {
 		}
 	}
 	if endpoint.DNSRecordID != "" {
-		if err := s.dns.DeleteDNS(ctx, endpoint.DNSRecordID); err != nil {
+		_, dns, resolveErr := s.resolveHostnameAndDNS(ctx, endpoint.Hostname)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve storefront DNS configuration: %w", resolveErr)
+		}
+		if err := dns.DeleteDNS(ctx, endpoint.DNSRecordID); err != nil {
 			return fmt.Errorf("delete DNS record: %w", err)
 		}
 	}
@@ -266,16 +280,63 @@ func (s *Service) reserve(ctx context.Context, externalID, hostname string) (End
 }
 
 func (s *Service) validateHostname(hostname string) (string, error) {
+	return validateHostnameForBase(hostname, s.cfg.BaseDomain)
+}
+
+func validateHostnameForBase(hostname, baseDomain string) (string, error) {
 	hostname = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
-	suffix := "." + s.cfg.BaseDomain
+	baseDomain = strings.Trim(strings.ToLower(strings.TrimSpace(baseDomain)), ".")
+	suffix := "." + baseDomain
 	if !strings.HasSuffix(hostname, suffix) {
-		return "", fmt.Errorf("hostname must be within %s", s.cfg.BaseDomain)
+		return "", fmt.Errorf("hostname must be within %s", baseDomain)
 	}
 	label := strings.TrimSuffix(hostname, suffix)
 	if !labelPattern.MatchString(label) {
 		return "", errors.New("hostname must contain exactly one valid label before the storefront base domain")
 	}
 	return hostname, nil
+}
+
+func (s *Service) resolveHostnameAndDNS(ctx context.Context, hostname string) (string, dnsAPI, error) {
+	hostname = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	if s.domains != nil {
+		runtime, err := s.domains.RuntimeForHostname(ctx, hostname)
+		if err == nil {
+			validated, validateErr := validateHostnameForBase(hostname, runtime.BaseDomain)
+			if validateErr != nil {
+				return "", nil, validateErr
+			}
+			label := strings.TrimSuffix(validated, "."+runtime.BaseDomain)
+			if _, buildErr := manageddomains.BuildHostname(label, runtime); buildErr != nil {
+				return "", nil, buildErr
+			}
+			dns := tunnelinfra.New(tunnelinfra.Config{
+				Enabled:        true,
+				HostnameSuffix: runtime.BaseDomain,
+				Cloudflare: tunnelinfra.CloudflareConfig{
+					Enabled:    true,
+					APIToken:   runtime.CloudflareAPIToken,
+					ZoneID:     runtime.CloudflareZoneID,
+					Domain:     runtime.BaseDomain,
+					Target:     runtime.DNSTarget,
+					RecordType: runtime.DNSRecordType,
+					Proxied:    runtime.DNSProxied,
+				},
+			}, nil)
+			return validated, dns, nil
+		}
+		if !errors.Is(err, manageddomains.ErrNotFound) {
+			return "", nil, fmt.Errorf("resolve managed storefront domain: %w", err)
+		}
+	}
+	if s.dns == nil || s.cfg.BaseDomain == "" {
+		return "", nil, errors.New("hostname is not within an active managed domain")
+	}
+	validated, err := s.validateHostname(hostname)
+	if err != nil {
+		return "", nil, err
+	}
+	return validated, s.dns, nil
 }
 
 func validateTargetURL(raw string) error {

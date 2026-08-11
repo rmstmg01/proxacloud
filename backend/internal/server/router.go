@@ -215,6 +215,7 @@ func NewApp() (*App, error) {
 		tunnelAPIClient,
 		vpsService.TunnelInfrastructure(),
 	)
+	managedStorefrontService.SetManagedDomains(managedDomainService)
 	managedStorefrontHandler := managedstorefront.NewHandler(managedStorefrontService)
 	managedDomainHandler := manageddomains.NewHandler(managedDomainService)
 	clusterService.SetMailer(mailSender)

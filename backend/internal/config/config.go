@@ -121,7 +121,7 @@ func Load() Config {
 		CloudflareDNSProxied:            getenvBool("CLOUDFLARE_DNS_PROXIED", false),
 		ManagedStorefrontEnabled:        getenvBool("MANAGED_STOREFRONT_ENABLED", false),
 		ManagedStorefrontAPIToken:       getenv("MANAGED_STOREFRONT_API_TOKEN", ""),
-		ManagedStorefrontBaseDomain:     getenv("MANAGED_STOREFRONT_BASE_DOMAIN", "store.proxaops.com"),
+		ManagedStorefrontBaseDomain:     getenv("MANAGED_STOREFRONT_BASE_DOMAIN", ""),
 		ManagedStorefrontTunnelID:       getenv("MANAGED_STOREFRONT_TUNNEL_ID", ""),
 		ManagedStorefrontTargetURL:      getenv("MANAGED_STOREFRONT_TARGET_URL", "http://127.0.0.1:3000"),
 		DefaultNetworkName:              getenv("DEFAULT_NETWORK_NAME", "homelab-default"),
