@@ -14,7 +14,6 @@ export function ResetPasswordPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [message, setMessage] = useState('');
-  const [resetURL, setResetURL] = useState('');
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -22,13 +21,11 @@ export function ResetPasswordPage() {
     event.preventDefault();
     setError(null);
     setMessage('');
-    setResetURL('');
     setLoading(true);
     try {
       if (!token) {
         const res = await requestPasswordReset(email);
         setMessage(res.message);
-        setResetURL(res.reset_url ?? '');
         return;
       }
       if (password !== confirmPassword) {
@@ -60,13 +57,6 @@ export function ResetPasswordPage() {
             {message && (
               <Alert variant="success">
                 <span>{message}</span>
-              </Alert>
-            )}
-            {resetURL && (
-              <Alert variant="info">
-                <a className="break-words text-indigo-700 hover:text-indigo-800" href={resetURL}>
-                  {resetURL}
-                </a>
               </Alert>
             )}
             {!token ? (

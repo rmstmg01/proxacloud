@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/png"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/mailer"
 	"proxacloud/backend/internal/rbac"
 )
 
@@ -282,7 +284,9 @@ func (h *Handler) send2FAEmail(user User, code, purpose string) {
 		name = user.Username
 	}
 	body := fmt.Sprintf("Hello %s,\n\nYour ProxaCloud verification code is: %s\n\nThis code expires in 10 minutes.\n\nIf this was not you, please secure your account immediately.", name, code)
-	_ = h.mailer.Send(user.Email, subject, body)
+	if err := mailer.SendExpiring(h.mailer, user.Email, subject, body, time.Now().Add(9*time.Minute)); err != nil {
+		log.Printf("two-factor email enqueue failed user_id=%d", user.ID)
+	}
 }
 
 func (h *Handler) beginLoginTwoFactor(w http.ResponseWriter, r *http.Request, user User) (bool, error) {

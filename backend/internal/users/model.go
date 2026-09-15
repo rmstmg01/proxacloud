@@ -139,12 +139,12 @@ func (s *Service) CreateUser(username, password string, role rbac.Role, profile 
 
 type RegistrationResult struct {
 	User            User   `json:"user"`
-	VerificationURL string `json:"verification_url,omitempty"`
+	VerificationURL string `json:"-"`
 }
 
 type PasswordResetRequestResult struct {
 	Email    string
-	ResetURL string
+	ResetURL string `json:"-"`
 }
 
 func (s *Service) RegisterClient(username, password string, profile ProfileInput, publicAppURL string) (RegistrationResult, error) {
@@ -236,12 +236,11 @@ func (s *Service) VerifyEmail(token string) (User, error) {
 
 	var userID int64
 	err = tx.QueryRow(
-		`SELECT user_id
-		   FROM email_verification_tokens
-		  WHERE token_hash = $1
-		    AND used_at IS NULL
-		    AND expires_at > NOW()
-		  FOR UPDATE`,
+		`SELECT u.id
+		   FROM email_verification_tokens t JOIN users u ON u.id=t.user_id
+		  WHERE t.token_hash = $1 AND t.used_at IS NULL AND t.expires_at > NOW()
+		    AND u.email_verified_at IS NULL AND u.status='email_pending'
+		  FOR UPDATE OF u`,
 		tokenHash,
 	).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -251,7 +250,7 @@ func (s *Service) VerifyEmail(token string) (User, error) {
 		return User{}, fmt.Errorf("load verification token: %w", err)
 	}
 
-	if _, err := tx.Exec(`UPDATE email_verification_tokens SET used_at = NOW() WHERE token_hash = $1`, tokenHash); err != nil {
+	if _, err := tx.Exec(`UPDATE email_verification_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, userID); err != nil {
 		return User{}, fmt.Errorf("mark verification token used: %w", err)
 	}
 	if _, err := tx.Exec(`UPDATE users SET status = $2, email_verified_at = NOW() WHERE id = $1`, userID, string(StatusPendingApproval)); err != nil {

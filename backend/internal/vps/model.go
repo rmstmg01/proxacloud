@@ -419,6 +419,7 @@ func (s *Service) Update(id int64, req UpdateRequest, scopes ...tenant.Scope) (I
 	if affected == 0 {
 		return Instance{}, ErrVPSNotFound
 	}
+	_ = s.insertEvent(id, "settings-update", "success", "VPS name updated", "")
 	return s.Get(id, scope)
 }
 
@@ -874,10 +875,6 @@ func (s *Service) Deploy(id int64) (ActionResponse, error) {
 	_ = s.updateStatus(id, "running")
 	_ = s.insertEvent(id, "terraform-apply", "success", "VPS deployed successfully", result.Output)
 	warnings := []string{}
-	if err := s.EmailTunnelDetails(id); err != nil {
-		warnings = append(warnings, err.Error())
-		_ = s.insertEvent(id, "tunnel-email", "error", "VPS tunnel access email failed", err.Error())
-	}
 	return ActionResponse{VPSID: id, Action: "deploy", Status: "running", Output: result.Output, Warnings: warnings}, nil
 }
 
@@ -1064,6 +1061,7 @@ func (s *Service) Delete(id int64, confirmationName string) error {
 	if _, err := s.db.Exec(`DELETE FROM vps_instances WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("delete vps: %w", err)
 	}
+	s.notifyVPSOwner(rec.CustomerAccountID, rec.ID, rec.Name, "Your VPS has been deleted.")
 	if strings.TrimSpace(rec.TerraformWorkDir) != "" {
 		_ = os.RemoveAll(rec.TerraformWorkDir)
 	}
@@ -1807,6 +1805,12 @@ func (s *Service) Assign(id int64, targetCustomerAccountID int64, actorUsername,
 	if err := tx.Commit(); err != nil {
 		return Instance{}, err
 	}
+	if currentAccountID != targetCustomerAccountID {
+		if rec, err := s.Get(id); err == nil {
+			s.notifyVPSOwner(currentAccountID, id, rec.Name, "An administrator removed this VPS from your account.")
+			s.notifyVPSOwner(targetCustomerAccountID, id, rec.Name, "An administrator assigned this VPS to your account.")
+		}
+	}
 	return s.Get(id)
 }
 
@@ -1862,11 +1866,21 @@ func (s *Service) UnsuspendAdministratively(id int64, actorUsername, actorRole s
 
 func (s *Service) insertActorEvent(id int64, action, level, message, output string, actorID int64, actorUsername, actorRole string) error {
 	_, err := s.db.Exec(`INSERT INTO vps_events (vps_id, action, level, message, output, actor_user_id, actor_username, actor_role) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, action, level, message, output, actorID, actorUsername, actorRole)
+	if action == "admin-suspended" || action == "admin-unsuspended" || action == "admin-suspend-shutdown" {
+		summary := message
+		if action == "admin-suspended" {
+			summary += "\nReason: " + output
+		}
+		s.notifyVPSEvent(id, summary)
+	}
 	return err
 }
 
 func (s *Service) insertEvent(id int64, action, level, message, output string) error {
 	_, err := s.db.Exec(`INSERT INTO vps_events (vps_id, action, level, message, output) VALUES ($1, $2, $3, $4, $5)`, id, action, level, message, output)
+	if customerEvent(action, level) {
+		s.notifyVPSEvent(id, message)
+	}
 	return err
 }
 

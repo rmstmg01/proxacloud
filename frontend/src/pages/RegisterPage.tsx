@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { Cloud } from 'lucide-react';
-import { register } from '../api/auth';
+import { register, resendVerification } from '../api/auth';
 import { Input } from '../components/ui/Input';
 import { Button } from '../components/ui/Button';
 import { Alert, ErrorMessage } from '../components/ui/Alert';
@@ -18,7 +18,18 @@ export function RegisterPage() {
   const [form, setForm] = useState(emptyForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [result, setResult] = useState<{ message: string; verification_url?: string } | null>(null);
+  const [result, setResult] = useState<{ message: string } | null>(null);
+  const [resendEmail, setResendEmail] = useState('');
+  const [resendMessage, setResendMessage] = useState('');
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<unknown>(null);
+
+  const handleResend = async (event: FormEvent) => {
+    event.preventDefault(); setResending(true); setResendError(null); setResendMessage('');
+    try { setResendMessage((await resendVerification(resendEmail)).message); }
+    catch (err) { setResendError(err); }
+    finally { setResending(false); }
+  };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -26,7 +37,8 @@ export function RegisterPage() {
     setLoading(true);
     try {
       const response = await register(form);
-      setResult({ message: response.message, verification_url: response.verification_url });
+      setResult({ message: response.message });
+      setResendEmail(form.email);
       setForm(emptyForm);
     } catch (err) {
       setError(err);
@@ -52,11 +64,6 @@ export function RegisterPage() {
               <Alert variant="success" title="Registration submitted">
                 {result.message}
               </Alert>
-              {result.verification_url && (
-                <Alert variant="info" title="Development verification link">
-                  <a className="break-all font-medium underline" href={result.verification_url}>{result.verification_url}</a>
-                </Alert>
-              )}
               <Link className="block text-center text-sm font-medium text-indigo-600 hover:text-indigo-700" to="/login">
                 Back to sign in
               </Link>
@@ -75,6 +82,13 @@ export function RegisterPage() {
               </Link>
             </form>
           )}
+          <form onSubmit={handleResend} className="mt-6 space-y-3 border-t pt-4">
+            <p className="text-sm text-slate-600">Waiting for a verification email? Request a new link.</p>
+            <Input label="Verification email" type="email" value={resendEmail} onChange={(e) => setResendEmail(e.target.value)} required />
+            <Button type="submit" variant="secondary" loading={resending}>Resend verification email</Button>
+            {resendMessage && <Alert variant="info">{resendMessage}</Alert>}
+            {resendError ? <ErrorMessage error={resendError} /> : null}
+          </form>
         </div>
       </div>
     </div>

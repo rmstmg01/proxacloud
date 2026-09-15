@@ -35,13 +35,16 @@ export const register = (body: {
   contact_number: string;
   password: string;
 }) =>
-  client.post<{ user: User; message: string; verification_url?: string }>('/auth/register', body).then((r) => r.data);
+  client.post<{ user: User; message: string }>('/auth/register', body).then((r) => r.data);
+
+export const resendVerification = (email: string) =>
+  client.post<{ message: string }>('/auth/verify-email/resend', { email }).then((r) => r.data);
 
 export const verifyEmail = (token: string) =>
   client.post<{ user: User; message: string }>('/auth/verify-email', { token }).then((r) => r.data);
 
 export const requestPasswordReset = (email: string) =>
-  client.post<{ message: string; reset_url?: string }>('/auth/password-reset/request', { email }).then((r) => r.data);
+  client.post<{ message: string }>('/auth/password-reset/request', { email }).then((r) => r.data);
 
 export const resetPassword = (token: string, new_password: string) =>
   client.post<{ message: string }>('/auth/password-reset/confirm', { token, new_password }).then((r) => r.data);

@@ -13,6 +13,7 @@ func main() {
 		log.Fatalf("failed to initialize app: %v", err)
 	}
 	defer app.DB.Close()
+	defer app.StopEmail()
 
 	log.Printf("api listening on %s", app.Config.Address)
 	if err := http.ListenAndServe(app.Config.Address, app.Router); err != nil {

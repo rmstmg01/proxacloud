@@ -443,7 +443,7 @@ func (s *Service) cleanupTunnelAttachment(ctx context.Context, attachment Tunnel
 
 func (s *Service) EmailTunnelDetails(vpsID int64) error {
 	if s.mailer == nil {
-		return nil
+		return errors.New("email delivery is not configured")
 	}
 	attachment, err := s.GetTunnelAttachment(vpsID)
 	if err != nil {
@@ -465,32 +465,15 @@ func (s *Service) EmailTunnelDetails(vpsID int64) error {
 
 	subject := "Your ProxaCloud VPS access details"
 
-	// Try to load the stored root password for the VPS (if any)
-	password := ""
-	if ref, _ := s.rootPasswordSecretRef(vpsID); strings.TrimSpace(ref) != "" && s.secrets != nil {
-		if val, err := s.secrets.Get(context.Background(), ref); err == nil {
-			password = strings.TrimSpace(string(val))
-		}
-	}
-	passwordDisplay := password
-	passwordNotice := "Please change this password immediately after your first login."
-	if passwordDisplay == "" {
-		passwordDisplay = "Not stored (SSH key authentication only)"
-		passwordNotice = "If you enable password login later, change the initial password immediately."
-	}
-
-	body := fmt.Sprintf("Hello %s,\n\n== ProxaOps Cloud VPS Access ==\n\nYour VPS is ready to access through Proxacloud Tunnel.\n\nLogin details\nHostname: %s\nSSH User: root\nPassword: %s\nSSH Port: %d\n\n%s\n\n--\nProxaOps Cloud\n",
+	body := fmt.Sprintf("Hello %s,\n\nYour ProxaCloud VPS tunnel access is configured.\n\nHostname: %s\nSSH Port: %d\n\nSign in to your dashboard to view access details. Passwords are not sent by email.\n",
 		name,
 		attachment.PublicHostname,
-		passwordDisplay,
 		attachment.PublicPort,
-		passwordNotice,
 	)
 	if err := s.mailer.Send(email, subject, body); err != nil {
 		return fmt.Errorf("send vps tunnel access email: %w", err)
 	}
-	_, _ = s.db.Exec(`UPDATE vps_tunnel_attachments SET status = 'emailed', emailed_at = NOW(), updated_at = NOW() WHERE id = $1`, attachment.ID)
-	_ = s.insertEvent(vpsID, "tunnel-email", "success", "VPS tunnel access details emailed", email)
+	_ = s.insertEvent(vpsID, "tunnel-email", "info", "VPS access email queued", "")
 	return nil
 }
 

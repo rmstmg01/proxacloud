@@ -42,9 +42,10 @@ import (
 )
 
 type App struct {
-	Config config.Config
-	Router http.Handler
-	DB     *sql.DB
+	Config    config.Config
+	Router    http.Handler
+	DB        *sql.DB
+	StopEmail func()
 }
 
 func NewApp() (*App, error) {
@@ -177,6 +178,7 @@ func NewApp() (*App, error) {
 		Password: cfg.SMTPPassword,
 		From:     cfg.SMTPFrom,
 	})
+	emailQueue := mailer.NewQueue(database, secretStore, mailSender)
 	tunnelAPIClient := proxacloudtunnelapi.New(proxacloudtunnelapi.Config{
 		BaseURL:  cfg.ProxacloudTunnelAPIURL,
 		APIToken: cfg.ProxacloudTunnelAPIToken,
@@ -202,7 +204,7 @@ func NewApp() (*App, error) {
 			RecordType: cfg.CloudflareDNSRecordType,
 			Proxied:    cfg.CloudflareDNSProxied,
 		},
-	}, tunnelAPIClient, mailSender)
+	}, tunnelAPIClient, emailQueue)
 	vpsService.SetManagedDomains(managedDomainService)
 	clusterService.SetTunnelInfrastructure(vpsService.TunnelInfrastructure(), cfg.ProxacloudTunnelPublicPortStart, cfg.ProxacloudTunnelPublicPortEnd)
 	managedStorefrontService := managedstorefront.New(
@@ -220,7 +222,7 @@ func NewApp() (*App, error) {
 	managedDomainHandler := manageddomains.NewHandler(managedDomainService)
 	clusterService.SetMailer(mailSender)
 	databaseClusterService.SetMailer(mailSender)
-	userHandler := users.NewHandler(userService, tokens, mailSender, cfg.PublicAppURL)
+	userHandler := users.NewHandler(userService, tokens, emailQueue, cfg.PublicAppURL)
 	networkHandler := networks.NewHandler(networkService)
 	regionHandler := regions.NewHandler(regionService)
 	proxmoxHandler := proxmox.NewHandler(proxmoxService)
@@ -276,6 +278,7 @@ func NewApp() (*App, error) {
 		api.Post("/auth/login", userHandler.Login)
 		api.Post("/auth/login/2fa/verify", userHandler.Login2FAVerify)
 		api.Post("/auth/login/2fa/send-email-code", userHandler.Login2FAResendEmailCode)
+		api.Post("/auth/verify-email/resend", userHandler.ResendVerification)
 		api.Post("/auth/register", userHandler.Register)
 		api.Get("/auth/verify-email", userHandler.VerifyEmail)
 		api.Post("/auth/verify-email", userHandler.VerifyEmail)
@@ -572,5 +575,7 @@ func NewApp() (*App, error) {
 		})
 	})
 
-	return &App{Config: cfg, Router: r, DB: database}, nil
+	emailCtx, stopEmail := context.WithCancel(context.Background())
+	go emailQueue.Run(emailCtx)
+	return &App{Config: cfg, Router: r, DB: database, StopEmail: stopEmail}, nil
 }

@@ -3,9 +3,12 @@ package users
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -63,6 +66,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+	if h.mailer == nil || !h.mailer.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Registration email is temporarily unavailable. Please try again later."})
+		return
+	}
 	var req struct {
 		Username      string `json:"username"`
 		FullName      string `json:"full_name"`
@@ -91,15 +98,14 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body := "Welcome to ProxaCloud.\n\nVerify your email address using this link:\n\n" + result.VerificationURL + "\n\nAfter verification, an admin must approve your account before you can create resources."
-	if h.mailer != nil {
-		_ = h.mailer.Send(result.User.Email, "Verify your ProxaCloud account", body)
+	if err := mailer.SendExpiring(h.mailer, result.User.Email, "Verify your ProxaCloud account", body, time.Now().Add(24*time.Hour-time.Minute)); err != nil {
+		log.Printf("registration email enqueue failed user_id=%d", result.User.ID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Account created, but verification email could not be queued. Please request a new verification email."})
+		return
 	}
 	payload := map[string]any{
 		"user":    result.User,
-		"message": "Registration submitted. Please verify your email, then wait for admin approval.",
-	}
-	if h.mailer == nil || !h.mailer.Enabled() {
-		payload["verification_url"] = result.VerificationURL
+		"message": "Registration submitted. Your verification email is queued. Please verify your email, then wait for admin approval.",
 	}
 	writeJSON(w, http.StatusCreated, payload)
 }
@@ -137,14 +143,13 @@ func (h *Handler) RequestPasswordReset(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if found && h.mailer != nil {
+	if found {
 		body := "We received a request to reset your ProxaCloud password.\n\nUse this link to set a new password:\n\n" + result.ResetURL + "\n\nThis link expires in 1 hour. If you did not request this, you can ignore this email."
-		_ = h.mailer.Send(result.Email, "Reset your ProxaCloud password", body)
+		if err := mailer.SendExpiring(h.mailer, result.Email, "Reset your ProxaCloud password", body, time.Now().Add(59*time.Minute)); err != nil {
+			log.Print("password reset email enqueue failed")
+		}
 	}
-	payload := map[string]any{"message": "If an account exists for that email, a password reset link has been sent."}
-	if found && (h.mailer == nil || !h.mailer.Enabled()) {
-		payload["reset_url"] = result.ResetURL
-	}
+	payload := map[string]any{"message": "If an account matches, a password reset email will be sent when email delivery is available."}
 	writeJSON(w, http.StatusOK, payload)
 }
 
@@ -373,7 +378,34 @@ func (h *Handler) SetUserStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if h.mailer != nil && user.Email != "" {
+		body := fmt.Sprintf("Your ProxaCloud account status is now: %s.\n\nSign in to your dashboard for details.\n%s", user.Status, h.publicAppURL)
+		if err := h.mailer.Send(user.Email, "ProxaCloud account status updated", body); err != nil {
+			log.Printf("account status email enqueue failed user_id=%d", user.ID)
+		}
+	}
 	writeJSON(w, http.StatusOK, user)
+}
+
+func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
+		return
+	}
+	result, found, err := h.users.ResendVerification(req.Email, h.publicAppURL)
+	if err != nil {
+		log.Print("verification resend preparation failed")
+	}
+	if err == nil && found {
+		body := "Verify your ProxaCloud email using this link (valid for 24 hours):\n\n" + result.VerificationURL
+		if err := mailer.SendExpiring(h.mailer, result.User.Email, "Verify your ProxaCloud account", body, time.Now().Add(24*time.Hour-time.Minute)); err != nil {
+			log.Print("verification resend enqueue failed")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "If an account is awaiting verification, a verification email will be sent when email delivery is available."})
 }
 
 func (h *Handler) ListUsers(w http.ResponseWriter, _ *http.Request) {
