@@ -130,10 +130,7 @@ func (s *Service) CreateUser(username, password string, role rbac.Role, profile 
 		roleID,
 	).Scan(&created.ID, &created.Username, &created.FirstName, &created.LastName, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
-			return User{}, ErrUserExists
-		}
-		return User{}, fmt.Errorf("insert user: %w", err)
+		return User{}, identityWriteError(fmt.Errorf("insert user: %w", err))
 	}
 
 	created.Role = role
@@ -184,10 +181,7 @@ func (s *Service) RegisterClient(username, password string, profile ProfileInput
 		username, profile.FirstName, profile.LastName, profile.FullName, profile.Email, profile.ContactNumber, string(hash), roleID, string(StatusEmailPending),
 	).Scan(&created.ID, &created.Username, &created.FirstName, &created.LastName, &created.FullName, &created.Email, &created.ContactNumber, &created.Status, &created.EmailVerifiedAt, &created.CreatedAt)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
-			return RegistrationResult{}, ErrUserExists
-		}
-		return RegistrationResult{}, fmt.Errorf("insert registered user: %w", err)
+		return RegistrationResult{}, identityWriteError(fmt.Errorf("insert registered user: %w", err))
 	}
 
 	var accountID int64
@@ -317,7 +311,7 @@ func (s *Service) UpdateUser(id int64, role rbac.Role, profile ProfileInput) (Us
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrUserNotFound
 		}
-		return User{}, fmt.Errorf("update user: %w", err)
+		return User{}, identityWriteError(fmt.Errorf("update user: %w", err))
 	}
 
 	updated.Role = rbac.Role(roleName)
@@ -366,10 +360,7 @@ func (s *Service) UpdateOwnProfile(currentUsername string, input SelfProfileInpu
 		contactNumber,
 	).Scan(&updated.ID, &updated.Username, &updated.FirstName, &updated.LastName, &updated.FullName, &updated.Email, &updated.ContactNumber, &updated.Status, &updated.EmailVerifiedAt, &updated.CreatedAt, &roleName, &updated.TwoFactorEnabled, &updated.TwoFactorMethod, &updated.TwoFactorSecret, &updated.TwoFactorPendingSecret, &updated.TwoFactorEnabledAt, &updated.LastLoginIP)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "duplicate key") {
-			return User{}, ErrUserExists
-		}
-		return User{}, fmt.Errorf("update own profile: %w", err)
+		return User{}, identityWriteError(fmt.Errorf("update own profile: %w", err))
 	}
 	updated.Role = rbac.Role(roleName)
 	return sanitizeUser(updated), nil
@@ -405,9 +396,7 @@ func (s *Service) RequestPasswordReset(identifier string, publicAppURL string) (
 	err := s.db.QueryRow(
 		`SELECT id, email
 		   FROM users
-		  WHERE lower(username) = $1
-		     OR lower(email) = $1
-		  LIMIT 1`,
+		  WHERE id = (SELECT user_id FROM user_login_identifiers WHERE identifier = $1)`,
 		identifier,
 	).Scan(&userID, &email)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -601,7 +590,7 @@ func (s *Service) Authenticate(username, password string) (User, error) {
 		        COALESCE(u.two_factor_pending_secret, ''), u.two_factor_enabled_at, COALESCE(u.last_login_ip, '')
 		 FROM users u
 		 JOIN roles r ON r.id = u.role_id
-		 WHERE u.username = $1`,
+		 WHERE u.id = (SELECT user_id FROM user_login_identifiers WHERE identifier = $1)`,
 		username,
 	).Scan(&user.ID, &user.Username, &user.FirstName, &user.LastName, &user.FullName, &user.Email, &user.ContactNumber, &user.PasswordHash, &user.Status, &user.EmailVerifiedAt, &user.CreatedAt, &roleName, &user.TwoFactorEnabled, &user.TwoFactorMethod, &user.TwoFactorSecret, &user.TwoFactorPendingSecret, &user.TwoFactorEnabledAt, &user.LastLoginIP)
 	if err != nil {

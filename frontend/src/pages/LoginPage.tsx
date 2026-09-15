@@ -79,14 +79,14 @@ export function LoginPage() {
             {mode === 'password' ? (
               <>
                 <Input
-                  label="Username"
+                  label="Username or email"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoFocus
                   autoComplete="username"
                   required
-                  placeholder="k8s-admin"
+                  placeholder="Username or email address"
                 />
                 <Input
                   label="Password"

@@ -209,7 +209,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrInvalidCredentials):
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "current password is required when changing username"})
 		case errors.Is(err, ErrUserExists):
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "username already exists"})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrUserNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 		default:
@@ -310,6 +310,8 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrUserExists):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrUserNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		case errors.Is(err, ErrInvalidRole):
