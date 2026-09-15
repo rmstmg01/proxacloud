@@ -23,6 +23,42 @@ func NewQueue(db *sql.DB, store secrets.Store, transport Sender) *Queue {
 	return &Queue{db, store, transport}
 }
 func (q *Queue) Enabled() bool { return q.transport.Enabled() }
+
+// SendOnceTx atomically stores a deduplicated email with the caller's transaction.
+// Retain deduplication keys after payload cleanup so a delivered email is not requeued.
+func (q *Queue) SendOnceTx(ctx context.Context, tx *sql.Tx, key, to, subject, body string, expires time.Time) error {
+	if key == "" {
+		return errors.New("email deduplication key is required")
+	}
+	if err := validateMessage(to, subject); err != nil {
+		return err
+	}
+	store, ok := q.secrets.(interface {
+		PutTx(context.Context, *sql.Tx, string, string, []byte) (string, error)
+	})
+	if !ok {
+		return errors.New("transactional email secret storage is unavailable")
+	}
+	var id int64
+	err := tx.QueryRowContext(ctx, `INSERT INTO email_outbox(payload_ref,expires_at,deduplication_key)
+		VALUES ('',$1,$2) ON CONFLICT (deduplication_key) DO NOTHING RETURNING id`, expires, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(message{to, subject, body})
+	if err != nil {
+		return err
+	}
+	ref, err := store.PutTx(ctx, tx, "email-outbox", "message", payload)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE email_outbox SET payload_ref=$2 WHERE id=$1`, id, ref)
+	return err
+}
 func (q *Queue) Send(to, subject, body string) error {
 	return q.SendExpiring(to, subject, body, time.Now().Add(24*time.Hour))
 }

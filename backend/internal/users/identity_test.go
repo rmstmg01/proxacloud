@@ -146,4 +146,5 @@ func TestIdentityPostgres(t *testing.T) {
 	if success != 1 {
 		t.Fatalf("concurrent successes: %d", success)
 	}
+	testApprovalVerification(t, db)
 }

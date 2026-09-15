@@ -179,6 +179,7 @@ func NewApp() (*App, error) {
 		From:     cfg.SMTPFrom,
 	})
 	emailQueue := mailer.NewQueue(database, secretStore, mailSender)
+	userService.SetAdminApprovalNotifications(emailQueue, cfg.AdminNotificationEmails, cfg.PublicAppURL)
 	tunnelAPIClient := proxacloudtunnelapi.New(proxacloudtunnelapi.Config{
 		BaseURL:  cfg.ProxacloudTunnelAPIURL,
 		APIToken: cfg.ProxacloudTunnelAPIToken,

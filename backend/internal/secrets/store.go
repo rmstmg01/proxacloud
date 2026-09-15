@@ -42,6 +42,19 @@ func NewDBStore(db *sql.DB, keyMaterial string) (*DBStore, error) {
 }
 
 func (s *DBStore) Put(ctx context.Context, scope, name string, value []byte) (string, error) {
+	return s.put(ctx, s.db, scope, name, value)
+}
+
+// PutTx keeps encrypted payload storage atomic with the caller's state change.
+func (s *DBStore) PutTx(ctx context.Context, tx *sql.Tx, scope, name string, value []byte) (string, error) {
+	return s.put(ctx, tx, scope, name, value)
+}
+
+type queryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *DBStore) put(ctx context.Context, db queryRower, scope, name string, value []byte) (string, error) {
 	scope = strings.TrimSpace(scope)
 	name = strings.TrimSpace(name)
 	if scope == "" {
@@ -61,7 +74,7 @@ func (s *DBStore) Put(ctx context.Context, scope, name string, value []byte) (st
 	ciphertext := s.aead.Seal(nil, nonce, value, additionalData(scope, name))
 
 	var id int64
-	err := s.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`INSERT INTO managed_secrets (scope, name, nonce, ciphertext)
 		 VALUES ($1, $2, $3, $4)
 		 RETURNING id`,

@@ -11,6 +11,7 @@ SMTP_PORT=587
 SMTP_USERNAME=your-smtp-user
 SMTP_PASSWORD=your-smtp-password
 SMTP_FROM=noreply@proxaops.com
+ADMIN_NOTIFICATION_EMAILS=admin@proxaops.com,second-admin@proxaops.com
 ```
 
 Port 587 uses STARTTLS when advertised; authentication requires TLS. Port 465
@@ -29,6 +30,35 @@ docker compose up -d --build backend frontend
 ```
 
 No real emails or production configuration changes are made by the local tests.
+
+## Admin notification for verified signups
+
+Migration 0075 adds a unique deduplication key to the outbox. After a customer
+successfully verifies their email and enters `pending_approval`, one approval
+request is queued for each comma-separated ADMIN_NOTIFICATION_EMAILS recipient.
+Whitespace and duplicate addresses are removed; invalid entries are skipped with
+a warning. Recipients are explicitly configured, not inferred from user roles.
+
+The email contains the customer's name, username, email, user ID, and verification
+time in UTC. It links to PUBLIC_APP_URL + `/users`, which requires normal admin
+authentication and authorization. It contains no verification token or automatic
+approval link. Grant recipients appropriate dashboard permissions separately.
+
+The verification state change, encrypted email payloads, and queue entries commit
+in the same database transaction. A database/queue-storage failure rolls back
+verification so the same valid link can be retried. Repeated clicks and invalid
+or expired links do not queue new notifications. Deduplication keys remain after
+delivery and payload cleanup. SMTP's existing at-least-once retry caveat applies.
+
+Missing recipients or invalid PUBLIC_APP_URL emit warnings and do not prevent
+verification. Disabled SMTP keeps configured recipients' notifications queued,
+with the existing 24-hour expiry. Configure recipients before enabling signups;
+adding recipients later does not backfill notifications for already verified
+accounts. This notification is sent after verification, not initial registration.
+
+Set the environment variables above and rebuild/recreate the backend to apply
+0075 and load configuration. Live recipient addresses must be supplied by the
+operator; example addresses are not configured automatically.
 
 ## Behavior
 

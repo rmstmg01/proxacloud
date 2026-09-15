@@ -76,7 +76,10 @@ type SelfProfileInput struct {
 }
 
 type Service struct {
-	db *sql.DB
+	db                 *sql.DB
+	approvalQueue      approvalEmailQueue
+	approvalRecipients []string
+	approvalURL        string
 }
 
 func NewService(db *sql.DB) *Service {
@@ -258,6 +261,9 @@ func (s *Service) VerifyEmail(token string) (User, error) {
 	}
 	if _, err := tx.Exec(`UPDATE customer_accounts SET status = $2, updated_at = NOW() WHERE owner_user_id = $1`, userID, string(StatusPendingApproval)); err != nil {
 		return User{}, fmt.Errorf("mark customer account pending: %w", err)
+	}
+	if err := s.queueAdminApproval(tx, userID); err != nil {
+		return User{}, fmt.Errorf("queue admin approval notification: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return User{}, fmt.Errorf("commit email verification: %w", err)

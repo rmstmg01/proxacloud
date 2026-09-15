@@ -122,4 +122,49 @@ func TestQueuePostgres(t *testing.T) {
 	must(`UPDATE email_outbox SET attempts=7 WHERE status='pending'`)
 	process()
 	state("failed")
+	adminMigration, err := os.ReadFile("../../migrations/0075_admin_approval_notifications.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	must(string(adminMigration))
+	must(string(adminMigration))
+	transport.enabled = false
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SendOnceTx(context.Background(), tx, "approval:42:admin", "admin@example.com", "Approval needed", "customer details", time.Now().Add(time.Hour)); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM email_outbox WHERE deduplication_key IS NOT NULL`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rollback leaked queue row: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM managed_secrets`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rollback leaked encrypted payload: %v", err)
+	}
+	tx, err = db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := q.SendOnceTx(context.Background(), tx, "approval:42:admin", "admin@example.com", "Approval needed", "customer details", time.Now().Add(time.Hour)); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM email_outbox WHERE deduplication_key IS NOT NULL`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate queue rows: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM managed_secrets`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("duplicate encrypted payload: %v", err)
+	}
+	process()
+	state("pending") // disabling SMTP does not lose an approval request
 }

@@ -8,34 +8,35 @@ import (
 )
 
 type Config struct {
-	AppEnv              string
-	Address             string
-	DatabaseURL         string
-	AutoMigrate         bool
-	TerraformBinary     string
-	TerraformWorkDir    string
-	TerraformPluginDir  string
-	TerraformAutoApply  bool
-	AnsibleBinary       string
-	AnsibleWorkDir      string
-	AnsibleAutoApply    bool
-	OperationsWorkDir   string
-	JWTSecret           string
-	SecretEncryptionKey string
-	JWTTTLMinutes       int
-	SuperAdminUsername  string
-	SuperAdminPassword  string
-	PublicAppURL        string
-	SMTPHost            string
-	SMTPPort            int
-	SMTPUsername        string
-	SMTPPassword        string
-	SMTPFrom            string
-	StripeSecretKey     string
-	StripeWebhookSecret string
-	PayPalClientID      string
-	PayPalClientSecret  string
-	PayPalEnvironment   string
+	AppEnv                  string
+	Address                 string
+	DatabaseURL             string
+	AutoMigrate             bool
+	TerraformBinary         string
+	TerraformWorkDir        string
+	TerraformPluginDir      string
+	TerraformAutoApply      bool
+	AnsibleBinary           string
+	AnsibleWorkDir          string
+	AnsibleAutoApply        bool
+	OperationsWorkDir       string
+	JWTSecret               string
+	SecretEncryptionKey     string
+	JWTTTLMinutes           int
+	SuperAdminUsername      string
+	SuperAdminPassword      string
+	PublicAppURL            string
+	SMTPHost                string
+	SMTPPort                int
+	SMTPUsername            string
+	SMTPPassword            string
+	SMTPFrom                string
+	AdminNotificationEmails string
+	StripeSecretKey         string
+	StripeWebhookSecret     string
+	PayPalClientID          string
+	PayPalClientSecret      string
+	PayPalEnvironment       string
 
 	ProxacloudTunnelEnabled         bool
 	ProxacloudTunnelAPIURL          string
@@ -95,6 +96,7 @@ func Load() Config {
 		SMTPUsername:                    getenv("SMTP_USERNAME", ""),
 		SMTPPassword:                    getenv("SMTP_PASSWORD", ""),
 		SMTPFrom:                        getenv("SMTP_FROM", ""),
+		AdminNotificationEmails:         getenv("ADMIN_NOTIFICATION_EMAILS", ""),
 		StripeSecretKey:                 getenv("STRIPE_SECRET_KEY", ""),
 		StripeWebhookSecret:             getenv("STRIPE_WEBHOOK_SECRET", ""),
 		PayPalClientID:                  getenv("PAYPAL_CLIENT_ID", ""),
