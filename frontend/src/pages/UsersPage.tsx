@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { UserRegionAccessModal } from '../components/UserRegionAccessModal';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, Pencil, Plus, Trash2, XCircle } from 'lucide-react';
 import { getUsers, createUser, updateUser, setUserStatus, deleteUser } from '../api/users';
@@ -26,6 +27,7 @@ export function UsersPage() {
   const { user: me } = useAuth();
   const qc = useQueryClient();
   const { data: users, isLoading, error } = useQuery({ queryKey: ['users'], queryFn: getUsers });
+  const [regionUser, setRegionUser] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const emptyForm = { username: '', full_name: '', email: '', contact_number: '', password: '', role: 'normal_user' };
   const [form, setForm] = useState(emptyForm);
@@ -36,7 +38,7 @@ export function UsersPage() {
 
   const createMut = useMutation({
     mutationFn: createUser,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['users'] }); setCreateOpen(false); setForm(emptyForm); },
+    onSuccess: (created) => { qc.invalidateQueries({ queryKey: ['users'] }); setCreateOpen(false); setForm(emptyForm); if (created.role === 'normal_user') setRegionUser(created); },
   });
 
   const updateMut = useMutation({
@@ -167,6 +169,7 @@ export function UsersPage() {
                                 Reactivate
                               </Button>
                             )}
+                            {u.role === 'normal_user' && <Button variant="secondary" size="sm" onClick={() => setRegionUser(u)}>Regions</Button>}
                             <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
                               <Pencil className="h-4 w-4" /> Edit
                             </Button>
@@ -232,6 +235,8 @@ export function UsersPage() {
           </div>
         </form>
       </Modal>
+
+      {regionUser && <UserRegionAccessModal key={regionUser.id} user={regionUser} onClose={() => setRegionUser(null)} />}
 
       <DeleteUserModal
         user={deleteTarget}

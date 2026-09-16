@@ -1277,20 +1277,6 @@ func (s *Service) reconcileDiscoveredImages(storageID string, seen []string) err
 	return nil
 }
 
-func (s *Service) DiscoverImagesForRegion(regionID int64, storageID ...string) ([]CloudInitImage, error) {
-	if regionID <= 0 {
-		return nil, errors.New("region_id is required")
-	}
-	if s.regions == nil {
-		return nil, errors.New("regions are not configured")
-	}
-	credentialID, nodeName, err := s.regions.PickNode(regionID)
-	if err != nil {
-		return nil, err
-	}
-	return s.DiscoverImages(credentialID, nodeName, storageID...)
-}
-
 func (s *Service) validateCreateRequest(req *CreateRequest) error {
 	req.Name = sanitizeName(req.Name)
 	req.Description = strings.TrimSpace(req.Description)

@@ -17,7 +17,7 @@ import {
   type DatabaseClusterEvent,
 } from '../api/databaseClusters';
 import { getRegions } from '../api/regions';
-import { discoverVPSCloudInitImagesForRegion } from '../api/vps';
+import { discoverVPSCloudInitImagesAutomatically } from '../api/vps';
 import { Layout, PageHeader } from '../components/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { StatusBadge } from '../components/ui/Badge';
@@ -72,11 +72,9 @@ export function DatabaseClustersPage() {
     refetchInterval: 30_000,
   });
   const { data: regions } = useQuery({ queryKey: ['regions'], queryFn: getRegions });
-  const selectedRegionID = Number(form.region_id);
   const { data: images, error: imageError, isLoading: imagesLoading } = useQuery({
-    queryKey: ['database-cluster-images', selectedRegionID],
-    queryFn: () => discoverVPSCloudInitImagesForRegion(selectedRegionID),
-    enabled: selectedRegionID > 0,
+    queryKey: ['database-cluster-images'],
+    queryFn: () => discoverVPSCloudInitImagesAutomatically(),
     staleTime: 0,
   });
   const ubuntuImages = useMemo(() => (images ?? [])
@@ -189,13 +187,12 @@ export function DatabaseClustersPage() {
   });
 
   const updateField = (field: keyof typeof initialForm, value: string | boolean) => {
-    setForm((current) => field === 'region_id'
-      ? { ...current, region_id: String(value), cloud_init_image_id: '' }
-      : { ...current, [field]: value });
+    setForm((current) => ({ ...current, [field]: value }));
   };
 
   const submitDeploy = (event: FormEvent) => {
     event.preventDefault();
+    if (!(regions ?? []).some((region) => region.id === Number(form.region_id) && region.can_deploy && region.nodes.filter((node) => node.enabled).length >= 3)) return;
     provisionMutation.mutate({
       name: form.name.trim(),
       region_id: Number(form.region_id),
@@ -267,7 +264,7 @@ export function DatabaseClustersPage() {
       {showDeploy && (
         <DeployDatabaseForm
           form={form}
-          regions={(regions ?? []).filter((region) => region.enabled)}
+          regions={regions ?? []}
           images={ubuntuImages}
           imageError={imageError}
           imagesLoading={imagesLoading}
@@ -647,9 +644,10 @@ function DeployDatabaseForm({
         <form onSubmit={onSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="Cluster name" value={form.name} onChange={(e) => onChange('name', e.target.value)} placeholder="pscs-prod-db" required />
+            {regions && !regions.some((region) => region.can_deploy) && <Alert variant="info">No deployment regions are available to you. Contact your administrator.</Alert>}
             <Select label="Region" value={form.region_id} onChange={(e) => onChange('region_id', e.target.value)} required>
               <option value="">Select region</option>
-              {regions.map((region) => <option key={region.id} value={region.id}>{region.name}</option>)}
+              {regions.map((region) => <option key={region.id} value={region.id} disabled={!region.can_deploy || region.nodes.filter((node) => node.enabled).length < 3}>{region.name}{!region.can_deploy ? ` - ${region.deployment_unavailable_reason || 'Not permitted'}` : region.nodes.filter((node) => node.enabled).length < 3 ? ' - Requires 3 nodes' : ''}</option>)}
             </Select>
           </div>
           {selectedRegion && <Alert variant="info">The backend will select 3 of {selectedRegion.nodes.filter((node) => node.enabled).length} enabled region nodes using current availability and free RAM.</Alert>}
@@ -664,8 +662,7 @@ function DeployDatabaseForm({
             <CardHeader><CardTitle>Select Operating System</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               {Boolean(imageError) && <ErrorMessage error={imageError} />}
-              {!form.region_id ? <Alert variant="info">Select a region to discover supported Ubuntu images.</Alert> :
-                images.length === 0 ? <Alert variant="warning" title={imagesLoading ? 'Checking shared images' : 'No shared images'}>{imagesLoading ? 'Synchronizing the OS image catalogue with shared NFS storage.' : 'No supported Ubuntu image is currently available in cloud-images import storage for this region.'}</Alert> :
+              {images.length === 0 ? <Alert variant="warning" title={imagesLoading ? 'Checking shared images' : 'No shared images'}>{imagesLoading ? 'Synchronizing the OS image catalogue with shared NFS storage.' : 'No supported Ubuntu image is currently available in shared cloud-images import storage.'}</Alert> :
                 <><div className="flex items-center gap-2 border-b border-slate-200 pb-2"><DistributionLogo distribution="ubuntu" className="h-6 w-6" /><h3 className="font-semibold text-slate-900">Ubuntu</h3><span className="text-xs text-slate-500">supported database images</span></div>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{images.map((image) => {
                     const selected = String(image.id) === form.cloud_init_image_id;
@@ -702,7 +699,7 @@ function DeployDatabaseForm({
           {loading && <div className="rounded-md border border-blue-200 bg-blue-50 p-4"><div className="flex items-center gap-2 text-sm font-medium text-blue-900"><Loader2 className="h-4 w-4 animate-spin" />Creating database servers</div><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-blue-100"><div className="deployment-progress-bar h-full rounded-full bg-blue-600" /></div><p className="mt-2 text-xs text-blue-700">Placement, provisioning and Galera setup are running automatically. Keep this page open.</p></div>}
 
           <div className="flex justify-end">
-            <Button type="submit" loading={loading} disabled={loading || !form.cloud_init_image_id}>
+            <Button type="submit" loading={loading} disabled={loading || !form.cloud_init_image_id || !selectedRegion?.can_deploy || selectedRegion.nodes.filter((node) => node.enabled).length < 3}>
               <Rocket className="h-4 w-4" />
               Deploy Database Cluster
             </Button>

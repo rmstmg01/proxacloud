@@ -63,7 +63,8 @@ export function ProvisionClusterPage() {
   const isNameTaken = nameCheck.data?.exists ?? false;
   const selectedKey = sshKeys?.find((key) => key.id === form.customer_ssh_key_id);
   const selectedImage = sharedImages.find((image) => image.id === form.cloud_init_image_id);
-  const enabledRegions = (regions ?? []).filter((region) => region.enabled && region.nodes.some((node) => node.enabled));
+  const enabledRegions = (regions ?? []).filter((region) => region.can_deploy && region.nodes.some((node) => node.enabled));
+  const regionAllowed = enabledRegions.some((region) => region.id === form.region_id);
 
   const createSSH = useMutation({
     mutationFn: createCustomerSSHKey,
@@ -79,7 +80,7 @@ export function ProvisionClusterPage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (isNameTaken || !selectedKey || !selectedImage || form.region_id <= 0) return;
+    if (isNameTaken || !selectedKey || !selectedImage || !regionAllowed) return;
     const result = await provision.mutateAsync({
       provision: {
         ...form,
@@ -113,9 +114,10 @@ export function ProvisionClusterPage() {
           <CardHeader><CardTitle>Cluster</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Input label="Cluster name" value={form.name} onChange={(e) => setField('name', e.target.value)} required placeholder="production" error={isNameTaken ? 'Cluster name already exists' : undefined} />
+            {regions && !regions.some((region) => region.can_deploy) && <Alert variant="info">No deployment regions are available to you. Contact your administrator.</Alert>}
             <Select label="Region" value={form.region_id} onChange={(e) => setField('region_id', Number(e.target.value))} required>
               <option value={0}>Select region</option>
-              {enabledRegions.map((region) => <option key={region.id} value={region.id}>{region.name} ({region.nodes.filter((node) => node.enabled).length} nodes)</option>)}
+              {(regions ?? []).map((region) => <option key={region.id} value={region.id} disabled={!region.can_deploy || !region.nodes.some((node) => node.enabled)}>{region.name}{!region.can_deploy ? ` - ${region.deployment_unavailable_reason || 'Not permitted'}` : !region.nodes.some((node) => node.enabled) ? ' - No available nodes' : ''}</option>)}
             </Select>
             <Select label="Topology" value={form.topology_type} onChange={(e) => {
               const topology = e.target.value;
@@ -164,7 +166,7 @@ export function ProvisionClusterPage() {
           </CardContent></Card>)}
 
         {provision.error && <ErrorMessage error={provision.error} />}
-        <Button type="submit" loading={provision.isPending} disabled={isNameTaken || !selectedKey || !selectedImage}>Provision and bootstrap cluster</Button>
+        <Button type="submit" loading={provision.isPending} disabled={isNameTaken || !selectedKey || !selectedImage || !regionAllowed}>Provision and bootstrap cluster</Button>
       </form>
 
       <Modal open={sshModalOpen} onClose={() => setSSHModalOpen(false)} title="Add Customer SSH Public Key">

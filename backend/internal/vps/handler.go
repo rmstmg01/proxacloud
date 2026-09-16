@@ -13,6 +13,7 @@ import (
 	"proxacloud/backend/internal/auth"
 	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/regions"
 	"proxacloud/backend/internal/tenant"
 )
 
@@ -90,6 +91,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ActorUsername = ctxUser.Username
+	if !regions.RequireDeployment(w, h.service.db, scope, req.RegionID) {
+		return
+	}
+
 	if scope.IsCustomer() {
 		req.CustomerAccountID = scope.CustomerAccountID
 		if h.billing != nil {
@@ -673,7 +678,6 @@ func (h *Handler) DiscoverImages(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CredentialID int64  `json:"proxmox_credential_id"`
 		NodeName     string `json:"node_name"`
-		RegionID     int64  `json:"region_id"`
 		StorageID    string `json:"storage_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -682,9 +686,7 @@ func (h *Handler) DiscoverImages(w http.ResponseWriter, r *http.Request) {
 	}
 	var resp []CloudInitImage
 	var err error
-	if req.RegionID > 0 {
-		resp, err = h.service.DiscoverImagesForRegion(req.RegionID, req.StorageID)
-	} else if req.CredentialID <= 0 && strings.TrimSpace(req.NodeName) == "" {
+	if req.CredentialID <= 0 && strings.TrimSpace(req.NodeName) == "" {
 		resp, err = h.service.DiscoverImagesAutomatically(req.StorageID)
 	} else {
 		resp, err = h.service.DiscoverImages(req.CredentialID, req.NodeName, req.StorageID)

@@ -313,6 +313,8 @@ func NewApp() (*App, error) {
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/users", userHandler.ListUsers)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users", userHandler.CreateUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}", userHandler.UpdateUser)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Get("/users/{id}/region-access", regionHandler.GetUserAccess)
+			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Put("/users/{id}/region-access", regionHandler.SetUserAccess)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Delete("/users/{id}", userHandler.DeleteUser)
 			protected.With(auth.RequireRoles(rbac.RoleSuperAdmin)).Post("/users/{id}/status", userHandler.SetUserStatus)
 			protected.With(auth.RequireRoles(rbac.RoleSuperUser, rbac.RoleSuperAdmin)).Get("/managed-http-endpoints", managedStorefrontHandler.List)

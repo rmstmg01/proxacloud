@@ -20,16 +20,18 @@ var (
 )
 
 type Region struct {
-	ID          int64           `json:"id"`
-	Name        string          `json:"name"`
-	Slug        string          `json:"slug"`
-	Description string          `json:"description"`
-	Enabled     bool            `json:"enabled"`
-	IsDefault   bool            `json:"is_default"`
-	Nodes       []RegionNode    `json:"nodes"`
-	Networks    []RegionNetwork `json:"networks"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	CanDeploy                   bool            `json:"can_deploy"`
+	DeploymentUnavailableReason string          `json:"deployment_unavailable_reason,omitempty"`
+	ID                          int64           `json:"id"`
+	Name                        string          `json:"name"`
+	Slug                        string          `json:"slug"`
+	Description                 string          `json:"description"`
+	Enabled                     bool            `json:"enabled"`
+	IsDefault                   bool            `json:"is_default"`
+	Nodes                       []RegionNode    `json:"nodes"`
+	Networks                    []RegionNetwork `json:"networks"`
+	CreatedAt                   time.Time       `json:"created_at"`
+	UpdatedAt                   time.Time       `json:"updated_at"`
 }
 
 type RegionNode struct {

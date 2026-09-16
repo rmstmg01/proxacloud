@@ -12,6 +12,7 @@ import (
 	"proxacloud/backend/internal/auth"
 	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/regions"
 	"proxacloud/backend/internal/tenant"
 )
 
@@ -61,6 +62,10 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !regions.RequireDeployment(w, h.service.db, scope, req.RegionID) {
+		return
+	}
+
 	if scope.IsCustomer() {
 		if req.RegionID <= 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})

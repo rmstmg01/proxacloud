@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CheckCircle2, Copy, Eye, EyeOff, Globe2, KeyRound, Plus } from 'lucide-react';
-import { createVPSInstance, discoverVPSCloudInitImagesForRegion } from '../api/vps';
+import { createVPSInstance, discoverVPSCloudInitImagesAutomatically } from '../api/vps';
 import { getNetworks } from '../api/networks';
 import { getRegions } from '../api/regions';
 import { createCustomerSSHKey, getCustomerSSHKeys } from '../api/customerSshKeys';
@@ -128,7 +128,7 @@ export function ProvisionVPSPage() {
 	tunnel_hostname_label: '',
   });
 
-  const enabledRegions = useMemo(() => (regions ?? []).filter((region) => region.enabled && region.nodes.some((node) => node.enabled)), [regions]);
+  const enabledRegions = useMemo(() => (regions ?? []).filter((region) => region.can_deploy && region.enabled && region.nodes.some((node) => node.enabled)), [regions]);
   const selectedRegion = useMemo(() => enabledRegions.find((region) => region.id === form.region_id), [enabledRegions, form.region_id]);
   const availableNetworks = useMemo(() => {
     if (!selectedRegion) {
@@ -162,7 +162,7 @@ export function ProvisionVPSPage() {
   const passwordError = useMemo(() => rootPasswordError(form.root_password), [form.root_password]);
   const hasCustomerAccess = form.customer_ssh_key_id > 0 || form.root_password.trim() !== '';
   const createDisabled =
-    form.region_id === 0 ||
+    !selectedRegion ||
     form.network_profile_id === 0 ||
     form.cloud_init_image_path.trim() === '' ||
     !hasCustomerAccess ||
@@ -226,7 +226,7 @@ export function ProvisionVPSPage() {
   });
 
   const discoverImagesMutation = useMutation({
-    mutationFn: () => discoverVPSCloudInitImagesForRegion(form.region_id),
+    mutationFn: () => discoverVPSCloudInitImagesAutomatically(),
     onSuccess: (discovered) => {
       const cloudImages = discovered
         .filter((image) => image.image_path.toLowerCase().startsWith('cloud-images:import/'))
@@ -260,10 +260,7 @@ export function ProvisionVPSPage() {
   });
 
   useEffect(() => {
-    if (form.region_id === 0) {
-      return;
-    }
-    const discoveryKey = `region:${form.region_id}`;
+    const discoveryKey = 'shared-images';
     if (lastAutoDiscoveryKey.current === discoveryKey || discoverImagesMutation.isPending) {
       return;
     }
@@ -275,7 +272,7 @@ export function ProvisionVPSPage() {
       cloud_init_image_path: '',
     }));
     discoverImagesMutation.mutate();
-  }, [discoverImagesMutation, form.region_id]);
+  }, [discoverImagesMutation]);
 
   const setField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -338,6 +335,7 @@ export function ProvisionVPSPage() {
               onChange={(event) => setField('description', event.target.value)}
               placeholder="Production web VM"
             />
+            {regions && !regions.some((region) => region.can_deploy) && <Alert variant="info">No deployment regions are available to you. Contact your administrator.</Alert>}
             <Select
               label="Location"
               value={form.region_id}
@@ -346,18 +344,14 @@ export function ProvisionVPSPage() {
                   ...prev,
                   region_id: Number(event.target.value),
                   network_profile_id: 0,
-                  cloud_init_image_id: 0,
-                  cloud_init_image_path: '',
                 }));
-                setDiscoveredImages([]);
-                lastAutoDiscoveryKey.current = '';
               }}
               required
             >
               <option value={0}>-- Select location --</option>
-              {enabledRegions.map((region) => (
-                <option key={region.id} value={region.id}>
-                  {region.name}
+              {(regions ?? []).map((region) => (
+                <option key={region.id} value={region.id} disabled={!region.can_deploy || !region.nodes.some((node) => node.enabled)}>
+                  {region.name}{!region.can_deploy ? ` - ${region.deployment_unavailable_reason || 'Not permitted'}` : !region.nodes.some((node) => node.enabled) ? ' - No available nodes' : ''}
                 </option>
               ))}
             </Select>

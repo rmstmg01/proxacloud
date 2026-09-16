@@ -7,6 +7,9 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+
+	"proxacloud/backend/internal/auth"
+	"proxacloud/backend/internal/tenant"
 )
 
 type Handler struct {
@@ -17,12 +20,33 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) List(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	regions, err := h.service.List()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	scope := tenant.Scope{Username: user.Username, Role: user.Role}
+	policy := AccessPolicy{Mode: "all"}
+	if !scope.IsAdmin() {
+		var id int64
+		if err := h.service.db.QueryRow(`SELECT id FROM users WHERE username = $1`, user.Username).Scan(&id); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "unable to load region permissions"})
+			return
+		}
+		var err error
+		policy, err = h.service.Policy(id)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": "unable to load region permissions"})
+			return
+		}
+	}
+	annotateAccess(regions, policy)
 	writeJSON(w, http.StatusOK, regions)
 }
 

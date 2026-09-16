@@ -13,6 +13,7 @@ import (
 	"proxacloud/backend/internal/auth"
 	"proxacloud/backend/internal/billing"
 	"proxacloud/backend/internal/rbac"
+	"proxacloud/backend/internal/regions"
 	"proxacloud/backend/internal/tenant"
 )
 
@@ -48,6 +49,10 @@ func (h *Handler) Provision(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !regions.RequireDeployment(w, h.service.db, scope, req.RegionID) {
+		return
+	}
+
 	if scope.IsCustomer() {
 		if req.RegionID <= 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})
@@ -86,6 +91,10 @@ func (h *Handler) ProvisionAndBootstrap(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	if !regions.RequireDeployment(w, h.service.db, scope, req.Provision.RegionID) {
+		return
+	}
+
 	if scope.IsCustomer() {
 		if req.Provision.RegionID <= 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "region_id is required"})
@@ -462,6 +471,16 @@ func (h *Handler) RedeployCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !scope.IsAdmin() {
+		var regionID int64
+		if err := h.service.db.QueryRow(`SELECT COALESCE(region_id, 0) FROM clusters WHERE id = $1`, clusterID).Scan(&regionID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "unable to resolve cluster region"})
+			return
+		}
+		if !regions.RequireDeployment(w, h.service.db, scope, regionID) {
+			return
+		}
+	}
 	resp, err := h.service.RedeployCluster(clusterID)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {

@@ -26,3 +26,14 @@ export const unassignRegionNode = (regionID: number, nodeID: number) =>
 
 export const setRegionNetworks = (id: number, network_profile_ids: number[]) =>
   client.put<{ id: number; updated: boolean }>(`/regions/${id}/networks`, { network_profile_ids }).then((r) => r.data);
+
+export interface RegionAccessPolicy {
+  mode: 'all' | 'selected' | 'none';
+  region_ids: number[];
+}
+
+export const getUserRegionAccess = (userID: number) =>
+  client.get<RegionAccessPolicy>(`/users/${userID}/region-access`).then((r) => r.data);
+
+export const setUserRegionAccess = (userID: number, body: RegionAccessPolicy) =>
+  client.put<RegionAccessPolicy>(`/users/${userID}/region-access`, body).then((r) => r.data);

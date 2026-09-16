@@ -118,6 +118,8 @@ export interface RegionNetwork {
 }
 
 export interface Region {
+  can_deploy: boolean;
+  deployment_unavailable_reason?: string;
   id: number;
   name: string;
   slug: string;
